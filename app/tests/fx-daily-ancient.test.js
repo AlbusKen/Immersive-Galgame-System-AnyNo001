@@ -6,6 +6,7 @@ import { dailyGrammarLines } from '../src/visual/igs-ui/fx-daily-prompt.js';
 import { DAILY_FX_STYLE_TEXT } from '../src/visual/igs-ui/fx-daily-style.js';
 import { cancelDailyFx, renderDailyFx } from '../src/visual/igs-ui/fx-daily.js';
 import { applyFxEra, FX_ERA_ANCIENT_ONLY } from '../src/scene/fx-era.js';
+import { packEraTables } from '../src/scene/fx-packs.js';
 import { makeStage, makeTimers } from './helpers/fake-dom.js';
 
 const KINDS = ['guqin', 'go', 'poem', 'edict', 'tea', 'bow', 'yujian', 'liandan', 'biguan', 'dianxue', 'qinggong', 'yungong'];
@@ -31,7 +32,7 @@ test('gate:fx-daily-ancient kinds are opt-in, styled and prompt-gated', () => {
 });
 
 test('gate:fx-daily-ancient modern era strips ancient-only kinds; untouched input returned as-is', () => {
-    assert.deepEqual([...FX_ERA_ANCIENT_ONLY.dailyFx].sort(), [...KINDS].sort());
+    assert.deepEqual([...FX_ERA_ANCIENT_ONLY.dailyFx].sort(), [...KINDS, ...packEraTables().ancient].sort());
     const reader = { dailyFx: { ...ALL_ON } };
     const modern = applyFxEra(reader, false);
     assert.notEqual(modern, reader);
@@ -65,7 +66,7 @@ test('gate:fx-daily-ancient poem and edict escape text; go shows verdict', () =>
     cancelDailyFx(edict);
     const go = makeStage();
     const played = render(go, { type: 'go', result: 'win' });
-    assert.deepEqual(played.sounds, ['sticky']);
+    assert.deepEqual(played.sounds, ['go-play']);
     assert.match(go.querySelector('#igs-fx-front').children[0].innerHTML, /igs-dfx-go-verdict">胜/);
     cancelDailyFx(go);
 });

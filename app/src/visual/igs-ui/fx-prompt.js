@@ -177,7 +177,7 @@ export function resolveStageCastFxPromptRule(stageCast) {
     const s = stageCast && typeof stageCast === 'object' ? stageCast : {};
     const lines = s.enabled === true
         ? [s.castReact === true ? STAGE_CAST_REACT_PROMPT_LINE : '', s.castStage === true ? STAGE_CAST_STAGE_PROMPT_LINE : ''].filter(Boolean)
-        : [];
+        : s.castStage === true ? [STAGE_CAST_TURN_PROMPT_LINE] : [];
     if (!lines.length) return '';
     return `【同屏角色】同场景里其他角色有明显反应或走位时使用：
 
@@ -190,17 +190,20 @@ ${lines.map((line, index) => `${index + 1}. ${line}`).join('\n')}
 export const STAGE_CAST_REACT_GRAMMAR_LINE = 'react|角色名|情绪：同场景里没在说话的角色对当前台词有明显反应时用，所有人一起吃惊时角色名写「全员」，每层最多3个';
 
 // 站位标签：只在多角色同屏与「走位」子开关同时开启时注入。
-export const STAGE_CAST_STAGE_PROMPT_LINE = '[igs-fx:stage|动作|角色|角色]：同场景角色明显走位时使用，动作只写 靠近／拉开（写两个角色）、背对／上前／离开（写一个角色）、复位（不写角色）；角色上场的那一刻可写 跑进来／探头／慢慢走进来，如[igs-fx:stage|靠近|爱丽丝|鲍勃]、[igs-fx:stage|探头|爱丽丝]；离开的角色再次说话即回到场上';
-export const STAGE_CAST_STAGE_GRAMMAR_LINE = 'stage|动作|角色|角色：同场景角色明显走位时用，动作只写 靠近/拉开（两个角色）、背对/上前/离开（一个角色）、复位（不写角色），上场时可写 跑进来/探头/慢慢走进来；离开的角色再次说话即回到场上，每层最多3个';
+export const STAGE_CAST_STAGE_PROMPT_LINE = '[igs-fx:stage|动作|角色|角色]：同场景角色明显走位时使用，动作只写 靠近／拉开（写两个角色）、背对／上前／离开（写一个角色）、复位（不写角色）；角色上场的那一刻可写 跑进来／探头／慢慢走进来，如[igs-fx:stage|靠近|爱丽丝|鲍勃]、[igs-fx:stage|探头|爱丽丝]；转身的戏可写 回眸（背对者回头）／甩头离开／背影（背对并在对话框旁提示，可再加一栏提示语）／转身面对（写两个角色）；离开的角色再次说话即回到场上';
+// 只开「立绘转身」、没开多角色同屏时的单人版：只教转身类动作。
+export const STAGE_CAST_TURN_PROMPT_LINE = '[igs-fx:stage|动作|角色]：角色背过身、回头或转身离开时使用，动作只写 背对（背对着镜头，再写转回）／回眸（背对者回头）／甩头离开（转身后退场）／背影（背对并在对话框旁提示，可再加一栏提示语），如[igs-fx:stage|背对|爱丽丝]、[igs-fx:stage|回眸|爱丽丝]；离开的角色再次说话即回到场上';
+export const STAGE_CAST_TURN_GRAMMAR_LINE = 'stage|动作|角色：角色背过身、回头、转身离开时用，动作只写 背对/回眸/甩头离开/背影，转回写 回眸，每层最多3个';
+export const STAGE_CAST_STAGE_GRAMMAR_LINE = 'stage|动作|角色|角色：同场景角色明显走位时用，动作只写 靠近/拉开（两个角色）、背对/上前/离开（一个角色）、复位（不写角色），上场时可写 跑进来/探头/慢慢走进来，转身可写 回眸/甩头离开/背影/转身面对；离开的角色再次说话即回到场上，每层最多3个';
 
 // AI 镜头指令：镜头语言与其「AI 镜头指令」子开关同时开启时注入。
-export const CAMERA_GRAMMAR_LINE = 'cam|镜头|角色或方向：关键时刻改变镜头，镜头只写 特写（推到说话人脸上，可写角色名）／拉远（人物退远、显得孤单或渺小）／虚化（背景糊掉、只看人物）／摇镜（横扫环境，第3段写 左 或 右）／倾斜（不安、眩晕、失衡）；只作用于标签所在那一页，平常不要用，每层最多2个';
+export const CAMERA_GRAMMAR_LINE = 'cam|镜头|角色或方向：关键时刻改变镜头，镜头只写 特写（推到说话人脸上，可写角色名）／拉远（人物退远、显得孤单或渺小）／虚化（背景糊掉、只看人物）／摇镜（横扫环境，第3段写 左 或 右）／倾斜（不安、眩晕、失衡）／跟拍（横移，第3段左右）／甩镜（快速横甩）／下沉（坐下躺下）／升起（起身）／仰望／变焦（拉远背景，第3段远或近）／主观（人物隐去）／空镜（只剩背景）／慢；第4段写 手持 可叠加；只作用于标签所在那一页，平常不要用，每层最多2个';
 
 // 详细约束版的镜头写法（镜头没有旧路径的长版）。
 export function resolveCameraPromptRule(camera) {
     if (!cameraGrammarLines(camera).length) return '';
     return `【镜头】告白、震惊、孤独、环境登场这类关键时刻改变镜头，平常不用：
-[igs-fx:cam|镜头|角色或方向]：镜头只写 特写（推到说话人脸上，第3段可写角色名）／拉远（人物退远、显得孤单或渺小）／虚化（背景糊掉、只看人物）／摇镜（横扫环境，第3段写 左 或 右）／倾斜（不安、眩晕、失衡），如[igs-fx:cam|特写|林小雨]、[igs-fx:cam|摇镜|左]
+[igs-fx:cam|镜头|角色或方向]：镜头只写 特写（推到说话人脸上，第3段可写角色名）／拉远（人物退远、显得孤单或渺小）／虚化（背景糊掉、只看人物）／摇镜（横扫环境，第3段写 左 或 右）／倾斜（不安、眩晕、失衡）／跟拍（横移，第3段左右）／甩镜（快速横甩）／下沉（坐下躺下）／升起（起身）／仰望／变焦（拉远背景，第3段远或近）／主观（人物隐去）／空镜（只剩背景）／慢，第4段写 手持 可叠加，如[igs-fx:cam|特写|林小雨]、[igs-fx:cam|摇镜|左|手持]
 
 语法要求：只作用于标签所在那一页；只在告白、震惊、孤独、环境登场这类关键时刻用，平常不用，每层回复最多2个。`;
 }
@@ -212,7 +215,7 @@ export function cameraGrammarLines(camera) {
 
 export function stageCastGrammarLines(stageCast) {
     const s = stageCast && typeof stageCast === 'object' ? stageCast : {};
-    if (s.enabled !== true) return [];
+    if (s.enabled !== true) return s.castStage === true ? [STAGE_CAST_TURN_GRAMMAR_LINE] : [];
     return [s.castReact === true ? STAGE_CAST_REACT_GRAMMAR_LINE : '', s.castStage === true ? STAGE_CAST_STAGE_GRAMMAR_LINE : ''].filter(Boolean);
 }
 

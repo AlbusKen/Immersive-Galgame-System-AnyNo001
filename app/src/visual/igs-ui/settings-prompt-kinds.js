@@ -27,23 +27,23 @@ const BUILTIN_VIEW = {
     item: [['正面', B.item.positive], ['负面', B.item.negative]],
 };
 const KIND_NOTE = {
-    cg: 'CG 的写词规则在「副LLM」页。',
+    cg: 'CG的写词规则在「备用模型」页。',
     expression: '表情差分跟随立绘模型。',
-    avatar: 'Q 版头像跟随立绘模型。',
-    nsfwCg: 'NSFW CG 跟随剧情 CG 模型；写词规则在「副LLM」页（含温和重试）。',
+    avatar: 'Q版头像跟随立绘模型。',
+    nsfwCg: 'NSFW CG跟随剧情CG模型；写词规则在「备用模型」页（含温和重试）。',
 };
 const FORM_VIEW = [
-    ['变身时摘掉的性别 / 年龄标签（正则）', B.form.bodyTagPattern],
+    ['变身时摘掉的性别 / 年龄标签（匹配规则，进阶）', B.form.bodyTagPattern],
     ['按性别补回', Object.entries(B.form.gender).map(([k, v]) => `${k === 'male' ? '男' : '女'} → ${v}`).join('\n')],
     ['按年龄档补回', Object.entries(B.form.age).map(([k, v]) => `${({ child: '幼', teen: '少年', adult: '成年', elder: '年长' })[k]} → ${v}`).join('\n')],
 ];
 // [卡片标题, 画师串分类, slots 键]
-const GROUPS = [['角色', ['sprite', 'wardrobe'], 'character'], ['表情差分', ['expression']], ['Q 版头像', ['avatar']],
+const GROUPS = [['角色', ['sprite', 'wardrobe'], 'character'], ['表情差分', ['expression']], ['Q版头像', ['avatar']],
     ['场景与物品', ['background', 'item'], 'scene'], ['CG', ['cg'], 'cg'], ['NSFW', ['nsfwCg'], 'nsfw']];
 const LABEL = new Map(PROMPT_KINDS);
 
 function builtinBlock(items) {
-    return items.map(([title, value, rule]) => `<div class="igs-settings-full igs-prompt-builtin"><span class="igs-outfit-muted">${esc(title)}${rule ? ' · 给 AI 的写词规则' : ''}</span>`
+    return items.map(([title, value, rule]) => `<div class="igs-settings-full igs-prompt-builtin"><span class="igs-outfit-muted">${esc(title)}${rule ? ' · 给AI的写词规则' : ''}</span>`
         + `<textarea readonly rows="${Math.min(6, String(value).split('\n').length + 1)}">${esc(value)}</textarea></div>`).join('');
 }
 
@@ -61,7 +61,7 @@ export function renderPromptKindsPanel({ nai, field, textarea, checkbox, advance
         const filled = entry.positive.trim() || entry.negative.trim();
         const editable = (templateFields[id] || []).map((html) => `<div class="igs-settings-full">${html}</div>`).join('');
         const view = BUILTIN_VIEW[id] || [];
-        const builtin = editable || view.length ? fold(`prompt-builtin-${id}`, 'IGS 自带', editable + builtinBlock(view), advancedOpen) : '';
+        const builtin = editable || view.length ? fold(`prompt-builtin-${id}`, 'IGS自带', editable + builtinBlock(view), advancedOpen) : '';
         const path = (side) => `${base}.kinds.${id}.${side}`;
         return fold(`prompt-kind-${id}`, (single ? '画师串与提示词' : `${esc(LABEL.get(id))} · 画师串与提示词`) + (filled ? ' ·' : ''),
             `<div class="igs-settings-full">${field(path('positive'), '画师串 · 正面', textarea(path('positive'), entry.positive, '留空用全局画师串'))}</div>`
@@ -71,8 +71,8 @@ export function renderPromptKindsPanel({ nai, field, textarea, checkbox, advance
     };
     const group = (title, body) => `<div class="igs-source-filter"><div class="igs-source-filter-title">${esc(title)}</div>${body}</div>`;
     return group('通用', checkbox(`${base}.enabled`, conf.enabled, '分区画师串（打开后每类用自己的画师串替换全局）')
-        + '<div class="igs-source-filter-note">内置 NAI 把这一类拼到提示词前面。数据库生图把这一对交给插件。智绘姬、柏宝绘不改画师串。</div>'
+        + '<div class="igs-source-filter-note">内置NAI把这一类拼到提示词前面。数据库生图把这一对交给插件。智绘姬、柏宝绘不改画师串。</div>'
         + (slots.common || ''))
         + GROUPS.map(([title, ids, slot]) => group(title, (slot && slots[slot] || '') + ids.map((id) => card(id, ids.length === 1)).join('')
-            + (slot === 'character' ? fold('prompt-kind-form', '变身 · IGS 自带', builtinBlock(FORM_VIEW), advancedOpen) : ''))).join('');
+            + (slot === 'character' ? fold('prompt-kind-form', '变身 · IGS自带', builtinBlock(FORM_VIEW), advancedOpen) : ''))).join('');
 }

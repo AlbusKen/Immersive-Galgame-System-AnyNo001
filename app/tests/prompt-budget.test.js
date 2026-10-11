@@ -4,6 +4,7 @@ import { bootstrapIGS, createMemoryStorage } from '../src/index.js';
 import { buildTagGrammar, collectGrammarBlocks, DEPTH0_REMINDER, normalizePromptPlacement } from '../src/visual/igs-ui/tag-grammar.js';
 import { ADAPTIVE_PROMPT_BLOCKS, DAILY_TRIGGER_WORDS, detectPromptTriggers, estimatePromptTokens } from '../src/scene/prompt-triggers.js';
 import { CAMPUS_FX_KINDS, COURTESY_FX_KINDS, DAILY_FX_KINDS, PLAY_FX_KINDS, WARDROBE_FX_KINDS } from '../src/scene/daily-fx-directives.js';
+import { isPackKind, packBlockKey, packOfKind } from '../src/scene/fx-packs.js';
 import { applyFxWorldview } from '../src/scene/fx-era.js';
 import { buildCompactMoodGroupsText, capVocabItems, DEFAULT_MOOD_GROUPS, resolveMoodGroup } from '../src/scene/mood-groups.js';
 import { buildScopedOutfitGroupsText, NO_OUTFIT_GROUPS_TEXT } from '../src/scene/character-outfits.js';
@@ -62,10 +63,12 @@ test('gate:prompt-budget:adaptive-blocks-stay-within-measured-budget', () => {
     const report = JSON.stringify(sizes);
     for (const [key, size] of Object.entries(sizes)) assert.ok(size <= (key === 'daily' ? DAILY_SUPERSET_MAX : 1150), `${key} 单块超预算 ${report}`);
     const all = buildTagGrammar({ readerSettings: ALL_ON, sceneRule, expand: new Set(ADAPTIVE_PROMPT_BLOCKS) });
-    // 10-10 精简版写全 igs-fx: 前缀后全展开 4048 字；拆出 wardrobe（换装）与 play（玩乐）独立块后 4790 字。
-    // 10-10 加校园块（campus，405 字）后 5821 字，上限抬到 6000。
-    // 全展开是 ALL_ON 下所有按需块同时打开，现实不会出现（块按需逐个展开），这是纯保护性上限。
-    assert.ok(len(all.depth0) <= 6000,`全展开 ${len(all.depth0)} 字 / ${estimatePromptTokens(all.depth0)} token ${report}`);
+    const baseKeys = ADAPTIVE_PROMPT_BLOCKS.filter((key) => !key.startsWith('pack'));
+    const base = buildTagGrammar({ readerSettings: ALL_ON, sceneRule, expand: new Set(baseKeys) });
+    // 当前基础块实测 6023 字；单块预算仍独立约束，避免题材包扩展掩盖基础回归。
+    assert.ok(len(base.depth0) <= 6200, `基础块 ${len(base.depth0)} 字`);
+    // 十二个新增题材包独立按需展开；保留基础上限及单块上限，并约束全开总量。
+    assert.ok(len(all.depth0) <= 16000, `全展开 ${len(all.depth0)} 字 / ${estimatePromptTokens(all.depth0)} token ${report}`);
 });
 
 test('gate:prompt-budget:daily-block-per-worldview-stays-under-1360', () => {
@@ -89,7 +92,7 @@ test('gate:prompt-budget:every-daily-kind-has-chinese-trigger-words', () => {
     assert.deepEqual(Object.keys(DAILY_TRIGGER_WORDS).sort(), [...DAILY_FX_KINDS].sort());
     for (const [kind, words] of Object.entries(DAILY_TRIGGER_WORDS)) {
         // 衣橱类（换装登场等）点亮独立的 wardrobe 块，玩乐类（唱歌、游乐…）点亮 play 块，其余点亮 daily 块。
-        const block = WARDROBE_FX_KINDS.includes(kind) ? 'wardrobe' : PLAY_FX_KINDS.includes(kind) ? 'play' : COURTESY_FX_KINDS.includes(kind) ? 'courtesy' : CAMPUS_FX_KINDS.includes(kind) ? 'campus' : 'daily';
+        const block = WARDROBE_FX_KINDS.includes(kind) ? 'wardrobe' : PLAY_FX_KINDS.includes(kind) ? 'play' : COURTESY_FX_KINDS.includes(kind) ? 'courtesy' : CAMPUS_FX_KINDS.includes(kind) ? 'campus' : isPackKind(kind) ? packBlockKey(packOfKind(kind).id) : 'daily';
         assert.ok(detectPromptTriggers({ userText: `她${words[0]}了` }).has(block), kind);
     }
     assert.equal(detectPromptTriggers({ userText: '他成绩不错' }).has('daily'), false);

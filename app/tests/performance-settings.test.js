@@ -131,7 +131,7 @@ test('gate:perf-presets:home-tab-shows-same-preset-bar-and-custom-state', async 
     const home = renderPerformancePresetBar(reader, { home: true });
     assert.match(home, /演出档位/);
     assert.match(home, /data-action="perf-preset:standard" aria-pressed="true"/);
-    assert.match(home, /细项前往「阅读器 › 演出」调整。/);
+    assert.match(home, /细项在「演出」「声音」里调整。/);
     reader.typewriter = { ...reader.typewriter, enabled: false };
     const custom = renderPerformancePresetBar(reader, { home: true });
     assert.doesNotMatch(custom, /aria-pressed="true"/);
@@ -139,13 +139,13 @@ test('gate:perf-presets:home-tab-shows-same-preset-bar-and-custom-state', async 
     assert.match(renderPerformancePresetBar(reader, { home: true, extraRows: '<div data-x></div>' }), /igs-perf-preset-row">.*<\/div><div data-x><\/div><div class="igs-source-filter-note"/);
 });
 
-test('gate:perf-presets:basic-tab-renders-preset-bar-first', async () => {
+test('gate:perf-presets:dash-renders-preset-bar-first', async () => {
     const { bootstrapIGS } = await import('../src/index.js');
     const vn = bootstrapIGS({ global: {}, autoAttachMagicWand: false, hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
     try {
-        const controller = vn.openSettings({ tab: 'basic', mode: 'pc' }).controller;
+        const controller = vn.openSettings({ tab: 'dash', mode: 'pc' }).controller;
         const html = controller.getSnapshot().html;
-        assert.ok(html.indexOf('igs-perf-presets') >= 0 && html.indexOf('igs-perf-presets') < html.indexOf('>通用<'));
+        assert.ok(html.indexOf('igs-perf-presets') >= 0 && html.indexOf('igs-perf-presets') < html.indexOf('igs-dash-list'));
         const applied = await controller.invoke('perf-preset:light');
         assert.notEqual(applied.ok, false);
         assert.match(controller.getSnapshot().html, /data-action="perf-preset:light" aria-pressed="true"/);

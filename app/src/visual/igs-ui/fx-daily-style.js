@@ -1,10 +1,32 @@
 // 日常演出样式。所有卡片的寿命由 --igs-dfx-life 驱动，进出场用百分比关键帧跟随寿命伸缩。
 import { GAME_FX_STYLE_TEXT } from './fx-daily-game-style.js';
 import { CAMPUS_FX_STYLE_TEXT } from './fx-daily-campus-style.js';
+import { XIANXIA_FX_STYLE_TEXT } from './fx-daily-xianxia-style.js';
+import { RITES_FX_STYLE_TEXT } from './fx-daily-rites-style.js';
+import { CARE_FX_STYLE_TEXT } from './fx-daily-care-style.js';
+import { FX_PACK_STATE_STYLES, FX_PACK_STYLE_TEXT } from '../../scene/fx-packs.js';
+import { PANEL_STYLE_TEXT } from './fx-panel-kit.js';
+import { TICKER_STYLE_TEXT } from './fx-ticker.js';
+import { LINKS_STYLE_TEXT } from './fx-links.js';
+import { MIST_STYLE_TEXT } from './fx-mist.js';
+import { AMB_DETAIL_STYLE_TEXT } from './fx-daily-amb-style.js';
+import { FLAT_FX_STYLE_TEXT } from './fx-daily-flat-style.js';
+import { fxStateStyleText } from './fx-state-style.js';
 const RED = '#c8392b';
 export const DAILY_FX_STYLE_TEXT = `
 ${GAME_FX_STYLE_TEXT}
 ${CAMPUS_FX_STYLE_TEXT}
+${XIANXIA_FX_STYLE_TEXT}
+${RITES_FX_STYLE_TEXT}
+${CARE_FX_STYLE_TEXT}
+${PANEL_STYLE_TEXT}
+${TICKER_STYLE_TEXT}
+${LINKS_STYLE_TEXT}
+${MIST_STYLE_TEXT}
+${AMB_DETAIL_STYLE_TEXT}
+${fxStateStyleText(FX_PACK_STATE_STYLES)}
+${FX_PACK_STYLE_TEXT}
+#igs-overlay .igs-gl{vertical-align:-.15em;flex:none;}
 #igs-overlay .igs-dfx{position:absolute;inset:0;pointer-events:none;--igs-dfx-life:3000ms;}
 #igs-overlay .igs-dfx.igs-dfx-say{inset:auto;}
 #igs-overlay .igs-dfx-sky{position:absolute;inset:0;pointer-events:none;overflow:hidden;}
@@ -145,11 +167,23 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-banner-label{flex:0 0 auto;padding:1px 7px;border-radius:4px;background:#ffcf6e;color:#2a2418;font-size:11px;font-weight:700;letter-spacing:.12em;}
 #igs-overlay .igs-dfx-banner-text{font-size:clamp(13px,2.2vmin,16px);line-height:1.5;letter-spacing:.04em;}
 @keyframes igs-dfx-wave{0%,100%{opacity:.25}50%{opacity:1}}
+#igs-overlay .igs-dfx-bell-icon{position:relative;}
+#igs-overlay .igs-dfx-bell-ring{position:absolute;left:50%;top:50%;width:22px;height:22px;margin:-11px 0 0 -11px;box-sizing:border-box;border:2px solid #ffd66b;border-radius:50%;opacity:0;animation:igs-dfx-bell-ring 1040ms ease-out infinite;}
+#igs-overlay .igs-dfx-bell-ring.is-b{animation-delay:520ms;}
+@keyframes igs-dfx-bell-ring{0%{opacity:.8;transform:scale(.7)}100%{opacity:0;transform:scale(2.4)}}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-notes b{opacity:.85;}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-bell-ring{display:none;}
+#igs-overlay [data-igs-quality="low"] .igs-dfx-bell-ring{display:none;}
+#igs-overlay .igs-dfx-banner-text{clip-path:inset(0 100% 0 0);animation:igs-dfx-bc-type var(--igs-bc-t,1200ms) steps(var(--igs-bc-n,12),end) 600ms forwards;}
+@keyframes igs-dfx-bc-type{to{clip-path:inset(0 0 0 0)}}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-banner-text{clip-path:none;}
+#igs-overlay .igs-dfx-sticky{max-height:min(46%,260px);overflow:hidden;overflow-wrap:anywhere;}
 
 #igs-overlay .igs-dfx-touch{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-warm{position:absolute;inset:0;mix-blend-mode:screen;background:radial-gradient(ellipse at center,transparent 38%,rgba(255,150,180,.38) 100%);animation:igs-dfx-pulse 1200ms ease-in-out 2;}
+#igs-overlay .igs-dfx-warm{position:absolute;inset:0;mix-blend-mode:screen;background:radial-gradient(ellipse at var(--igs-dfx-hx,50%) var(--igs-dfx-hy,38%),transparent 30%,rgba(255,150,180,.4) 100%);animation:igs-dfx-touch-flush 1600ms ease-out both;}
 #igs-overlay .igs-dfx-hearts i{position:absolute;bottom:18%;width:calc(26px * var(--igs-dfx-s,1));height:calc(26px * var(--igs-dfx-s,1));fill:#ff8fb1;filter:drop-shadow(0 2px 6px rgba(255,120,160,.5));opacity:0;animation:igs-dfx-heart 1900ms ease-out both;}
 #igs-overlay .igs-dfx-hearts svg{width:100%;height:100%;}
+@keyframes igs-dfx-touch-flush{0%{opacity:0}1%{opacity:1}7%{opacity:.35}12.5%{opacity:.9}35%{opacity:.5}100%{opacity:0}}
 @keyframes igs-dfx-pulse{0%,100%{opacity:.55}45%{opacity:1}}
 @keyframes igs-dfx-heart{0%{opacity:0;transform:translateY(0) scale(.5)}20%{opacity:.95;transform:translateY(-20px) scale(1)}100%{opacity:0;transform:translateY(-140px) translateX(12px) scale(.9) rotate(12deg)}}
 
@@ -235,8 +269,11 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx.is-reduced .igs-dfx-polaroid{transform:translate(40%,-92%) scale(.78) rotate(6deg);}
 #igs-overlay .igs-dfx-sky-glow.is-lit.is-reduced{animation:none;}
 #igs-overlay .igs-dfx-rps{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-rps-hands{display:flex;align-items:center;gap:22px;font-size:3.2em;}
-#igs-overlay .igs-dfx-rps-vs{font-size:.4em;font-weight:700;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,.6);}
+#igs-overlay .igs-dfx-rps-hands{display:flex;align-items:center;gap:18px;}
+#igs-overlay .igs-dfx-rps-hand{display:flex;flex-direction:column;align-items:center;gap:6px;width:72px;padding:12px 0 8px;box-sizing:border-box;border:1px solid rgba(244,241,234,.7);border-radius:14px;background:rgba(20,22,28,.82);color:#f4f1ea;font-style:normal;}
+#igs-overlay .igs-dfx-rps-hand svg{width:30px;height:30px;}
+#igs-overlay .igs-dfx-rps-hand small{font-size:12px;line-height:1;letter-spacing:.08em;}
+#igs-overlay .igs-dfx-rps-vs{font-size:12px;letter-spacing:.2em;font-weight:400;color:#f4f1ea;text-shadow:0 1px 4px rgba(0,0,0,.7);}
 #igs-overlay .igs-dfx-rps-verdict{padding:4px 16px;border-radius:999px;background:rgba(20,20,26,.8);color:#fff;font-weight:700;}
 #igs-overlay .igs-dfx-rps.is-win .igs-dfx-rps-verdict{color:#8fe3a6;}
 #igs-overlay .igs-dfx-rps.is-lose .igs-dfx-rps-verdict{color:#ff9f9f;}
@@ -259,14 +296,17 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-score-stamp{position:absolute;right:-10px;top:-10px;padding:2px 8px;border:3px solid #c0392b;border-radius:6px;color:#c0392b;font-weight:800;transform:rotate(12deg);animation:igs-dfx-score-stamp .3s .8s ease-out both;}
 @keyframes igs-dfx-score-stamp{from{opacity:0;transform:rotate(12deg) scale(1.8);}}
 
-#igs-overlay .igs-dfx-pat .igs-dfx-pat-hand{position:absolute;top:6%;width:64px;height:64px;margin-left:-32px;color:#fdf6e3;filter:drop-shadow(0 3px 6px rgba(0,0,0,.4));animation:igs-dfx-pat .9s ease-in-out 2 both;}
+#igs-overlay .igs-dfx-pat .igs-dfx-pat-hand{position:absolute;aspect-ratio:1/1;color:#fdf6e3;filter:drop-shadow(0 3px 6px rgba(0,0,0,.4));transform-origin:50% 100%;animation:igs-dfx-pat-stroke 1500ms ease-in-out both;}
 #igs-overlay .igs-dfx-pat .igs-dfx-pat-hand svg{width:100%;height:100%;fill:currentColor;}
-#igs-overlay .igs-dfx-pat-flowers{position:absolute;top:4%;width:90px;margin-left:-45px;display:flex;justify-content:space-between;color:#ff9fc0;font-size:1.3em;}
-#igs-overlay .igs-dfx-pat-flowers i{font-style:normal;opacity:0;animation:igs-dfx-pat-flower 1s ease-out both;animation-delay:1.2s;}
-#igs-overlay .igs-dfx-pat-flowers i:nth-child(2){animation-delay:1.35s;}
-#igs-overlay .igs-dfx-pat-flowers i:nth-child(3){animation-delay:1.5s;}
-@keyframes igs-dfx-pat{0%,100%{transform:translateY(0);}50%{transform:translateY(12px);}}
+#igs-overlay .igs-dfx-pat-flowers i{position:absolute;width:1.4em;height:1.4em;margin-left:-.7em;fill:#ff9fc0;opacity:0;animation:igs-dfx-pat-flower 1s ease-out both;}
+#igs-overlay .igs-dfx-pat-flowers svg{width:100%;height:100%;}
+
+@keyframes igs-dfx-pat-stroke{0%{opacity:0;transform:translate(-50%,-70%) rotate(-6deg)}18%{opacity:1;transform:translate(-50%,-4%) rotate(0)}34%{transform:translate(-62%,0) rotate(-8deg)}50%{transform:translate(-38%,0) rotate(8deg)}66%{transform:translate(-62%,0) rotate(-8deg)}80%{opacity:1;transform:translate(-50%,-4%) rotate(0)}100%{opacity:0;transform:translate(-50%,-80%) rotate(4deg)}}
 @keyframes igs-dfx-pat-flower{0%{opacity:0;transform:translateY(8px) scale(.6);}40%{opacity:1;}100%{opacity:0;transform:translateY(-18px) scale(1);}}
+#igs-overlay .igs-dfx-poke-tip{position:absolute;width:11px;height:11px;margin:-5px 0 0 -5px;border-radius:50%;background:#fdf6e3;box-shadow:0 0 0 2px rgba(0,0,0,.28);animation:igs-dfx-poke-tip .46s ease-out both;}
+#igs-overlay .igs-dfx-poke-ring{position:absolute;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;border:2px solid #fff;opacity:0;animation:igs-dfx-poke-ring .6s .12s ease-out both;}
+@keyframes igs-dfx-poke-tip{0%{opacity:0;transform:translate(14px,-10px) scale(.6)}30%{opacity:1;transform:translate(0,0) scale(1)}70%{opacity:1}100%{opacity:0;transform:translate(10px,-6px) scale(.8)}}
+@keyframes igs-dfx-poke-ring{0%{opacity:.9;transform:scale(.3)}100%{opacity:0;transform:scale(1.9)}}
 #igs-overlay .igs-dfx-poke-puff{position:absolute;top:22%;margin-left:-.6em;color:#fff;font-weight:800;font-size:1.4em;text-shadow:0 2px 6px rgba(0,0,0,.5);animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
 #igs-overlay .igs-dfx-fever{display:flex;align-items:flex-start;justify-content:flex-end;padding:12% 6% 0 0;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
 #igs-overlay .igs-dfx-fever-meter{display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,.94);color:#335;box-shadow:0 6px 18px rgba(0,0,0,.3);animation:igs-dfx-fever-in .4s ease-out both;}
@@ -275,18 +315,31 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-fever.is-high .igs-dfx-fever-bulb{background:#e74c3c;}
 #igs-overlay .igs-dfx-fever.is-high .igs-dfx-fever-value{color:#c0392b;}
 @keyframes igs-dfx-fever-in{from{opacity:0;transform:translateX(24px);}}
-#igs-overlay .igs-dfx-cheers{display:flex;flex-direction:column;align-items:center;justify-content:center;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-cheers-cups{display:flex;gap:4px;font-size:3em;}
-#igs-overlay .igs-dfx-cheers-cup{font-style:normal;display:inline-block;}
-#igs-overlay .igs-dfx-cheers-cup.is-left{animation:igs-dfx-cheers-l .5s ease-out both;}
-#igs-overlay .igs-dfx-cheers-cup.is-right{transform:scaleX(-1);animation:igs-dfx-cheers-r .5s ease-out both;}
-#igs-overlay .igs-dfx-cheers-splash{position:relative;width:60px;height:20px;}
-#igs-overlay .igs-dfx-cheers-splash i{position:absolute;left:50%;top:0;width:6px;height:6px;border-radius:50%;background:#bfe6ff;opacity:0;animation:igs-dfx-cheers-drop .6s .45s ease-out both;}
-#igs-overlay .igs-dfx-cheers-splash i:nth-child(2){margin-left:-14px;animation-delay:.5s;}
-#igs-overlay .igs-dfx-cheers-splash i:nth-child(3){margin-left:10px;animation-delay:.55s;}
-@keyframes igs-dfx-cheers-l{from{transform:translateX(-60px) rotate(-18deg);}to{transform:translateX(0) rotate(0);}}
-@keyframes igs-dfx-cheers-r{from{transform:scaleX(-1) translateX(-60px) rotate(-18deg);}to{transform:scaleX(-1) translateX(0) rotate(0);}}
-@keyframes igs-dfx-cheers-drop{0%{opacity:1;transform:translateY(0);}100%{opacity:0;transform:translateY(-22px);}}
+#igs-overlay .igs-dfx.igs-dfx-cheers{animation:igs-dfx-fade var(--igs-dfx-life) ease both;--igs-ch-line:#f4f1ea;--igs-ch-acc:#bfe3ff;color:var(--igs-ch-line);}
+#igs-overlay .igs-dfx-cheers.is-ceramic{--igs-ch-acc:#e8c08a;}
+#igs-overlay .igs-dfx-cheers.is-plastic{--igs-ch-acc:#ff9f8a;}
+#igs-overlay .igs-dfx-cheers.is-can{--igs-ch-acc:#ffd37a;}
+#igs-overlay .igs-dfx-cheers.is-wood{--igs-ch-acc:#d6a56a;}
+#igs-overlay .igs-dfx-cheers.is-metal{--igs-ch-acc:#cfd6de;}
+#igs-overlay .igs-dfx-cheers-pt{position:absolute;top:min(var(--igs-ch-y,30%),calc(var(--igs-fx-vis,70%) - 14%));width:0;height:0;}
+#igs-overlay .igs-dfx-cheers-cups{position:absolute;left:0;top:0;width:0;height:0;filter:drop-shadow(0 0 1px rgba(10,14,22,.7));}
+#igs-overlay .igs-dfx-cheers-cup{position:absolute;top:-36px;width:clamp(40px,7.4vmin,66px);aspect-ratio:4/5;font-style:normal;}
+#igs-overlay .igs-dfx-cheers-cup svg{display:block;width:100%;height:100%;}
+#igs-overlay .igs-dfx-cheers-cup .igs-gl-acc{stroke:var(--igs-ch-acc);}
+#igs-overlay .igs-dfx-cheers-cup.is-left{right:-3px;transform:rotate(9deg);transform-origin:50% 90%;animation:igs-dfx-cheers-l .55s ease-out both;}
+#igs-overlay .igs-dfx-cheers-cup.is-right{left:-3px;transform:rotate(-9deg);transform-origin:50% 90%;animation:igs-dfx-cheers-r .55s ease-out both;}
+#igs-overlay .igs-dfx-cheers-cup.is-right svg{transform:scaleX(-1);}
+#igs-overlay .igs-dfx-cheers-ring{position:absolute;left:0;top:-40px;width:34px;height:34px;margin:-17px 0 0 -17px;box-sizing:border-box;border:1px solid var(--igs-ch-line);border-radius:50%;opacity:0;animation:igs-dfx-cheers-ring .7s .46s ease-out both;}
+#igs-overlay .igs-dfx-cheers-ring.is-b{animation-delay:.58s;border-color:var(--igs-ch-acc);}
+#igs-overlay .igs-dfx-cheers-spark{position:absolute;left:-10px;top:-62px;font-size:20px;font-style:normal;line-height:0;opacity:0;animation:igs-dfx-cheers-spark .5s .44s ease-out both;}
+#igs-overlay .igs-dfx-cheers.is-wood .igs-dfx-cheers-ring.is-b,#igs-overlay .igs-dfx-cheers.is-plastic .igs-dfx-cheers-ring.is-b,#igs-overlay .igs-dfx-cheers.is-can .igs-dfx-cheers-ring.is-b{display:none;}
+#igs-overlay [data-igs-quality="low"] .igs-dfx-cheers-ring.is-b{display:none;}
+#igs-overlay .igs-dfx.is-reduced.igs-dfx-cheers .igs-dfx-cheers-cup{animation:none!important;opacity:1;}
+#igs-overlay .igs-dfx.is-reduced.igs-dfx-cheers .igs-dfx-cheers-ring{display:none;}
+@keyframes igs-dfx-cheers-ring{0%{opacity:.85;transform:scale(.3)}100%{opacity:0;transform:scale(2.1)}}
+@keyframes igs-dfx-cheers-spark{0%{opacity:0;transform:scale(.4)}40%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.2)}}
+@keyframes igs-dfx-cheers-l{0%{opacity:0;transform:translateX(-56px) rotate(-14deg)}20%{opacity:1}62%{transform:translateX(2px) rotate(13deg)}78%{transform:translateX(-1px) rotate(7deg)}100%{opacity:1;transform:translateX(0) rotate(9deg)}}
+@keyframes igs-dfx-cheers-r{0%{opacity:0;transform:translateX(56px) rotate(14deg)}20%{opacity:1}62%{transform:translateX(-2px) rotate(-13deg)}78%{transform:translateX(1px) rotate(-7deg)}100%{opacity:1;transform:translateX(0) rotate(-9deg)}}
 #igs-overlay .igs-dfx-cook{display:flex;align-items:center;justify-content:center;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
 #igs-overlay .igs-dfx-cook-card{position:relative;min-width:160px;padding:26px 20px 12px;border-radius:12px;background:#fffaf0;color:#5a3b1c;text-align:center;box-shadow:0 8px 22px rgba(0,0,0,.32);}
 #igs-overlay .igs-dfx-cook-steam{position:absolute;left:50%;top:-22px;width:50px;margin-left:-25px;display:flex;justify-content:space-between;}
@@ -296,38 +349,28 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-cook-label{font-size:.75em;opacity:.7;letter-spacing:.2em;}
 #igs-overlay .igs-dfx-cook-dish{font-size:1.2em;font-weight:800;}
 @keyframes igs-dfx-cook-steam{0%{opacity:0;transform:translateY(6px);}50%{opacity:1;}100%{opacity:0;transform:translateY(-10px);}}
-#igs-overlay .igs-dfx-cat-paws i{position:absolute;font-style:normal;font-size:1.8em;opacity:0;animation:igs-dfx-cat-paw .5s ease-out both;}
+#igs-overlay .igs-dfx-cat-paws i{position:absolute;font-style:normal;font-size:1.8em;color:#f4f1ea;line-height:0;opacity:0;animation:igs-dfx-cat-paw .5s ease-out both;}
+#igs-overlay .igs-dfx-cat-body{position:absolute;bottom:calc(var(--igs-fx-safe) + 12px);width:17%;margin-left:-8.5%;color:#2b2b35;opacity:0;animation:igs-dfx-cat-in var(--igs-dfx-life) ease-out both;}
+#igs-overlay .igs-dfx-cat.is-flip .igs-dfx-cat-body svg{transform:scaleX(-1);}
+#igs-overlay .igs-dfx-cat-body svg{display:block;width:100%;fill:currentColor;}
+#igs-overlay .igs-dfx-cat-eye{fill:#f6e7a8;}
+#igs-overlay .igs-dfx-cat-tail{transform-origin:76px 64px;animation:igs-dfx-cat-tail 1.1s ease-in-out infinite alternate;}
+@keyframes igs-dfx-cat-in{0%{opacity:0;transform:translateY(24%)}12%{opacity:1;transform:translateY(0)}30%{transform:translateX(0)}42%{transform:translateX(-5%)}54%{transform:translateX(3%)}66%{transform:translateX(-4%)}78%{opacity:1;transform:translateX(0)}100%{opacity:0;transform:translateY(12%)}}
+@keyframes igs-dfx-cat-tail{from{transform:rotate(-12deg)}to{transform:rotate(14deg)}}
+#igs-overlay[data-igs-quality="low"] .igs-dfx-cat-tail,#igs-overlay .igs-dfx.is-reduced .igs-dfx-cat-tail{animation:none;}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-cat-body{opacity:1;animation:none;}
 @keyframes igs-dfx-cat-paw{from{opacity:0;transform:scale(1.6);}to{opacity:.85;transform:scale(1);}}
-#igs-overlay .igs-dfx-guqin{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-guqin-strings{position:absolute;left:12%;right:12%;bottom:34%;display:flex;flex-direction:column;gap:7px;}
-#igs-overlay .igs-dfx-guqin-strings i{height:1px;background:rgba(245,230,200,.8);animation:igs-dfx-guqin-string .18s ease-in-out 8 alternate;}
-#igs-overlay .igs-dfx-guqin-strings i:nth-child(2n){animation-delay:.09s;}
-#igs-overlay .igs-dfx-guqin-notes i{position:absolute;top:18%;font-style:normal;color:#2b2b2b;font-size:1.6em;opacity:0;text-shadow:0 0 6px rgba(255,255,255,.6);animation:igs-dfx-guqin-note 2s ease-out both;}
 @keyframes igs-dfx-guqin-string{to{transform:translateY(2px);}}
 @keyframes igs-dfx-guqin-note{0%{opacity:0;transform:translateY(-10px);}25%{opacity:.9;}100%{opacity:0;transform:translateY(60px);}}
-#igs-overlay .igs-dfx-go{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-go-board{position:relative;width:140px;height:140px;border-radius:4px;background-color:#d9b36c;background-image:linear-gradient(rgba(60,40,10,.6) 1px,transparent 1px),linear-gradient(90deg,rgba(60,40,10,.6) 1px,transparent 1px);background-size:20px 20px;box-shadow:0 8px 22px rgba(0,0,0,.35);}
-#igs-overlay .igs-dfx-go-stone{position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#666,#111);animation:igs-dfx-go-place .3s .3s ease-out both;}
-#igs-overlay .igs-dfx-go-verdict{padding:2px 14px;border:2px solid #c0392b;border-radius:4px;color:#c0392b;background:#f3ead3;font-weight:800;font-size:1.4em;}
 @keyframes igs-dfx-go-place{from{opacity:0;transform:scale(1.8);}}
 #igs-overlay .igs-dfx-poem{display:flex;align-items:center;justify-content:center;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
 #igs-overlay .igs-dfx-poem-paper{position:relative;padding:18px 16px 40px;background:#f3ead3;border:1px solid #b89b6a;box-shadow:0 8px 22px rgba(0,0,0,.3);}
 #igs-overlay .igs-dfx-poem-text{writing-mode:vertical-rl;max-height:60vh;color:#2b2b2b;font-size:1.2em;letter-spacing:.2em;-webkit-mask-image:linear-gradient(180deg,#000 50%,transparent 50%);mask-image:linear-gradient(180deg,#000 50%,transparent 50%);-webkit-mask-size:100% 200%;mask-size:100% 200%;-webkit-mask-position:0 100%;mask-position:0 100%;animation:igs-dfx-poem-write calc(var(--igs-dfx-life) * .6) linear forwards;}
 #igs-overlay .igs-dfx-poem-seal{position:absolute;left:10px;bottom:10px;width:24px;height:24px;border:2px solid #c0392b;border-radius:3px;color:#c0392b;font-size:.8em;font-weight:800;line-height:20px;text-align:center;box-sizing:border-box;animation:igs-dfx-score-stamp .3s 2.4s ease-out both;}
 @keyframes igs-dfx-poem-write{to{-webkit-mask-position:0 0;mask-position:0 0;}}
-#igs-overlay .igs-dfx-edict{display:flex;align-items:center;justify-content:center;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-edict-scroll{display:flex;align-items:stretch;max-width:86%;}
-#igs-overlay .igs-dfx-edict-rod{flex:none;width:10px;border-radius:5px;background:#7a4a1c;}
-#igs-overlay .igs-dfx-edict-body{overflow:hidden;padding:16px 20px;background:#e8c35a;color:#3a2410;font-weight:700;writing-mode:vertical-rl;max-height:60vh;letter-spacing:.15em;transform-origin:50% 50%;animation:igs-dfx-edict-open .8s ease-out both;}
 @keyframes igs-dfx-edict-open{from{transform:scaleX(0);}}
-#igs-overlay .igs-dfx-tea{display:flex;align-items:flex-end;justify-content:center;padding-bottom:30%;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-tea-cup{position:relative;}
-#igs-overlay .igs-dfx-tea-bowl{display:block;width:70px;height:34px;border-radius:0 0 35px 35px;background:linear-gradient(#f5f1e6,#cfc5ad);box-shadow:0 6px 16px rgba(0,0,0,.3);}
-#igs-overlay .igs-dfx-tea-steam{position:absolute;left:50%;top:-30px;width:40px;margin-left:-20px;display:flex;justify-content:space-between;}
-#igs-overlay .igs-dfx-tea-steam i{width:5px;height:22px;border-radius:3px;background:rgba(255,255,255,.7);animation:igs-dfx-cook-steam 1.6s ease-in-out infinite;}
-#igs-overlay .igs-dfx-tea-steam i:nth-child(2){animation-delay:.4s;}
-#igs-overlay .igs-dfx-tea-steam i:nth-child(3){animation-delay:.8s;}
-#igs-overlay .igs-dfx-bow{display:none;}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-poem-text{-webkit-mask-image:none;mask-image:none;}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-cook-steam i{opacity:.7;transform:none;}
 
 /* 魔法世界独有：魔杖光束 + 咒语、坩埚冒泡、猫头鹰投信、扫帚掠空。光色由 --igs-magic 给出。 */
 #igs-overlay .igs-dfx-spell{--igs-magic:#ffd36a;animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
@@ -480,10 +523,11 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-arrive.is-apocalypse .igs-dfx-arrive-bar{background:#8a5a2a;}
 
 /* 洗浴：水汽团、淋浴水帘、水花与镜头水珠、吹风机的风。 */
-#igs-overlay .igs-dfx-steam-cloud i{position:absolute;width:70%;height:80%;border-radius:50%;background:radial-gradient(closest-side,rgba(255,253,248,.92),rgba(255,253,248,.5) 55%,transparent);opacity:0;animation:igs-dfx-steam-puff var(--igs-dfx-life) ease-out both;}
-@keyframes igs-dfx-steam-puff{0%{opacity:0;transform:translate3d(0,30%,0) scale(.6)}30%{opacity:1;transform:translate3d(0,0,0) scale(1)}70%{opacity:.9}100%{opacity:0;transform:translate3d(0,-14%,0) scale(1.25)}}
+#igs-overlay .igs-dfx-steam{animation:igs-dfx-steam-veil var(--igs-dfx-life) ease-out both;}
+@keyframes igs-dfx-steam-veil{0%{opacity:0}28%{opacity:1}72%{opacity:.9}100%{opacity:0}}
 #igs-overlay .igs-dfx-shower{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-shower-rain{position:absolute;inset:0;overflow:hidden;transform:rotate(5deg) scale(1.1);}
+#igs-overlay .igs-dfx-shower-head{position:absolute;top:0;width:34px;height:12px;margin-left:-17px;border-radius:0 0 17px 17px;background:#c9ced6;box-shadow:0 2px 0 #8d949f;}
+#igs-overlay .igs-dfx-shower-rain{position:absolute;overflow:hidden;transform:rotate(5deg) scale(1.1);}
 #igs-overlay .igs-dfx-shower-rain i{position:absolute;top:-30%;width:1.5px;height:26%;background:linear-gradient(180deg,transparent,rgba(225,238,255,.7));opacity:0;animation:igs-dfx-shower-drop .55s linear infinite;}
 #igs-overlay .igs-dfx-shower-mist{position:absolute;left:-10%;right:-10%;bottom:-20%;height:60%;background:radial-gradient(ellipse at 50% 100%,rgba(250,246,240,.55),transparent 70%);opacity:0;animation:igs-dfx-shower-mist var(--igs-dfx-life) ease-out both;}
 @keyframes igs-dfx-shower-drop{0%{opacity:0;transform:translate3d(0,0,0)}15%{opacity:1}100%{opacity:.6;transform:translate3d(0,560%,0)}}
@@ -495,13 +539,13 @@ ${CAMPUS_FX_STYLE_TEXT}
 @keyframes igs-dfx-splash-drop{0%{opacity:0;transform:rotate(var(--igs-sp-a)) translateY(0) scale(.5)}15%{opacity:1}100%{opacity:0;transform:rotate(var(--igs-sp-a)) translateY(calc(var(--igs-sp-d) * -1)) scale(1)}}
 @keyframes igs-dfx-splash-lens{0%,12%{opacity:0;transform:scale(1.6)}20%{opacity:1;transform:none}70%{opacity:1;transform:none}100%{opacity:0;transform:translateY(28px)}}
 #igs-overlay .igs-dfx-hairdry{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-hairdry-wind{position:absolute;top:8%;width:200px;height:110px;margin-left:-100px;}
+#igs-overlay .igs-dfx-hairdry-wind{position:absolute;width:200px;height:110px;margin-left:-100px;}
 #igs-overlay .igs-dfx-hairdry-wind i{position:absolute;left:0;width:44%;height:16px;border-top:2px solid rgba(255,255,255,.7);border-radius:50%;opacity:0;animation:igs-dfx-hairdry-gust .8s ease-out infinite;}
 @keyframes igs-dfx-hairdry-gust{0%{opacity:0;transform:translateX(-40%)}30%{opacity:.9}100%{opacity:0;transform:translateX(140%)}}
 #igs-overlay .igs-dfx.is-reduced .igs-dfx-brake-lines,#igs-overlay .igs-dfx.is-reduced .igs-dfx-depart-flow,#igs-overlay .igs-dfx.is-reduced .igs-dfx-shower-rain,#igs-overlay .igs-dfx.is-reduced .igs-dfx-splash-burst,#igs-overlay .igs-dfx.is-reduced .igs-dfx-hairdry-wind{display:none;}
 #igs-overlay .igs-dfx.is-reduced .igs-dfx-brake-word{transform:rotate(-8deg);}
 #igs-overlay .igs-dfx.is-reduced .igs-dfx-ticket-punch,#igs-overlay .igs-dfx.is-reduced .igs-dfx-splash-lens i{opacity:1;}
-#igs-overlay .igs-dfx.is-reduced .igs-dfx-steam-cloud i,#igs-overlay .igs-dfx.is-reduced .igs-dfx-shower-mist{opacity:.8;}
+#igs-overlay .igs-dfx.is-reduced.igs-dfx-steam,#igs-overlay .igs-dfx.is-reduced .igs-dfx-shower-mist{opacity:.8;animation:none;}
 
 /* 居家 · 入睡 / 起床：场景级氛围（不是主视角眼皮，那是 fx 的 eye）。只用 opacity 与 transform。
    入睡：画面渐暗成夜蓝，几个「Z」从一角轻轻飘上去。起床：晨光自上而下铺开，一道柔光扫过。 */
@@ -698,9 +742,7 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-dance-pair{position:absolute;left:50%;bottom:36%;width:0;height:0;}
 #igs-overlay .igs-dfx-dance-figure{position:absolute;bottom:0;font-style:normal;font-size:3.2em;animation:igs-dfx-dance-sway 1.1s ease-in-out infinite alternate;}
 #igs-overlay .igs-dfx-dance-figure.is-a{left:-64px;}
-#igs-overlay .igs-dfx-dance-figure.is-a::before{content:"💃";}
 #igs-overlay .igs-dfx-dance-figure.is-b{left:6px;animation-delay:.3s;}
-#igs-overlay .igs-dfx-dance-figure.is-b::before{content:"🕺";}
 #igs-overlay .igs-dfx-dance-ring{position:absolute;left:-90px;top:6px;width:180px;height:36px;border-radius:50%;border:2px solid rgba(255,230,160,.75);animation:igs-dfx-dance-ring 1.1s ease-in-out infinite alternate;}
 #igs-overlay .igs-dfx-dance-sparks i{position:absolute;left:50%;bottom:44%;width:8px;height:8px;border-radius:50%;background:#ffe9a8;box-shadow:0 0 8px #ffd36a;opacity:0;animation:igs-dfx-dance-spark 1.6s ease-out both;}
 @keyframes igs-dfx-dance-sway{from{transform:translateY(0) rotate(-9deg)}to{transform:translateY(-12px) rotate(9deg)}}
@@ -711,7 +753,6 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-fish-line{position:absolute;left:50%;top:14%;bottom:34%;width:1px;background:rgba(255,255,255,.8);transform-origin:50% 0;animation:igs-dfx-fish-line 3.2s ease-in-out both;}
 #igs-overlay .igs-dfx-fish-float{position:absolute;left:50%;bottom:34%;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:radial-gradient(circle at 50% 30%,#fff 0 35%,#e8483a 36%);animation:igs-dfx-fish-bob 3.2s ease-in-out both;}
 #igs-overlay .igs-dfx-fish-silhouette{position:absolute;left:50%;bottom:34%;margin-left:-24px;font-style:normal;font-size:2.6em;opacity:0;animation:igs-dfx-fish-jump 3.2s ease-out both;}
-#igs-overlay .igs-dfx-fish-silhouette::before{content:"🐟";}
 @keyframes igs-dfx-fish-ripple{0%{opacity:.9;transform:scale(.3)}100%{opacity:0;transform:scale(1.8)}}
 @keyframes igs-dfx-fish-bob{0%,45%{transform:translateY(0)}55%{transform:translateY(8px)}70%,100%{transform:translateY(-4px)}}
 @keyframes igs-dfx-fish-line{0%,45%{transform:scaleY(1)}55%{transform:scaleY(1.04) rotate(2deg)}100%{transform:scaleY(.96) rotate(-1deg)}}
@@ -723,49 +764,19 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-draw-stroke:nth-child(3){left:14%;top:62%;width:66%;background:#4fa3d8;transform:rotate(4deg);}
 #igs-overlay .igs-dfx-draw-stroke:nth-child(4){left:30%;top:80%;width:44%;background:#6bbf7a;}
 #igs-overlay .igs-dfx-draw-pencil{position:absolute;right:8%;bottom:10%;font-style:normal;font-size:1.8em;animation:igs-dfx-draw-pencil 1.8s ease-in-out infinite alternate;}
-#igs-overlay .igs-dfx-draw-pencil::before{content:"🖌️";}
 @keyframes igs-dfx-draw-stroke{from{opacity:0;transform:scaleX(0)}to{opacity:1;transform:scaleX(1)}}
-@keyframes igs-dfx-draw-pencil{from{transform:translate(0,0) rotate(-10deg)}to{transform:translate(-90px,-70px) rotate(8deg)}}
 #igs-overlay .igs-dfx-music-staff{position:absolute;left:14%;right:14%;top:30%;height:84px;}
 #igs-overlay .igs-dfx-music-staff i{position:absolute;left:0;right:0;height:1px;background:rgba(255,246,222,.85);box-shadow:0 0 6px rgba(255,240,200,.5);}
 #igs-overlay .igs-dfx-music-notes{position:absolute;left:14%;right:14%;top:30%;height:84px;}
 #igs-overlay .igs-dfx-music-notes i{position:absolute;font-style:normal;font-size:1.9em;color:#fff1c9;opacity:0;text-shadow:0 0 10px rgba(255,220,140,.8);animation:igs-dfx-music-note 1.4s ease-out both;}
 @keyframes igs-dfx-music-note{0%{opacity:0;transform:translateY(10px) scale(.7)}30%{opacity:1;transform:translateY(-6px) scale(1.1)}60%,100%{opacity:1;transform:translateY(0) scale(1)}}
-#igs-overlay .igs-dfx-ride-lights{position:absolute;left:6%;right:6%;top:20%;height:0;}
-#igs-overlay .igs-dfx-ride-lights i{position:absolute;top:0;width:10px;height:10px;margin-left:-5px;border-radius:50%;background:#ffd36a;box-shadow:0 0 10px #ffb84a;animation:igs-dfx-ride-bulb .7s ease-in-out infinite alternate;}
-#igs-overlay .igs-dfx-ride-lights i:nth-child(2n){background:#ff8fb8;box-shadow:0 0 10px #ff6fa0;}
-#igs-overlay .igs-dfx-ride-track{position:absolute;left:50%;top:44%;width:0;height:0;}
-#igs-overlay .igs-dfx-ride-car{position:absolute;left:-28px;top:-28px;font-style:normal;font-size:3.2em;animation:igs-dfx-ride-car 3.2s ease-in-out both;}
-#igs-overlay .igs-dfx-ride-wind i{position:absolute;left:12%;width:30%;height:2px;border-radius:1px;background:rgba(255,255,255,.7);opacity:0;animation:igs-dfx-ride-wind .9s ease-out infinite;}
-@keyframes igs-dfx-ride-bulb{from{opacity:.35;transform:scale(.8)}to{opacity:1;transform:scale(1.1)}}
-@keyframes igs-dfx-ride-car{0%{transform:translate(0,40px) rotate(-14deg)}35%{transform:translate(0,-30px) rotate(-22deg)}55%{transform:translate(0,-34px) rotate(0)}75%{transform:translate(0,38px) rotate(24deg)}100%{transform:translate(0,0) rotate(0)}}
-@keyframes igs-dfx-ride-wind{0%{opacity:0;transform:translateX(160%)}30%{opacity:.8}100%{opacity:0;transform:translateX(-60%)}}
-#igs-overlay .igs-dfx-clean-floor{position:absolute;left:50%;bottom:34%;width:0;height:0;}
-#igs-overlay .igs-dfx-clean-broom{position:absolute;left:-24px;top:-48px;font-style:normal;font-size:3em;transform-origin:50% 90%;animation:igs-dfx-clean-sweep .9s ease-in-out 2 alternate both;}
 #igs-overlay .igs-dfx-clean-dust i{position:absolute;bottom:0;width:10px;height:10px;border-radius:50%;background:rgba(235,225,205,.8);opacity:0;animation:igs-dfx-clean-dust 1.3s ease-out both;}
-#igs-overlay .igs-dfx-clean-sparkle i{position:absolute;font-style:normal;font-size:1.6em;opacity:0;animation:igs-dfx-clean-sparkle 1.1s ease-out both;}
-@keyframes igs-dfx-clean-sweep{from{transform:translateX(-70px) rotate(-18deg)}to{transform:translateX(70px) rotate(18deg)}}
 @keyframes igs-dfx-clean-dust{0%{opacity:0;transform:translate(0,0) scale(.5)}30%{opacity:.9}100%{opacity:0;transform:translate(14px,-46px) scale(1.5)}}
-@keyframes igs-dfx-clean-sparkle{0%{opacity:0;transform:scale(.3) rotate(0)}40%{opacity:1;transform:scale(1.2) rotate(20deg)}100%{opacity:0;transform:scale(.8) rotate(40deg)}}
 #igs-overlay .igs-dfx-shopping{display:flex;align-items:center;justify-content:center;}
-#igs-overlay .igs-dfx-shopping-card{position:relative;min-width:150px;padding:18px 22px 12px;border-radius:14px;background:#fff7ec;color:#6b3f24;text-align:center;box-shadow:0 8px 22px rgba(0,0,0,.32);}
-#igs-overlay .igs-dfx-shopping-bag{display:inline-block;font-style:normal;font-size:3em;transform-origin:50% 0;animation:igs-dfx-shopping-swing 1.2s ease-in-out 2 both;}
-#igs-overlay .igs-dfx-shopping-label{margin-top:4px;font-size:1.05em;font-weight:800;letter-spacing:.08em;}
-#igs-overlay .igs-dfx-shopping-confetti{position:absolute;left:0;right:0;top:-6px;height:0;}
-#igs-overlay .igs-dfx-shopping-confetti i{position:absolute;width:7px;height:11px;border-radius:2px;background:#ff8fb8;opacity:0;animation:igs-dfx-shopping-fall 1.6s ease-in both;}
-#igs-overlay .igs-dfx-shopping-confetti i:nth-child(3n+1){background:#ffd36a;}
-#igs-overlay .igs-dfx-shopping-confetti i:nth-child(3n+2){background:#7fc8ff;}
-@keyframes igs-dfx-shopping-swing{from{transform:rotate(-12deg)}to{transform:rotate(12deg)}}
-@keyframes igs-dfx-shopping-fall{0%{opacity:0;transform:translateY(0) rotate(0)}15%{opacity:1}100%{opacity:0;transform:translateY(90px) rotate(200deg)}}
-#igs-overlay .igs-dfx-stroll-steps{position:absolute;left:8%;right:8%;bottom:26%;height:80px;}
-#igs-overlay .igs-dfx-stroll-steps i{position:absolute;font-style:normal;font-size:1.7em;opacity:0;animation:igs-dfx-stroll-step .6s ease-out both;}
-#igs-overlay .igs-dfx-stroll-leaves i{position:absolute;top:18%;font-style:normal;font-size:1.5em;opacity:0;animation:igs-dfx-stroll-leaf 2.4s ease-in-out both;}
-@keyframes igs-dfx-stroll-step{from{opacity:0;transform:scale(1.4)}to{opacity:.8;transform:scale(1)}}
-@keyframes igs-dfx-stroll-leaf{0%{opacity:0;transform:translate(0,0) rotate(0)}20%{opacity:.95}100%{opacity:0;transform:translate(60px,150px) rotate(220deg)}}
 /* 省电 / 减少动态效果：关掉循环与位移，延迟出现的元素直接可见。 */
-#igs-overlay .igs-dfx.is-reduced.igs-dfx-sing .igs-dfx-sing-notes i,#igs-overlay .igs-dfx.is-reduced.igs-dfx-music .igs-dfx-music-notes i,#igs-overlay .igs-dfx.is-reduced.igs-dfx-draw .igs-dfx-draw-stroke,#igs-overlay .igs-dfx.is-reduced.igs-dfx-clean .igs-dfx-clean-sparkle i,#igs-overlay .igs-dfx.is-reduced.igs-dfx-stroll .igs-dfx-stroll-steps i{opacity:1;}
+#igs-overlay .igs-dfx.is-reduced.igs-dfx-sing .igs-dfx-sing-notes i,#igs-overlay .igs-dfx.is-reduced.igs-dfx-music .igs-dfx-music-notes i,#igs-overlay .igs-dfx.is-reduced.igs-dfx-draw .igs-dfx-draw-stroke{opacity:1;}
 #igs-overlay .igs-dfx.is-reduced.igs-dfx-sing,#igs-overlay .igs-dfx.is-reduced.igs-dfx-dance,#igs-overlay .igs-dfx.is-reduced.igs-dfx-fish,#igs-overlay .igs-dfx.is-reduced.igs-dfx-draw,#igs-overlay .igs-dfx.is-reduced.igs-dfx-music,#igs-overlay .igs-dfx.is-reduced.igs-dfx-ride,#igs-overlay .igs-dfx.is-reduced.igs-dfx-clean,#igs-overlay .igs-dfx.is-reduced.igs-dfx-shopping,#igs-overlay .igs-dfx.is-reduced.igs-dfx-stroll{animation:igs-dfx-fade var(--igs-dfx-life) ease both!important;}
-#igs-overlay .igs-dfx.is-reduced .igs-dfx-sing-waves,#igs-overlay .igs-dfx.is-reduced .igs-dfx-dance-sparks,#igs-overlay .igs-dfx.is-reduced .igs-dfx-fish-water,#igs-overlay .igs-dfx.is-reduced .igs-dfx-fish-silhouette,#igs-overlay .igs-dfx.is-reduced .igs-dfx-ride-wind,#igs-overlay .igs-dfx.is-reduced .igs-dfx-clean-dust,#igs-overlay .igs-dfx.is-reduced .igs-dfx-shopping-confetti,#igs-overlay .igs-dfx.is-reduced .igs-dfx-stroll-leaves{display:none;}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-sing-waves,#igs-overlay .igs-dfx.is-reduced .igs-dfx-dance-sparks,#igs-overlay .igs-dfx.is-reduced .igs-dfx-fish-water,#igs-overlay .igs-dfx.is-reduced .igs-dfx-fish-silhouette,#igs-overlay .igs-dfx.is-reduced .igs-dfx-clean-dust{display:none;}
 #igs-overlay[data-igs-quality="low"] .igs-dfx-amb>i,#igs-overlay[data-igs-quality="low"] .igs-dfx-amb>i::before,#igs-overlay[data-igs-quality="low"] .igs-dfx-amb>i::after,#igs-overlay .igs-dfx-amb.is-reduced>i,#igs-overlay .igs-dfx-amb.is-reduced>i::before,#igs-overlay .igs-dfx-amb.is-reduced>i::after{animation:none;}
 /* 玩乐类 · 第二版：按 fx-daily.js 现在实际生成的结构重写，后写覆盖上面同权重的旧规则。暖色实色为主，只用 opacity 与 transform。 */
 #igs-overlay .igs-dfx-sing-label,#igs-overlay .igs-dfx-dance-label,#igs-overlay .igs-dfx-fish-catch,#igs-overlay .igs-dfx-draw-label,#igs-overlay .igs-dfx-music-label,#igs-overlay .igs-dfx-ride-label,#igs-overlay .igs-dfx-shopping-label{position:absolute;left:50%;bottom:26%;max-width:80%;margin:0;padding:5px 18px;box-sizing:border-box;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border:1px solid #e8c9a0;border-radius:999px;background:#fff6e8;color:#6b4226;font-size:clamp(13px,2.4vmin,18px);font-weight:700;line-height:1.4;letter-spacing:.12em;text-indent:.12em;text-shadow:none;box-shadow:0 4px 12px rgba(80,50,20,.22);opacity:0;transform:translateX(-50%);animation:igs-dfx-play-label var(--igs-dfx-life) ease both;}
@@ -875,14 +886,9 @@ ${CAMPUS_FX_STYLE_TEXT}
 @keyframes igs-dfx-shopping-pop{0%{opacity:0;transform:translateY(8px) scale(.4)}35%{opacity:1;transform:translateY(-6px) scale(1.15)}100%{opacity:0;transform:translateY(-22px) scale(.8)}}
 /* 散步：底部一道暖光，脚印一前一后印出，一片叶子斜斜飘落。 */
 #igs-overlay .igs-dfx-stroll-warm{position:absolute;left:0;right:0;bottom:0;height:34%;background:linear-gradient(0deg,#ffd9a0,#ffe9c4 45%,transparent);opacity:0;animation:igs-dfx-stroll-glow var(--igs-dfx-life) ease-in-out both;}
-#igs-overlay .igs-dfx-stroll-steps{bottom:20%;height:56px;}
-#igs-overlay .igs-dfx-stroll-steps .igs-dfx-stroll-step{position:absolute;width:11px;height:18px;margin:0;box-sizing:border-box;border-radius:50% 50% 45% 45%;background:#c79a6b;box-shadow:0 0 0 1px #fff6e8;font-size:1em;opacity:.85;animation:igs-dfx-stroll-print .5s ease-out both;}
-#igs-overlay .igs-dfx-stroll-steps .igs-dfx-stroll-step::after{content:"";position:absolute;left:1px;bottom:-6px;width:8px;height:6px;border-radius:50%;background:#c79a6b;box-shadow:0 0 0 1px #fff6e8;}
-#igs-overlay .igs-dfx-stroll-steps .igs-dfx-stroll-step.is-l{top:0;rotate:-8deg;}
-#igs-overlay .igs-dfx-stroll-steps .igs-dfx-stroll-step.is-r{top:20px;rotate:8deg;}
 #igs-overlay .igs-dfx-stroll-leaf{position:absolute;left:62%;top:-4%;width:16px;height:10px;border-radius:0 80% 0 80%;background:linear-gradient(135deg,#e9a14b,#d9703a);opacity:0;animation:igs-dfx-stroll-fall 2.6s ease-in-out .3s both;}
+#igs-overlay .igs-dfx-stroll-leaf.is-b{left:28%;top:-6%;background:linear-gradient(135deg,#d9a14b,#b8703a);animation-delay:1.2s;}
 @keyframes igs-dfx-stroll-glow{0%{opacity:0}30%{opacity:.85}75%{opacity:.7}100%{opacity:0}}
-@keyframes igs-dfx-stroll-print{from{opacity:0;transform:scale(1.5)}to{opacity:.85;transform:scale(1)}}
 @keyframes igs-dfx-stroll-fall{0%{opacity:0;transform:translate(0,0) rotate(0)}15%{opacity:1}35%{transform:translate(-4vmin,22vmin) rotate(90deg)}65%{transform:translate(3vmin,46vmin) rotate(200deg)}100%{opacity:0;transform:translate(-3vmin,70vmin) rotate(320deg)}}
 /* 骑行常驻氛围（自行车 / 摩托）：迎面横向掠过的细风线。两层伪元素各跑各的周期做出远近；竖向遮罩把画面中段让出来，不压立绘与对话框。 */
 #igs-overlay .igs-dfx-amb-rush{inset:0;--igs-rush:255,255,255;-webkit-mask-image:linear-gradient(180deg,#000 0,#000 30%,transparent 42%,transparent 62%,#000 76%,#000 100%);mask-image:linear-gradient(180deg,#000 0,#000 30%,transparent 42%,transparent 62%,#000 76%,#000 100%);}
@@ -945,10 +951,6 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-amb.is-reduced.is-cafe i,#igs-overlay .igs-dfx-amb.is-reduced.is-aquarium i,#igs-overlay .igs-dfx-amb.is-reduced.is-cinema i,#igs-overlay .igs-dfx-amb.is-reduced.is-beach i,#igs-overlay .igs-dfx-amb.is-reduced.is-nightview i,#igs-overlay .igs-dfx-amb.is-reduced.is-palace i,#igs-overlay .igs-dfx-amb.is-reduced.is-palace b,#igs-overlay .igs-dfx-amb.is-reduced.is-inn i,#igs-overlay .igs-dfx-amb.is-reduced.is-cave i,#igs-overlay .igs-dfx-amb.is-reduced.is-cloudsea i{animation:none;}
 #igs-overlay .igs-dfx-amb.is-reduced .igs-dfx-amb-cavedrip{display:none;}
 /* ── 修仙武侠日常演出：墨色留白，青白剑气，朱砂点睛；装饰用实色线，不画铭牌框 ── */
-#igs-overlay .igs-dfx-yujian{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-yujian-blade{position:absolute;left:-16%;top:68%;width:34%;height:3px;background:linear-gradient(90deg,transparent,#dff2f4 30%,#fff);border-radius:2px;box-shadow:0 0 14px 3px rgba(190,236,244,.8);transform:rotate(-24deg);transform-origin:100% 50%;animation:igs-dfx-yujian-fly calc(var(--igs-dfx-life) * .62) cubic-bezier(.3,.6,.2,1) both;}
-#igs-overlay .igs-dfx-yujian-trail{position:absolute;left:-16%;top:68%;width:58%;height:22px;background:linear-gradient(90deg,transparent,rgba(31,37,35,.32) 60%,rgba(31,37,35,.5));transform:rotate(-24deg);transform-origin:100% 50%;animation:igs-dfx-yujian-fly calc(var(--igs-dfx-life) * .62) cubic-bezier(.3,.6,.2,1) both;}
-#igs-overlay .igs-dfx-yujian-glint{position:absolute;right:14%;top:22%;width:8px;height:8px;border-radius:50%;background:#fff;box-shadow:0 0 18px 8px rgba(190,236,244,.85);opacity:0;animation:igs-dfx-yujian-glint calc(var(--igs-dfx-life) * .5) ease-out calc(var(--igs-dfx-life) * .32) both;}
 @keyframes igs-dfx-yujian-fly{0%{transform:translate3d(0,0,0) rotate(-24deg);opacity:0}12%{opacity:1}100%{transform:translate3d(190%,-150%,0) rotate(-24deg);opacity:0}}
 @keyframes igs-dfx-yujian-glint{0%{opacity:0;transform:scale(.3)}30%{opacity:1;transform:scale(1.3)}100%{opacity:0;transform:scale(.5)}}
 #igs-overlay .igs-dfx-liandan{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
@@ -968,54 +970,21 @@ ${CAMPUS_FX_STYLE_TEXT}
 @keyframes igs-dfx-liandan-smoke{0%{opacity:0;transform:translate3d(0,0,0) scale(.6)}30%{opacity:.9}100%{opacity:0;transform:translate3d(14%,-120%,0) scale(1.5)}}
 @keyframes igs-dfx-liandan-pill{0%{opacity:0;transform:translateY(0) scale(.4)}30%{opacity:1;transform:translateY(-140%) scale(1.3)}70%{opacity:1;transform:translateY(-110%) scale(1)}100%{opacity:0;transform:translateY(-150%) scale(.9)}}
 @keyframes igs-dfx-liandan-label{0%{opacity:0;transform:translateX(-50%) translateY(8px)}30%,80%{opacity:1;transform:translateX(-50%)}100%{opacity:0}}
-#igs-overlay .igs-dfx-biguan{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-biguan-veil{position:absolute;inset:0;background:radial-gradient(ellipse 60% 56% at 50% 54%,rgba(31,37,35,.08),rgba(31,37,35,.66) 100%);}
-#igs-overlay .igs-dfx-biguan-qi{position:absolute;left:50%;top:54%;width:0;height:0;}
-#igs-overlay .igs-dfx-biguan-qi i{position:absolute;left:-90px;top:-90px;width:180px;height:180px;border-radius:50%;border:2px solid rgba(180,226,230,.8);opacity:0;animation:igs-dfx-biguan-breath 3.6s ease-in-out infinite;}
-#igs-overlay .igs-dfx-biguan-text{position:absolute;left:50%;bottom:20%;transform:translateX(-50%);color:#e8efe8;font:600 clamp(16px,3vmin,24px)/1.3 "Source Han Serif CN","Songti SC",serif;letter-spacing:.4em;text-shadow:0 2px 10px rgba(0,0,0,.6);}
 @keyframes igs-dfx-biguan-breath{0%{opacity:0;transform:scale(.5)}35%{opacity:.85}70%{opacity:.4;transform:scale(1.5)}100%{opacity:0;transform:scale(1.9)}}
-#igs-overlay .igs-dfx-dianxue{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-dianxue-stage{position:absolute;left:50%;top:40%;width:0;height:0;}
-#igs-overlay .igs-dfx-dianxue-dot{position:absolute;left:-5px;top:-5px;width:10px;height:10px;border-radius:50%;background:#b23a2a;box-shadow:0 0 12px 4px rgba(178,58,42,.6);animation:igs-dfx-dianxue-dot .5s ease-out both;}
-#igs-overlay .igs-dfx-dianxue-ring{position:absolute;left:-60px;top:-60px;width:120px;height:120px;border-radius:50%;border:2px solid rgba(178,58,42,.8);opacity:0;animation:igs-dfx-dianxue-ring 1.5s ease-out .25s both;}
-#igs-overlay .igs-dfx-dianxue-ring.is-2{border-color:rgba(95,127,134,.8);animation-delay:.6s;}
 @keyframes igs-dfx-dianxue-dot{0%{transform:scale(2.4);opacity:0}40%{opacity:1}100%{transform:scale(1)}}
 @keyframes igs-dfx-dianxue-ring{0%{opacity:.95;transform:scale(.2)}100%{opacity:0;transform:scale(1.8)}}
-#igs-overlay .igs-dfx-qinggong{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-qinggong-ghost{position:absolute;left:0;right:0;top:30%;height:40%;background:linear-gradient(90deg,transparent,rgba(31,37,35,.22) 50%,transparent);animation:igs-dfx-qinggong-ghost calc(var(--igs-dfx-life) * .5) ease-out both;}
-#igs-overlay .igs-dfx-qinggong-ghost.is-2{top:38%;height:26%;animation-delay:.12s;opacity:.7;}
-#igs-overlay .igs-dfx-qinggong-leaves i{position:absolute;left:-4%;width:14px;height:7px;border-radius:70% 0 70% 0;background:#6f8f6a;opacity:0;animation:igs-dfx-qinggong-leaf 1.5s ease-out both;}
 @keyframes igs-dfx-qinggong-ghost{0%{transform:translateX(-60%);opacity:0}30%{opacity:1}100%{transform:translateX(60%);opacity:0}}
 @keyframes igs-dfx-qinggong-leaf{0%{opacity:0;transform:translate3d(0,0,0) rotate(0)}20%{opacity:.9}100%{opacity:0;transform:translate3d(120vw,-6vh,0) rotate(540deg)}}
-#igs-overlay .igs-dfx-yungong{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-yungong-stage{position:absolute;left:50%;bottom:8%;width:min(40%,300px);height:70%;margin-left:min(-20%,-150px);}
-#igs-overlay .igs-dfx-yungong-palm{position:absolute;left:50%;top:44%;width:44%;height:22%;margin-left:-22%;border-radius:50%;background:radial-gradient(closest-side,rgba(150,230,214,.8),transparent 74%);animation:igs-amb-warmth 1.4s ease-in-out infinite alternate;}
-#igs-overlay .igs-dfx-yungong-lines i{position:absolute;top:8%;width:1px;height:76%;background:linear-gradient(180deg,transparent,#8fe0cf 40%,transparent);opacity:0;animation:igs-dfx-yungong-line 2.2s ease-in-out infinite;}
-#igs-overlay .igs-dfx-yungong.is-fail .igs-dfx-yungong-palm{background:radial-gradient(closest-side,rgba(170,176,176,.7),transparent 74%);}
-#igs-overlay .igs-dfx-yungong.is-fail .igs-dfx-yungong-lines i{background:linear-gradient(180deg,transparent,#a8aeae 40%,transparent);}
 @keyframes igs-dfx-yungong-line{0%{opacity:0;transform:translateY(30%)}40%{opacity:.9}100%{opacity:0;transform:translateY(-30%)}}
 /* ── 体贴动作与积木（约会 / 后宫共用）：光效 + 角落动作字样 ── */
 #igs-overlay .igs-dfx-courtesy-label{position:absolute;right:9%;top:16%;padding:5px 16px;border-radius:999px;background:rgba(40,30,20,.72);color:#ffe8c8;font:600 clamp(14px,2.5vmin,20px)/1.3 "Source Han Sans CN","PingFang SC",sans-serif;letter-spacing:.12em;opacity:0;animation:igs-dfx-drape-label var(--igs-dfx-life) ease both;}
 #igs-overlay .igs-dfx.is-reduced .igs-dfx-courtesy-label{opacity:1;animation:none;}
 #igs-overlay .igs-dfx-opendoor,#igs-overlay .igs-dfx-shield,#igs-overlay .igs-dfx-tend,#igs-overlay .igs-dfx-carry,#igs-overlay .igs-dfx-candle,#igs-overlay .igs-dfx-pass,#igs-overlay .igs-dfx-stance{animation:igs-dfx-fade var(--igs-dfx-life) ease both;}
-#igs-overlay .igs-dfx-opendoor-stage{position:absolute;left:6%;top:12%;width:34%;height:74%;}
-#igs-overlay .igs-dfx-opendoor-gap{position:absolute;left:0;top:0;bottom:0;width:6px;background:linear-gradient(180deg,transparent,rgba(255,238,200,.85),transparent);opacity:0;animation:igs-dfx-opendoor-gap calc(var(--igs-dfx-life) * .8) ease-out both;}
-#igs-overlay .igs-dfx-opendoor-arc{position:absolute;left:0;top:4%;width:100%;height:92%;border-radius:0 100% 100% 0 / 0 50% 50% 0;background:conic-gradient(from 180deg at 0 50%,transparent 0deg,rgba(255,236,196,.34) 70deg,transparent 90deg);transform-origin:0 50%;opacity:0;animation:igs-dfx-opendoor-arc calc(var(--igs-dfx-life) * .8) cubic-bezier(.3,.8,.3,1) both;}
 @keyframes igs-dfx-opendoor-arc{0%{opacity:0;transform:scaleX(.1)}25%{opacity:1}100%{opacity:0;transform:scaleX(1)}}
 @keyframes igs-dfx-opendoor-gap{0%{opacity:0;transform:scaleY(.3)}30%{opacity:1;transform:scaleY(1)}100%{opacity:0}}
-#igs-overlay .igs-dfx-shield-stage{position:absolute;left:50%;top:18%;width:min(50%,380px);height:66%;margin-left:min(-25%,-190px);}
-#igs-overlay .igs-dfx-shield-wall{position:absolute;left:0;right:0;top:0;bottom:0;border-radius:50% / 14%;background:linear-gradient(90deg,transparent,rgba(255,236,196,.2) 30%,rgba(255,248,226,.3) 50%,rgba(255,236,196,.2) 70%,transparent);opacity:0;animation:igs-dfx-shield-wall calc(var(--igs-dfx-life) * .9) ease-out both;}
-#igs-overlay .igs-dfx-shield-edge{position:absolute;left:50%;top:0;bottom:0;width:2px;margin-left:-1px;background:linear-gradient(180deg,transparent,#fff3d6,transparent);opacity:0;animation:igs-dfx-shield-wall calc(var(--igs-dfx-life) * .9) ease-out both;}
 @keyframes igs-dfx-shield-wall{0%{opacity:0;transform:scaleX(.4)}22%{opacity:1;transform:scaleX(1.04)}36%{transform:scaleX(1)}100%{opacity:0;transform:scaleX(1.1)}}
-#igs-overlay .igs-dfx-tend-stage{position:absolute;left:50%;bottom:6%;width:min(40%,300px);height:34%;margin-left:min(-20%,-150px);}
-#igs-overlay .igs-dfx-tend-halo{position:absolute;left:10%;right:10%;bottom:0;height:80%;border-radius:50%;background:radial-gradient(closest-side,rgba(255,226,180,.5),transparent 74%);opacity:0;animation:igs-dfx-tend-halo var(--igs-dfx-life) ease-in-out both;}
-#igs-overlay .igs-dfx-tend-spark{position:absolute;left:36%;bottom:30%;width:6px;height:6px;border-radius:50%;background:#fff4d8;box-shadow:0 0 10px 3px rgba(255,236,190,.8);opacity:0;animation:igs-dfx-tend-spark calc(var(--igs-dfx-life) * .6) ease-out calc(var(--igs-dfx-life) * .2) both;}
-#igs-overlay .igs-dfx-tend-spark.is-2{left:60%;bottom:42%;animation-delay:calc(var(--igs-dfx-life) * .34);}
 @keyframes igs-dfx-tend-halo{0%{opacity:0;transform:scale(.6)}40%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1.2)}}
 @keyframes igs-dfx-tend-spark{0%{opacity:0;transform:translateY(0) scale(.4)}40%{opacity:1}100%{opacity:0;transform:translateY(-70%) scale(1)}}
-#igs-overlay .igs-dfx-carry-stage{position:absolute;left:50%;bottom:6%;width:min(44%,330px);height:76%;margin-left:min(-22%,-165px);}
-#igs-overlay .igs-dfx-carry-lift{position:absolute;left:14%;right:14%;bottom:0;height:100%;background:linear-gradient(0deg,rgba(255,214,150,.46),rgba(255,226,180,.14) 60%,transparent);-webkit-mask-image:linear-gradient(90deg,transparent,#000 30%,#000 70%,transparent);mask-image:linear-gradient(90deg,transparent,#000 30%,#000 70%,transparent);transform-origin:50% 100%;opacity:0;animation:igs-dfx-carry-lift calc(var(--igs-dfx-life) * .9) ease-out both;}
-#igs-overlay .igs-dfx-carry-glow{position:absolute;left:20%;right:20%;bottom:-4%;height:26%;border-radius:50%;background:radial-gradient(closest-side,rgba(255,226,170,.6),transparent 74%);opacity:0;animation:igs-dfx-tend-halo var(--igs-dfx-life) ease-in-out both;}
 @keyframes igs-dfx-carry-lift{0%{opacity:0;transform:scaleY(.2)}35%{opacity:1;transform:scaleY(1)}100%{opacity:0;transform:scaleY(1.12) translateY(-4%)}}
 #igs-overlay .igs-dfx-candle-stage{position:absolute;left:50%;bottom:10%;width:80px;height:140px;margin-left:calc(min(22%,170px) - 40px);}
 #igs-overlay .igs-dfx-candle-body{position:absolute;left:50%;bottom:0;width:14px;height:64px;margin-left:-7px;border-radius:2px;background:#f3ead4;box-shadow:inset -3px 0 0 #dccfae;}
@@ -1042,6 +1011,7 @@ ${CAMPUS_FX_STYLE_TEXT}
 #igs-overlay .igs-dfx-stance.is-throne .igs-dfx-stance-beam{display:block;animation:igs-dfx-carry-lift calc(var(--igs-dfx-life) * .9) ease-out both;}
 #igs-overlay .igs-dfx-stance.is-kneel .igs-dfx-stance-dais,#igs-overlay .igs-dfx-stance.is-attend .igs-dfx-stance-dais{background:radial-gradient(closest-side,rgba(120,30,24,.4),transparent 74%);}
 #igs-overlay .igs-dfx-stance.is-side .igs-dfx-stance-dais,#igs-overlay .igs-dfx-stance.is-lean .igs-dfx-stance-dais{background:radial-gradient(closest-side,rgba(255,200,160,.4),transparent 74%);}
-#igs-overlay .igs-dfx.is-reduced .igs-dfx-yujian-blade,#igs-overlay .igs-dfx.is-reduced .igs-dfx-yujian-trail,#igs-overlay .igs-dfx.is-reduced .igs-dfx-qinggong-ghost,#igs-overlay .igs-dfx.is-reduced .igs-dfx-qinggong-leaves,#igs-overlay .igs-dfx.is-reduced .igs-dfx-dianxue-ring,#igs-overlay .igs-dfx.is-reduced .igs-dfx-pass-trail,#igs-overlay .igs-dfx.is-reduced .igs-dfx-candle-flame{animation:none;opacity:.8;}
-#igs-overlay .igs-dfx.is-reduced .igs-dfx-liandan-smoke,#igs-overlay .igs-dfx.is-reduced .igs-dfx-biguan-qi,#igs-overlay .igs-dfx.is-reduced .igs-dfx-yungong-lines{display:none;}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-pass-trail,#igs-overlay .igs-dfx.is-reduced .igs-dfx-candle-flame{animation:none;opacity:.8;}
+#igs-overlay .igs-dfx.is-reduced .igs-dfx-liandan-smoke{display:none;}
+${FLAT_FX_STYLE_TEXT}
 `;

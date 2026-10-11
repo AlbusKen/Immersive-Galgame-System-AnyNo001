@@ -61,7 +61,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.28';
+const IGS_VERSION = '0.36.29';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -143,6 +143,7 @@ export function bootstrapIGS(options = {}) {
         getBridge: readImageBridge,
         global: globalObject,
         llm: secondaryLlm,
+        onRetry: (event) => { const notice = app.igsUi && app.igsUi.showImageNotice; if (typeof notice === 'function') notice.call(app.igsUi, 'info', event.text); },
         report: (level, message) => {
             if (imageJobLog && typeof imageJobLog.add === 'function') imageJobLog.add(level, message);
         },
@@ -251,6 +252,7 @@ export function bootstrapIGS(options = {}) {
         getIllustrationSource: (messageId) => illustrationMessageHost.readFloor(messageId),
         getIllustrationUrl: (query) => illustrationService.getIllustrationUrl(query),
         illustrations: illustrationService,
+        isIllustrationEnabled: () => { const cfg = readImageBridge().autoIllustration || {}; return Boolean(cfg.nsfwEnabled || cfg.interludeEnabled); },
         onIllustrationUpdated: (handler) => events.on(ILLUSTRATION_UPDATED_EVENT, handler),
         onIllustrationProgress: (handler) => events.on(ILLUSTRATION_PROGRESS_EVENT, handler),
         onImageActivity: (handler) => events.on(IMAGE_ACTIVITY_EVENT, handler),
@@ -691,13 +693,13 @@ export function bootstrapIGS(options = {}) {
             entries,
         });
         // 记下每块展开与否、原因和字数，诊断与设置页拿来对着调关键词。
-        setLastPromptReport({ at: Date.now(), blocks: Object.fromEntries(Object.entries(triggers.report).filter(([key]) => key in grammar.sizes || triggers.report[key].reason === 'off').map(([key, item]) => [key, { ...item, chars: grammar.sizes[key] || 0 }])) });
+        setLastPromptReport({ at: Date.now(), blocks: Object.fromEntries(Object.entries(triggers.report).filter(([key]) => key in grammar.sizes || triggers.report[key].reason === 'off').map(([key, item]) => [key, { ...item, chars: grammar.sizes[key] || 0, ...(grammar.placements && grammar.placements[key] ? grammar.placements[key] : {}) }])) });
         if (!grammar.system) {
             promptInjector.clear();
             return { ok: true, reason: 'scene-assets-disabled' };
         }
         const depth0Content = [placement === 'system' ? DEPTH0_REMINDER : '', grammar.depth0].filter(Boolean).join('\n\n');
-        return promptInjector.inject(grammar.system, { placement, depth0Content });
+        return promptInjector.inject(grammar.system, { placement, depth0Content, segments: grammar.segments });
     }
 
     // 关闭按需注入时的旧行为：各块完整拼接；未自定义的场景规则用改版前的长版原文。

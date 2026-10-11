@@ -1,6 +1,6 @@
 import { listDlcFx, normalizeDlcFxSettings } from '../../scene/fx-registry.js';
 import { esc } from './reader-value-utils.js';
-import { checkbox, colorInput, rangeInput, field, segmentedInput, selectInput, textareaInput } from './settings-fields.js';
+import { checkbox, colorInput, rangeInput, field, segmentedInput, selectInput } from './settings-fields.js';
 import { DIALOG_FONT_OPTIONS } from './reader-host-constants.js';
 import { FX_TAG_KINDS } from '../../scene/fx-directives.js';
 import { FX_PROMPT_KEYS, FX_TAG_LABELS, MANGA_SYMBOL_KINDS, MANGA_SYMBOL_LABELS, normalizeFxPromptsSettings, normalizeFxReaderSettings } from './fx-settings.js';
@@ -40,15 +40,14 @@ export function featureRow(more, key, path, on, label, hint = '', detail = '') {
 // 细项里的分段小标题（代替原来的二级折叠）。
 export const perfSubhead = (label) => `<div class="igs-perf-item-subhead">${esc(label)}</div>`;
 
-// 演出提示词入口：发给 AI 的全部演出标签用法说明，可读、可改、可整段关掉。
-// 文本框预填当前内置写法（随已开启的功能与所选写法自动拼装），直接改即覆盖，清空即回落内置。平时折在深处。
-function fxBuiltinPromptTexts(reader) {
+// 演出写法的内置文本与标题（界面在「生图与AI › 写法规则」，见 prompt-entries-fields.js）：随已开启的功能与所选写法自动拼装，用户改过即覆盖，清空恢复内置。
+export function fxBuiltinPromptTexts(reader) {
     const worldview = reader && reader.feedFx && reader.feedFx.worldview;
     const ancient = worldview === 'ancient';
     return Object.fromEntries(collectGrammarBlocks(reader, { ancient }).map((b) => [b.key, String(b.full || '')]));
 }
 
-const FX_PROMPT_LABELS = Object.freeze({
+export const FX_PROMPT_LABELS = Object.freeze({
     fx: '演出标签', daily: '日常演出标签', item: '物品标签', bgm: '配乐标签', romance: '亲密氛围标签', battle: '战斗标签',
     camera: '镜头标签', cast: '同屏角色标签', chat: '线上聊天标签', live: '直播间标签', audience: '观众弹幕标签',
     feed: '手机社区标签', text: '文字演出', bilingual: '双语台词', dlc: '扩展演出标签',
@@ -65,38 +64,6 @@ export function fxPromptTexts(reader) {
 // 「复制全部」：按当前详细/精简拼成一份发给 AI 的整文。
 export function fxPromptsCopyText(reader) {
     return fxPromptTexts(reader).join('\n\n');
-}
-
-export function renderFxPromptsFields(reader, open = false) {
-    const src = reader && typeof reader === 'object' ? reader : {};
-    const fp = normalizeFxPromptsSettings(src.fxPrompts);
-    const base = 'readerSettings.fxPrompts';
-    const note = '<div class="igs-source-filter-note">以下为发给 AI 的全部演出标签用法，仅列出已开启的功能，随开关自动增减。详细：完整写法与示例，仍按场合触发，更耗 token；精简：缩写写法，日常、战斗、亲密、镜头、聊天、直播、社区在提及相关内容时才补完整写法。改动即覆盖该框（不再随开关变化），清空即恢复内置；关闭开关则一律不发，可自行写入酒馆预设。</div>';
-    const builtin = fxBuiltinPromptTexts(src);
-    const charsOf = (text) => Array.from(String(text || '')).length;
-    let total = 0;
-    const boxes = FX_PROMPT_KEYS.map((key) => [key, FX_PROMPT_LABELS[key]])
-        .map(([key, label]) => {
-            const text = fp[key] || builtin[key] || '';
-            if (!text) return '';
-            total += charsOf(text);
-            // 每栏标签后缀字数，让用户一眼看出这段多大。
-            return field(`${base}.${key}`, `${label}（${charsOf(text)} 字）`, textareaInput(`${base}.${key}`, text, '清空即恢复内置'));
-        })
-        .join('');
-    const copyBtn = '<button type="button" class="igs-btn-mgr-icon igs-fx-prompts-copy" data-action="fx-prompts-copy-all" title="复制全部" aria-label="复制全部">⧉</button>';
-    // 合计：全部写法加起来多少字。开着「全量常驻」时≈每轮都发这么多；默认关时按场合块平时只发索引，实际更少。
-    const totalNote = fp.inject
-        ? `<div class="igs-source-filter-note">全部写法合计 ${total} 字${fp.resident ? '，已开「全量常驻」，大致每轮都注入这么多' : '；默认按场合注入，平时比这少（关掉的块只在提及时才补完整写法）'}。</div>`
-        : '';
-    const body = note
-        + `<div class="igs-settings-field">${checkbox(`${base}.inject`, fp.inject, '把演出标签用法发给 AI')}</div>`
-        + field(`${base}.style`, '写法', segmentedInput(`${base}.style`, fp.style, [['detailed', '详细'], ['compact', '精简']], '写法'))
-        + `<div class="igs-settings-field">${checkbox(`${base}.resident`, fp.resident, '全量常驻（关闭更省 token，开启 AI 更常调用；默认关）')}</div>`
-        + totalNote
-        + boxes;
-    // 自建折叠：复用 igs-settings-advanced 的折叠外观，但不带 igs-perf-more（那是词表二级折叠专用标记）。标题行右侧放「复制全部」。
-    return `<details class="igs-settings-advanced igs-fx-prompts-fold" data-advanced="perf-fx-prompts"${open ? ' open' : ''}><summary>演出提示词${copyBtn}</summary>${body}</details>`;
 }
 
 const grid = (body) => `<div class="igs-source-filter-grid">${body}</div>`;
@@ -123,10 +90,10 @@ export function renderFxFeatureFields(reader, more = collapsible, fontOptions = 
     const tags = featureRow(more, 'fx-tags', `${p}.fxTags.enabled`, s.fxTags.enabled, '来电、通知、回忆等演出', '', grid(FX_TAG_KINDS.map((kind) => checkbox(`${p}.fxTags.${kind}`, s.fxTags[kind], FX_TAG_LABELS[kind])).join('') + checkbox(`${p}.fxTags.emergency`, s.fxTags.emergency, '紧急求助') + checkbox(`${p}.fxTags.spam`, s.fxTags.spam, '垃圾短信样式'))
         + (s.fxTags.call ? field(`${p}.fxTags.callSprite`, '语音通话画面', segmentedInput(`${p}.fxTags.callSprite`, s.fxTags.callSprite, [['split', '分屏'], ['avatar', '头像小窗'], ['hide', '隐藏'], ['show', '照常显示']], '语音通话画面')) : ''));
     const toneWords = (kinds) => kinds.map((kind) => renderWordListField(`comicMode.tones.${kind}`, COMIC_TONE_LABELS[kind], s.comicMode.tones[kind])).join('');
-    const comic = featureRow(more, 'comic-mode', `${p}.comicMode.enabled`, s.comicMode.enabled, '漫画演出模式', '台词变成竖排对话泡', field(`${p}.comicMode.palette`, '画面', segmentedInput(`${p}.comicMode.palette`, s.comicMode.palette, [['mono', '黑白'], ['color', '彩色']], '画面'), s.comicMode.palette === 'color' ? '配色跟随对话框皮肤' : '')
+    const comic = featureRow(more, 'comic-mode', `${p}.comicMode.enabled`, s.comicMode.enabled, '漫画演出模式', '台词变成竖排对话泡', field(`${p}.comicMode.palette`, '画面', segmentedInput(`${p}.comicMode.palette`, s.comicMode.palette, [['mono', '黑白'], ['color', '彩色']], '画面'), s.comicMode.palette === 'color' ? '配色跟随对话框风格' : '')
         + checkbox(`${p}.comicMode.frame`, s.comicMode.frame, '画格边框')
         + checkbox(`${p}.comicMode.keepPrev`, s.comicMode.keepPrev, '保留上一句（淡化）')
-        + field(`${p}.comicMode.font`, '泡内字体', selectInput(`${p}.comicMode.font`, s.comicMode.font || 'inherit', fontOptions.map(([value, label]) => (value === 'inherit' ? [value, '跟随皮肤'] : [value, label]))))
+        + field(`${p}.comicMode.font`, '泡内字体', selectInput(`${p}.comicMode.font`, s.comicMode.font || 'inherit', fontOptions.map(([value, label]) => (value === 'inherit' ? [value, '跟随风格'] : [value, label]))))
         + field(`${p}.comicMode.line`, '泡的线条', segmentedInput(`${p}.comicMode.line`, s.comicMode.line, [['thin', '细'], ['medium', '中'], ['bold', '粗']], '泡的线条'))
         + field(`${p}.comicMode.inkMode`, '描边颜色', segmentedInput(`${p}.comicMode.inkMode`, s.comicMode.inkMode, [['auto', '自动'], ['custom', '自选']], '描边颜色'))
         + (s.comicMode.inkMode === 'custom' ? field(`${p}.comicMode.inkColor`, '自选描边色', colorInput(`${p}.comicMode.inkColor`, s.comicMode.inkColor)) : '')
@@ -143,7 +110,7 @@ export function renderFxFeatureFields(reader, more = collapsible, fontOptions = 
     const dlcDefs = listDlcFx();
     const dlcOff = normalizeDlcFxSettings(reader && reader.dlcFx);
     const dlc = dlcDefs.length
-        ? perfItem(more, 'dlc-fx', `<span>扩展演出（DLC）</span>`, { hint: `${dlcDefs.length} 个`, detail: grid(dlcDefs.map((def) => checkbox(`${p}.dlcFx.${def.kind}`, dlcOff[def.kind] !== false, def.label)).join('')) })
+        ? perfItem(more, 'dlc-fx', `<span>扩展演出（DLC）</span>`, { hint: `${dlcDefs.length}个`, detail: grid(dlcDefs.map((def) => checkbox(`${p}.dlcFx.${def.kind}`, dlcOff[def.kind] !== false, def.label)).join('')) })
         : '';
     return { style, manga, heartbeat, flash, title, favor, itemFx, battleFx, resultFx, tags, dlc, sound, comic, mangaBack, crowd, notifyCenter };
 }

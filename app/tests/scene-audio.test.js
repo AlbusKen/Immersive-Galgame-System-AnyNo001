@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { FX_PACK_AMBIENT_KINDS } from '../src/scene/fx-packs.js';
 import {
     AMBIENT_KINDS,
     AMBIENT_LABELS,
@@ -109,7 +110,8 @@ function bgmOptions(extra = {}) {
 }
 
 test('gate: scene audio exports ambient kinds with Chinese labels', () => {
-    assert.deepEqual(AMBIENT_KINDS, [
+    // 题材包的环境音 kind 与标签追加在基础表之后（各包清单登记）。
+    assert.deepEqual(AMBIENT_KINDS.slice(0, AMBIENT_KINDS.length - FX_PACK_AMBIENT_KINDS.length), [
         'birds', 'rain', 'wind', 'insects', 'waves', 'crowd', 'thunder', 'stream', 'fire', 'snow',
         'cicadas', 'frogs', 'chimes', 'bell', 'clock', 'drip', 'train', 'tavern', 'ship', 'traffic',
         'car', 'carriage', 'plane', 'bath', 'underwater', 'space', 'bike', 'sky',
@@ -117,7 +119,7 @@ test('gate: scene audio exports ambient kinds with Chinese labels', () => {
         'cafe', 'cinema', 'aquarium', 'nightview', 'palace', 'console',
         'classroom', 'library', 'playground',
     ]);
-    assert.deepEqual(AMBIENT_KINDS.map((kind) => AMBIENT_LABELS[kind]), [
+    assert.deepEqual(AMBIENT_KINDS.slice(0, AMBIENT_KINDS.length - FX_PACK_AMBIENT_KINDS.length).map((kind) => AMBIENT_LABELS[kind]), [
         '鸟鸣', '雨声', '风声', '虫鸣', '海浪', '人声', '雷声', '溪流', '篝火', '雪夜',
         '蝉鸣', '蛙鸣', '风铃', '钟声', '钟表', '滴水', '列车', '酒馆', '船只', '车流',
         '车内', '马车', '机舱', '浴室水声', '水下', '太空真空', '骑行', '高空风声',
@@ -167,6 +169,7 @@ test('gate: ambient settings default on per kind and honor explicit false', () =
         printer: true, keyboard: true, aircon: true, serverhum: true, deskphone: true,
         cafe: true, cinema: true, aquarium: true, nightview: true, palace: true, console: true,
         classroom: true, library: true, playground: true,
+        ...Object.fromEntries(FX_PACK_AMBIENT_KINDS.map((kind) => [kind, true])),
     });
     // 旧存档没有新增音色字段，按默认开启处理。
     const legacy = normalizeAmbientSoundSettings({ enabled: true, birds: true, rain: false });

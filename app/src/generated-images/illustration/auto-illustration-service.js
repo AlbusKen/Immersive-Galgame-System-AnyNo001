@@ -336,6 +336,7 @@ export function createAutoIllustrationService(deps) {
             remember(`${key}|${request.slot}`, { status: 'pending', dataUrl: '' });
         }
         let succeeded = 0;
+        let firstFailure = null;
         const errors = [];
         for (let index = 0; index < requests.length; index += 1) {
             const request = requests[index];
@@ -353,6 +354,7 @@ export function createAutoIllustrationService(deps) {
             if (result && result.ok) succeeded += 1;
             else {
                 errors.push((result && result.error) || '出图失败');
+                if (result && result.failure && !firstFailure) firstFailure = result.failure;
                 report('error', `第 ${messageId} 楼第 ${request.slot} 张插图生成失败：${(result && result.error) || '出图失败'}`);
             }
             const record = result && result.ok
@@ -370,6 +372,7 @@ export function createAutoIllustrationService(deps) {
         return {
             ok: false, reason: 'generation-failed', count: succeeded, failedCount,
             error: `${failedCount} 张插图失败${succeeded ? `（成功 ${succeeded} 张）` : ''}：${Array.from(new Set(errors)).join('；')}`,
+            ...(firstFailure && { failure: firstFailure }),
         };
     }
 
@@ -540,6 +543,7 @@ export function createAutoIllustrationService(deps) {
             remember(`${key}|${request.slot}`, { status: 'pending', dataUrl: '' });
         }
         let succeeded = 0;
+        let firstFailure = null;
         const errors = [];
         for (let index = 0; index < requests.length; index += 1) {
             const request = requests[index];
@@ -552,6 +556,7 @@ export function createAutoIllustrationService(deps) {
             if (result && result.ok) succeeded += 1;
             else {
                 errors.push((result && result.error) || 'NAI 生成失败');
+                if (result && result.failure && !firstFailure) firstFailure = result.failure;
                 report('error', `第 ${messageId} 楼第 ${request.slot} 张插图生成失败：${(result && result.error) || 'NAI 生成失败'}`);
             }
             const record = result && result.ok
@@ -569,6 +574,7 @@ export function createAutoIllustrationService(deps) {
         return {
             ok: false, reason: 'generation-failed', count: succeeded, failedCount,
             error: `${failedCount} 张插图失败${succeeded ? `（成功 ${succeeded} 张）` : ''}：${Array.from(new Set(errors)).join('；')}`,
+            ...(firstFailure && { failure: firstFailure }),
         };
     }
 

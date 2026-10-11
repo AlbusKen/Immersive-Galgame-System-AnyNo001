@@ -266,8 +266,8 @@ test('asset scope: 打开角色卡时筛选旁一直有一键迁移，两个方�
         controller.setValue('bridge.sceneAssets.enabled', true);
         controller.setValue('bridge.sceneAssets.scenes', { 教室: { url: '', times: {} } });
         const html = controller.switchSceneSubTab('scenes').html || controller.getSnapshot().html;
-        assert.match(html, /data-asset-bulk="scenes"[\s\S]*?data-action="asset-move-all:scenes:global"[^>]*disabled[^>]*>本卡的 0 个全部放到全局</);
-        assert.match(html, /data-action="asset-move-all:scenes:card" role="menuitem">全局的 1 个全部收进本卡</);
+        assert.match(html, /data-asset-bulk="scenes"[\s\S]*?data-action="asset-move-all:scenes:global"[^>]*disabled[^>]*>本卡的0个全放全局</);
+        assert.match(html, /data-action="asset-move-all:scenes:card" role="menuitem">全局的1个全收本卡</);
         assert.doesNotMatch(html, /列表里是这张卡实际会用的素材/);
         controller.close();
     } finally {
@@ -398,7 +398,7 @@ test('preset: 导出把引用的生成图一起打进压缩包，清了本机再
         assert.equal(result.fileName, 'HP.zip');
         assert.equal(result.images, 2);
         assert.equal(result.missing, 1);
-        assert.match(alerts.at(-1), /1 张图片在本机未找到/);
+        assert.match(alerts.at(-1), /1张图片在本机未找到/);
 
         // 模拟清了浏览器数据：图和预设都没了。
         images.clear();

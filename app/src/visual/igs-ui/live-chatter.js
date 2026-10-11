@@ -5,7 +5,7 @@ import {
     LIVE_SCENE_LINES, LIVE_SILLY_REPLY_LINES, LIVE_TONE_CLASSIC, LIVE_TONE_POOLS, LIVE_TRASH_MEME_LINES,
     AUDIENCE_AMBIENT_LINES, LIVE_FANDOM_LINES, LIVE_SCALE_TIERS, LIVE_TINY_LINES, LIVE_TONE_FANDOM, LIVE_TONE_WARN,
     LIVE_WARN_MEME_LINES, LIVE_DRAMA_BY_KIND, LIVE_ANIME_BY_KIND, LIVE_NEWAGE_MEME_LINES, LIVE_TONE_EXTRA, LIVE_ADMIN_BAN_REACT_LINES, LIVE_ADMIN_LINES, LIVE_KEEPER_PEACE_LINES,
-    LIVE_KEEPER_REBUT_LINES, LIVE_TONE_ORDER, fanMedalNameFor,
+    LIVE_KEEPER_REBUT_LINES, LIVE_TONE_ORDER, VARIETY_HOT_LINES, fanMedalNameFor,
 } from './danmaku-pools.js';
 
 const f = (list) => Object.freeze(list.slice());
@@ -43,6 +43,7 @@ const SCENE_MIN_HITS = 2;
 const TITLE_SCORED_PAGES = 2;
 // 剧情话题：本页正文命中就按话题出带梗句（占约 30%），只用于现代口吻；句子都是轻微起哄，不涉脏话、外貌、性别与地域。
 export const LIVE_TOPIC_BUCKETS = Object.freeze([
+    ['variety', /恋综|综艺|观察室|心动信号|嘉宾|恋爱小屋|导演组|花字|机位/, VARIETY_HOT_LINES],
     ['scam', /被骗|骗子|诈骗|骗人|上当|套路|坑人|忽悠|欺骗|骗/, f([
         '被骗了吧，我就说', '这套路我都看腻了', '防骗指南建议全文背诵', '谁懂啊，骗局都这么敷衍', '该上防诈课了',
         '骗人的先别笑，下一个就是你', '这波是被当韭菜割了', '反诈中心在线待命', '只怪自己心太软，这话是真的扎', '信了就是输',

@@ -41,7 +41,7 @@ export function renderDanmakuFields(reader, more = collapsible, { liveBlocked = 
         + field(`${p}.liveFx.fontSize`, '弹幕字号', segmentedInput(`${p}.liveFx.fontSize`, s.live.fontSize, [['small', '小'], ['medium', '中'], ['large', '大']], '直播弹幕字号'))
         + field(`${p}.liveFx.density`, '弹幕密度', segmentedInput(`${p}.liveFx.density`, s.live.density, [['sparse', '稀'], ['medium', '中'], ['dense', '密']], '直播弹幕密度'))
         + checkbox(`${p}.liveFx.interact`, s.live.interact, '直播互动（发弹幕、打赏）')
-        + checkbox(`${p}.liveFx.followTheme`, s.live.followTheme, '跟随对话框主题')
+        + checkbox(`${p}.liveFx.followTheme`, s.live.followTheme, '跟随对话框风格')
         + checkbox(`${p}.liveFx.muteOnNsfw`, s.live.muteOnNsfw, 'NSFW场景收起直播间'));
     const aud = s.audience;
     const audience = featureRow(more, 'audience-fx', `${p}.audienceFx.enabled`, aud.enabled, '观众弹幕', '小剧场', field(`${p}.audienceFx.persona`, '观众人设', segmentedInput(`${p}.audienceFx.persona`, aud.persona, DANMAKU_PERSONAS.map((key) => [key, DANMAKU_PERSONA_LABELS[key]]), '观众人设'))

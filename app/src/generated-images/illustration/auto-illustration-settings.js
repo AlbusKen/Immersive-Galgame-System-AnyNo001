@@ -63,6 +63,7 @@ export function normalizeAutoIllustrationSettings(value) {
         interludeProbability: clampInt(src.interludeProbability, 0, 100, 30),
         interludeMaxCount: clampInt(src.interludeMaxCount, 1, 16, 1),
         backfillOldFloors: bool(src.backfillOldFloors),
+        retry: { enabled: !(src.retry && src.retry.enabled === false), times: clampInt(src.retry && src.retry.times, 0, 5, 2) },
         assets: {
             spriteEnabled: bool(assets.spriteEnabled),
             backgroundEnabled: bool(assets.backgroundEnabled),

@@ -49,7 +49,7 @@ test('feedFx:render:groups-and-platforms', () => {
         }
     }
     assert.ok(html.includes(feedPlatformById('moments').prompt), '无自定义时显示默认写法');
-    assert.match(html, /placeholder="留空恢复默认"/);
+    assert.match(html, /placeholder="清空恢复默认"/);
 });
 
 test('feedFx:render:placed-in-performance-special-group', () => {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { extractFxDirectives, resolveFxAtPage } from '../src/scene/fx-directives.js';
 import { stripMarkerDirectives } from '../src/scene/directive-tags.js';
 import { DAILY_FX_KINDS, dailyFxOf, parseDailyFxBody } from '../src/scene/daily-fx-directives.js';
+import { isPackKind } from '../src/scene/fx-packs.js';
 import { enabledDailyFxKinds, normalizeDailyFxSettings, planDailyFx } from '../src/visual/igs-ui/fx-daily-model.js';
 import { resolveDailyFxPromptRule } from '../src/visual/igs-ui/fx-daily-prompt.js';
 import { cancelDailyFx, renderDailyFx } from '../src/visual/igs-ui/fx-daily.js';
@@ -51,13 +52,24 @@ function makeReader() {
     motion.appendChild(makeEl(doc, 'igs-sprite'));
     motion.appendChild(makeEl(doc, 'igs-dialog-layer'));
     const timers = [];
+    let now = 0;
     return {
         root, motion,
         ctx: {
             reducedMotion: false,
-            schedule(fn, delay) { const t = { fn, delay }; timers.push(t); return t; },
+            schedule(fn, delay) { const t = { fn, delay, at: now + delay }; timers.push(t); return t; },
             clear(t) { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); },
             playSfx: (kind) => sounds.push(kind),
+        },
+        advance(to) {
+            for (;;) {
+                const due = timers.filter((t) => t.at <= to).sort((a, b) => a.at - b.at)[0];
+                if (!due) break;
+                timers.splice(timers.indexOf(due), 1);
+                now = due.at;
+                due.fn();
+            }
+            now = to;
         },
         flush() { while (timers.length) timers.shift().fn(); },
     };
@@ -87,7 +99,8 @@ test('gate: daily-fx parses every kind with lenient fields and rejects missing r
     assert.deepEqual(dailyFxOf(['receipt', '可乐、薯条，汉堡', '¥38', '街角便利店']), { type: 'receipt', items: ['可乐', '薯条', '汉堡'], total: '¥38', shop: '街角便利店' });
     assert.deepEqual(dailyFxOf(['tv', '', '今日晴']), { type: 'tv', channel: '', text: '今日晴' });
     // 烟花走粒子层；进食由漫画符号分镜与物品卡演出，不建日常卡片。
-    for (const kind of DAILY_FX_KINDS) assert.ok(DAILY_FX_STYLE_TEXT.includes(`igs-dfx-${kind}`) || kind === 'fireworks' || kind === 'eat', kind);
+    // 题材包的样式类名由各包自定，由 tests/fx-pack-<id>.test.js 自己核对。
+    for (const kind of DAILY_FX_KINDS.filter((k) => !isPackKind(k))) assert.ok(DAILY_FX_STYLE_TEXT.includes(`igs-dfx-${kind}`) || kind === 'fireworks' || kind === 'eat', kind);
 });
 
 test('gate: daily-fx tags attach to pages, stay out of text and keep one per type', () => {
@@ -267,11 +280,16 @@ test('gate: daily-fx ancient era swaps clock, sticky note and letter for incense
     const ancient = (text, index) => ({ ...snap(fxOf(text), {}, index), readerSettings: { dailyFx: { enabled: true }, _ancientEra: true } });
     let result = renderDailyFx(r.root, ancient('[igs-fx:timeskip|一炷香后]\n[igs-fx:note|今夜子时，后山见]', 0), r.ctx);
     assert.deepEqual(result.played, ['timeskip', 'note']);
-    assert.deepEqual(sounds, ['drum', 'paper']);
-    const [skip, note] = cards(r);
+    assert.deepEqual(sounds, ['drum']);
+    assert.equal(cards(r).length, 1);
+    const [skip] = cards(r);
     assert.match(skip.className, /is-ancient/);
     assert.match(skip.innerHTML, /igs-dfx-incense/);
     assert.doesNotMatch(skip.innerHTML, /igs-dfx-clock/);
+    r.advance(3100);
+    assert.deepEqual(sounds, ['drum', 'paper']);
+    assert.equal(cards(r).length, 1);
+    const [note] = cards(r);
     assert.match(note.innerHTML, /igs-dfx-scrap/);
     assert.doesNotMatch(note.innerHTML, /igs-dfx-tape/);
     result = renderDailyFx(r.root, ancient('[igs-fx:letter|沈清秋|见字如面]', 1), r.ctx);

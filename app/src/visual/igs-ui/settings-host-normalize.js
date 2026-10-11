@@ -1,4 +1,5 @@
 import { normalizeMyPhone } from './my-phone.js';
+import { normalizeQuickActions } from '../../choices/option-sources.js';
 import { normalizePromptEntries } from '../../scene/prompt-entries.js';
 import { normalizeDlcFxSettings } from '../../scene/fx-registry.js';
 // 设置快照的规范化（bridge 配置与阅读器设置）：纯函数，阅读器和设置器共用。
@@ -65,6 +66,9 @@ export function normalizeOptionBubble(value) {
         position,
         clickAction: src.clickAction === 'fill' ? 'fill' : 'send',
         widthFollowsText: normalizeBoolean(src.widthFollowsText, false),
+        itemButton: normalizeBoolean(src.itemButton, true),
+        bodyFallback: normalizeBoolean(src.bodyFallback, true),
+        quickActions: normalizeQuickActions(src.quickActions),
     };
 }
 

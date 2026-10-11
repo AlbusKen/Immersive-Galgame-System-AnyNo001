@@ -1,6 +1,6 @@
 // 「复制本页诊断」：只摘当前页的决策结果（标签、命中哪一路、为什么回退），
 // 不带台词正文、聊天内容、演出参数文本和图片本体，外链只留域名，方便用户直接贴出来求助。
-import { PROMPT_ENTRY_LABELS } from '../../scene/prompt-entries.js';
+import { PROMPT_ENTRY_LABELS, PROMPT_POSITION_LABELS } from '../../scene/prompt-entries.js';
 import { describePromptTrigger } from '../../scene/prompt-triggers.js';
 
 const SOURCE_LABELS = Object.freeze({
@@ -67,12 +67,12 @@ function liveLine(c, rs) {
     return '显示中';
 }
 
-// 最近一次注入的按需块：每块展开/收起、原因（命中词、黏性、上楼标签…）与字数。
+// 最近一次注入的按需块：每块展开/收起、原因（命中词、上楼标签…）、字数，以及写了自己位置的块的注入位置与深度。
 function promptLines(report) {
     const blocks = report && report.blocks ? Object.entries(report.blocks) : [];
     if (!blocks.length) return [];
     const total = blocks.reduce((sum, [, item]) => sum + (item.active ? item.chars || 0 : 0), 0);
-    return [`提示词按需块（共展开 ${total} 字）`, ...blocks.map(([key, item]) => `  ${PROMPT_ENTRY_LABELS[key] || key} ${item.reason === 'off' ? '' : item.active ? '展开' : '收起'} ${describePromptTrigger(item)}${item.active && item.chars ? ` · ${item.chars} 字` : ''}`.replace(/ {2,}/g, ' ').replace(/^ /, '  '))];
+    return [`提示词按需块（共展开 ${total} 字）`, ...blocks.map(([key, item]) => `  ${PROMPT_ENTRY_LABELS[key] || key} ${item.reason === 'off' ? '' : item.active ? '展开' : '收起'} ${describePromptTrigger(item)}${item.active && item.chars ? ` · ${item.chars} 字` : ''}${item.position ? ` · ${PROMPT_POSITION_LABELS[item.position] || item.position}${item.position === 'depth' ? ` @D${item.depth}` : ''}` : ''}`.replace(/ {2,}/g, ' ').replace(/^ /, '  '))];
 }
 
 export function buildPageDiagnostic(snapshot, { version = '', worldview = '', promptReport = null } = {}) {

@@ -2,6 +2,7 @@
 // 由日常演出开关（readerSettings.dailyFx）控制；字段写错时按最宽松的合法形式处理，缺必填字段则整条忽略。
 import { GAME_FX_KINDS, gameFxOf, parseGameFxBody } from './game-console.js';
 import { CAMPUS_FX_KINDS, campusFxOf, parseCampusFxBody } from './campus-fx.js';
+import { FX_PACK_KINDS, isPackKind, packFxOf, parsePackFxBody } from './fx-packs.js';
 
 // 校园演出（黑板、传纸条、抽屉、点名、考试、文化祭、毕业、纽扣）：语法注入与触发词单独走 campus 块，见 scene/campus-fx.js。
 export { CAMPUS_FX_KINDS };
@@ -23,6 +24,7 @@ export const DAILY_FX_KINDS = Object.freeze([
     'say',
     ...GAME_FX_KINDS,
     ...CAMPUS_FX_KINDS,
+    ...FX_PACK_KINDS,
 ]);
 // 衣橱类日常演出：换装登场、披衣、试衣。仍是日常 kind（渲染与 opt-in 走 dailyFx），但语法注入与触发词
 // 单独走 wardrobe 块（只在正文提到换衣/披衣时才补完整写法），不占「每轮必发」的日常预算。
@@ -45,9 +47,19 @@ export const DAILY_STANCE_POSES = Object.freeze({
 });
 // 点灯烛火：烛 / 灯 / 香三种火光，未写或写错按烛。
 export const DAILY_CANDLE_STYLES = Object.freeze({ 烛: 'candle', 蜡烛: 'candle', 烛火: 'candle', candle: 'candle', 灯: 'lamp', 宫灯: 'lamp', 灯笼: 'lamp', lamp: 'lamp', 香: 'incense', 上香: 'incense', 焚香: 'incense', incense: 'incense' });
+// 碰杯：按容器材质换声音，塑料瓶不该碰出玻璃的清响。未写时古代按木碗、其余按玻璃。
+export const DAILY_CHEERS_MATERIALS = Object.freeze({ 玻璃: 'glass', 酒杯: 'glass', 高脚杯: 'glass', glass: 'glass', 陶瓷: 'ceramic', 瓷: 'ceramic', 茶杯: 'ceramic', 马克杯: 'ceramic', ceramic: 'ceramic', 塑料: 'plastic', 塑料瓶: 'plastic', 纸杯: 'plastic', plastic: 'plastic', 易拉罐: 'can', 罐: 'can', can: 'can', 木: 'wood', 木杯: 'wood', 酒碗: 'wood', 碗: 'wood', wood: 'wood', 金属: 'metal', 铜: 'metal', 银: 'metal', 酒爵: 'metal', metal: 'metal' });
 export const DAILY_OMIKUJI_RESULTS = Object.freeze(['大吉', '中吉', '小吉', '吉', '末吉', '凶', '大凶']);
 // 同页日常演出上限：都是全屏或大卡片，连发只会互相遮挡。
 export const DAILY_FX_PAGE_MAX = 2;
+// 题材包的 kind 同页放宽到 3（恋综的花字、榜单、REC 角标常同屏）；其余日常仍为 DAILY_FX_PAGE_MAX。
+export const DAILY_FX_PACK_PAGE_MAX = 3;
+
+// 本页已选的日常演出（带 type）里是否还放得下 type 这一种：包 kind 总数封顶 3，非包 kind 封顶 2。
+export function dailyFxHasRoom(picked, type) {
+    if (isPackKind(type)) return picked.length < DAILY_FX_PACK_PAGE_MAX;
+    return picked.length < DAILY_FX_PACK_PAGE_MAX && picked.filter((item) => !isPackKind(item.type)).length < DAILY_FX_PAGE_MAX;
+}
 // 结果类日常演出：猜拳手势、游戏胜负词表；结果由标签字段决定，前端不掷骰、不编造。
 export const DAILY_RPS_HANDS = Object.freeze({ 石头: 'rock', 拳头: 'rock', rock: 'rock', 剪刀: 'scissors', scissors: 'scissors', 布: 'paper', paper: 'paper' });
 export const DAILY_GAME_RESULTS = Object.freeze({ win: 'win', 胜: 'win', 胜利: 'win', 赢: 'win', lose: 'lose', 败: 'lose', 输: 'lose', 失败: 'lose', draw: 'draw', 平: 'draw', 平局: 'draw' });
@@ -109,7 +121,10 @@ export function parseDailyFxBody(type, fields) {
     case 'poke': return ['poke', a];
     // 体温只显示标签给出的读数，读数里必须有数字。
     case 'fever': return /\d/.test(a) ? ['fever', a] : null;
-    case 'cheers': return ['cheers'];
+    case 'cheers': {
+        const material = lookup(DAILY_CHEERS_MATERIALS, a);
+        return material ? ['cheers', material] : ['cheers'];
+    }
     case 'cook': return a ? ['cook', a] : null;
     case 'cat': return ['cat'];
     // 进食：食物名必填，反应可省（好吃、辣、喂……由前端换算）。
@@ -196,7 +211,7 @@ export function parseDailyFxBody(type, fields) {
         const pose = lookup(DAILY_STANCE_POSES, a);
         return pose ? ['stance', pose, b] : null;
     }
-    default: return parseGameFxBody(type, fields) || parseCampusFxBody(type, fields);
+    default: return parseGameFxBody(type, fields) || parseCampusFxBody(type, fields) || parsePackFxBody(type, fields);
     }
 }
 
@@ -223,7 +238,7 @@ export function dailyFxOf(args) {
     case 'rps': return { type, mine: a, theirs: b, outcome: rpsOutcome(a, b) };
     case 'gacha': return { type, item: a };
     case 'game': return { type, result: a };
-    case 'cheers': return { type };
+    case 'cheers': return { type, material: a };
     case 'cook': return { type, dish: a };
     case 'cat': return { type };
     case 'eat': return { type, food: a, reaction: b };
@@ -291,6 +306,6 @@ export function dailyFxOf(args) {
         const digits = String(b).match(/\d+(?:\.\d+)?/);
         return { type, subject: a, score: b, fail: Boolean(digits) && Number(digits[0]) < 60 };
     }
-    default: return gameFxOf(args) || campusFxOf(args);
+    default: return gameFxOf(args) || campusFxOf(args) || packFxOf(args);
     }
 }

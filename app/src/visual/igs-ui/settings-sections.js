@@ -161,9 +161,9 @@ export function settingsExportFileName(version, now = new Date()) {
 // 只做格式校验与密钥回填；字段合法性交给宿主 normalizeUnifiedSettings。
 export function parseSettingsImport(text, current = {}) {
     let data;
-    try { data = typeof text === 'string' ? JSON.parse(text) : text; } catch (error) { return { ok: false, reason: 'invalid-json', message: '文件不是有效的 JSON' }; }
+    try { data = typeof text === 'string' ? JSON.parse(text) : text; } catch (error) { return { ok: false, reason: 'invalid-json', message: '文件不是有效的JSON' }; }
     if (!isPlainObject(data)) return { ok: false, reason: 'invalid-format', message: '文件内容不是设置对象' };
-    if (data.format != null && data.format !== SETTINGS_EXPORT_FORMAT) return { ok: false, reason: 'invalid-format', message: '这不是 IGS 设置文件' };
+    if (data.format != null && data.format !== SETTINGS_EXPORT_FORMAT) return { ok: false, reason: 'invalid-format', message: '这不是IGS设置文件' };
     const hasBridge = isPlainObject(data.bridge);
     const hasReader = isPlainObject(data.readerSettings);
     if (!hasBridge && !hasReader) return { ok: false, reason: 'invalid-format', message: '文件里没有可导入的设置' };

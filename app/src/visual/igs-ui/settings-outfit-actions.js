@@ -1,3 +1,4 @@
+import { openSettingsPage } from './settings-pages.js';
 import { BUILTIN_NUDE_OUTFIT, normalizeOutfitForm, fuzzyOutfitName, isBuiltinNudeOutfit, isValidOutfitName, isValidOutfitWord, normalizeWardrobe, OUTFIT_RESET } from '../../scene/character-outfits.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
 import { classifySceneKey } from '../../scene/scene-directives.js';
@@ -83,8 +84,8 @@ function wardrobeDone(globalObj, message) {
 }
 
 function validateSlotName(ctx, name) {
-    if (name === OUTFIT_RESET) { warn(ctx, '服装内不设「默认」槽：缺图时会自动回到原有立绘'); return false; }
-    if (BLOCKED_KEYS.has(name)) { warn(ctx, `「${name}」不能用作槽名`); return false; }
+    if (name === OUTFIT_RESET) { warn(ctx, '服装内不设「默认」情绪：缺图时会自动改用原装图'); return false; }
+    if (BLOCKED_KEYS.has(name)) { warn(ctx, `「${name}」不能用作情绪名`); return false; }
     return true;
 }
 
@@ -154,7 +155,7 @@ async function handleWardrobe(command, segs, ctx) {
         if (!outfit) return rerenderSettings();
         const linked = typeof outfit.wardrobe === 'string' && outfit.wardrobe.trim() ? outfit.wardrobe.trim() : outfitName;
         if (!isValidOutfitName(linked)) return rerenderSettings();
-        settingsState.asyncState.sceneSubTab = 'rules';
+        openSettingsPage(settingsState, 'wardrobe');
         settingsState.asyncState.wardrobeFocus = linked;
         if (hasOwn(plain(effective.wardrobe) || {}, linked)) return rerenderSettings();
         const library = draftAssetLibrary(settingsState, { collections: CHARACTER_FIELDS, name });
@@ -398,7 +399,7 @@ async function handleOutfitReviewAuto(segs, ctx) {
     removeOutfitReview(globalObj.localStorage, charName, word);
     const added = persistSettingsDraft();
     if (added.ok === false) return added;
-    settingsState.asyncState.sceneSubTab = 'rules';
+    openSettingsPage(settingsState, 'wardrobe');
     settingsState.asyncState.wardrobeFocus = word;
     const seg = [encodeURIComponent(word)];
     const chained = { ...ctx, auto: true, outfitFor: charName };
@@ -572,9 +573,9 @@ async function runOutfitAction(match, ctx) {
     }
     case 'scene-add-outfit-mood': {
         const preset = decodeSeg(segs[2] || '');
-        const mood = preset || await ask(ctx, `服装「${outfitName}」的情绪/槽名称（建议与情绪组名一致）：`);
+        const mood = preset || await ask(ctx, `服装「${outfitName}」的情绪名称（建议与情绪组名一致）：`);
         if (!mood || !validateSlotName(ctx, mood)) return rerenderSettings();
-        if (hasOwn(entry.moods, mood)) { warn(ctx, `服装「${outfitName}」已有「${mood}」槽（同名）`); return rerenderSettings(); }
+        if (hasOwn(entry.moods, mood)) { warn(ctx, `服装「${outfitName}」已有「${mood}」情绪（同名）`); return rerenderSettings(); }
         addOutfitSlot(settingsState.draft.bridge.sceneAssets, entry, mood);
         return done();
     }
@@ -587,9 +588,9 @@ async function runOutfitAction(match, ctx) {
             migrateSpriteKeys(readerSettings, { character: charName, outfit: outfitName, mood: oldMood }, null);
             return done();
         }
-        const mood = await ask(ctx, `重命名服装「${outfitName}」的「${oldMood}」槽为：`, oldMood);
+        const mood = await ask(ctx, `重命名服装「${outfitName}」的「${oldMood}」情绪为：`, oldMood);
         if (!mood || mood === oldMood || !validateSlotName(ctx, mood)) return rerenderSettings();
-        if (hasOwn(entry.moods, mood)) { warn(ctx, `服装「${outfitName}」已有「${mood}」槽（同名），改名会覆盖，已阻止`); return rerenderSettings(); }
+        if (hasOwn(entry.moods, mood)) { warn(ctx, `服装「${outfitName}」已有「${mood}」情绪（同名），改名会覆盖，已阻止`); return rerenderSettings(); }
         entry.moods = reorderKey(entry.moods, oldMood, mood);
         migrateSpriteKeys(readerSettings, { character: charName, outfit: outfitName, mood: oldMood }, { mood });
         return done();

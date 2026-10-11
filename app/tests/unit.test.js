@@ -2267,8 +2267,7 @@ test('gate:scene:mood-group-list-shows-the-containers-and-their-count', () => {
         saveUnifiedSettings: () => ({ ok: true }),
     });
     host.openReader({ message: { text: '旁白。' } }, { mode: 'pc' });
-    const opened = host.openSettings({ tab: 'scene' });
-    opened.controller.switchSceneSubTab('rules');
+    const opened = host.openSettings({ page: 'wardrobe' });
     const html = opened.controller.getSnapshot().html;
     assert.match(html, new RegExp(`data-mood-group-count="${extra.length}"`));
     assert.match(html, new RegExp(`class="igs-mood-group-total">${extra.length}</`));
@@ -2276,7 +2275,7 @@ test('gate:scene:mood-group-list-shows-the-containers-and-their-count', () => {
         assert.match(html, new RegExp(`data-mood-group="${group.label}"`));
     }
     assert.match(html, /嘲讽/);
-    assert.match(html, /2 个词/);
+    assert.match(html, /2个词/);
     host.destroy();
 });
 
@@ -3880,12 +3879,12 @@ test('gate:scene:scene-assets-indent-without-horizontal-overflow', () => {
             },
         },
     };
-    // 时间 / 天气行默认收起，场景行上只有「1 个时间 · 1 个天气」。
+    // 时间 / 天气行默认收起，场景行上只有「1个时间 · 1个天气」。
     const collapsed = renderSceneAssetList(scenes);
-    assert.match(collapsed, /data-action="scene-toggle-times:%E6%97%A7%E5%9F%8E" aria-expanded="false">1 个时间 · 1 个天气<\/button>/);
+    assert.match(collapsed, /data-action="scene-toggle-times:%E6%97%A7%E5%9F%8E" aria-expanded="false">1个时间 · 1个天气<\/button>/);
     assert.doesNotMatch(collapsed, /igs-scene-time-group/);
     const html = renderSceneAssetList(scenes, { expandedSlots: new Set(['times\x00旧城']) });
-    assert.match(html, /aria-expanded="true">1 个时间 · 1 个天气/);
+    assert.match(html, /aria-expanded="true">1个时间 · 1个天气/);
     assert.match(html, /class="igs-scene-char-group igs-scene-time-group"/);
     assert.match(html, /class="igs-btn-mgr-row igs-scene-mood-row igs-scene-weather-row"/);
     assert.doesNotMatch(html, /style="margin-left:(?:16|32)px"/);
@@ -4397,7 +4396,7 @@ test('gate:scene:character-dna-lifecycle', async () => {
 test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async () => {
     const { renderCharacterAssetList, renderCharacterDnaEditor } = await import('../src/visual/igs-ui/settings-fields.js');
     const empty = renderCharacterDnaEditor('白墨', null);
-    assert.ok(empty.includes('角色DNA（未填写）'));
+    assert.ok(empty.includes('外貌（DNA）（未填写）'));
     assert.equal((empty.match(/data-dna-field="/g) || []).length, 4);
     // DNA 在角色那一行的 ⋯ 里（「角色设定」），点开才出编辑区。
     const closed = renderCharacterAssetList({ 'A.<b>': { '默认': '' } }, {
@@ -4689,7 +4688,7 @@ test('gate:igs-ui:image-settings-open-character-dna-jumps-without-copying-data',
     assert.ok(renderSource.includes('data-action="open-character-dna"'));
     const dna = { '爱丽丝': { identity: 'silver hair' } };
     const draft = { bridge: { sceneAssets: { enabled: true, characters: {}, characterAliases: {}, characterDna: dna } }, readerSettings: {} };
-    const settingsState = { tab: 'image', draft, readerMode: 'pc', asyncState: { sceneSubTab: 'scenes' } };
+    const settingsState = { tab: 'ai', draft, readerMode: 'pc', asyncState: { page: 'kinds' } };
     let persistCount = 0;
     const ctx = {
         state: { activeSettings: settingsState },
@@ -4700,8 +4699,8 @@ test('gate:igs-ui:image-settings-open-character-dna-jumps-without-copying-data',
         buildRegexPreview: () => '',
     };
     await handleSettingsAction('open-character-dna', ctx);
-    assert.equal(settingsState.tab, 'scene');
-    assert.equal(settingsState.asyncState.sceneSubTab, 'characters');
+    assert.equal(settingsState.tab, 'chars');
+    assert.equal(settingsState.asyncState.page, 'chars');
     assert.equal(draft.bridge.sceneAssets.characterDna, dna);
     assert.equal(persistCount, 0);
 });

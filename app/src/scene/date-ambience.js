@@ -28,11 +28,11 @@ export const DATE_AMBIENCE_KINDS = Object.freeze(['cafe', 'aquarium', 'cinema', 
 export const DATE_STILL_KINDS = Object.freeze(['cafe', 'aquarium', 'cinema', 'beach', 'nightview', 'palace', 'console']);
 
 export const DATE_AMBIENCE_HTML = Object.freeze({
-    cafe: '<i class="igs-dfx-amb-cafelight"></i><i class="igs-dfx-amb-cafedust"></i>',
+    cafe: '<i class="igs-dfx-amb-cafelight"></i><i class="igs-dfx-amb-cafebokeh"></i><i class="igs-dfx-amb-cafepane"></i><i class="igs-dfx-amb-cafedust"></i><i class="igs-dfx-amb-cafesteam"></i>',
     aquarium: '<i class="igs-dfx-amb-caustics"></i><i class="igs-dfx-amb-aquaglow"></i>',
-    cinema: '<i class="igs-dfx-amb-cinedark"></i><i class="igs-dfx-amb-screenglow"></i>',
-    beach: '<i class="igs-dfx-amb-seashimmer"></i><i class="igs-dfx-amb-horizon"></i>',
-    nightview: '<i class="igs-dfx-amb-citybokeh"></i>',
+    cinema: '<i class="igs-dfx-amb-cinedark"></i><i class="igs-dfx-amb-screenglow"></i><i class="igs-dfx-amb-cineseats"></i>',
+    beach: '<i class="igs-dfx-amb-seashimmer"></i><i class="igs-dfx-amb-horizon"></i><i class="igs-dfx-amb-seaplane"></i>',
+    nightview: '<i class="igs-dfx-amb-skyline"></i><i class="igs-dfx-amb-citybokeh"></i>',
     // 电视 / 游戏机：房间偏暗，屏幕的彩色闪光自下而上映在脸上，还有一道缓缓下移的扫描带。
     console: '<i class="igs-dfx-amb-roomdark"></i><i class="igs-dfx-amb-tvlight"></i><i class="igs-dfx-amb-tvscan"></i>',
     palace: '<i class="igs-dfx-amb-palaceglow"></i><i class="igs-dfx-amb-lamps"><b></b><b></b><b></b></i><i class="igs-dfx-amb-veil"></i>',

@@ -12,6 +12,7 @@ import { normalizeDialogBarAlign, normalizeDialogBarButtons, normalizeToolbarSpl
 import {
     ensureImageLoadingSpinner,
     ensureImageEmptyPlaceholder,
+    isImageRetryTap,
     getOwnerWindow,
     readElementHeight,
     readElementWidth,
@@ -34,17 +35,23 @@ import { applyVoiceBark } from './voice-bark.js';
 import { applyTts, normalizeTtsSettings } from './tts.js';
 import { resolveSpriteBaseScale } from './sprite-height.js';
 import { applyStageShakeEffect } from './stage-shake-runtime.js';
+import { playCameraImpactSfx } from './camera-impact.js';
+import { normalizeFxSoundSettings } from './fx-settings.js';
+import { normalizeStageCastSettings } from './stage-direction-settings.js';
 import { applyFxToDom, repositionFxSymbols } from './fx-runtime.js';
 import { applyDanmakuToDom } from './danmaku-runtime.js';
 import { applyItemMentionMarkup, itemMentionsOf, renderItemFx, showItemMention } from './fx-item-render.js';
 import { renderBattleFx } from './fx-battle-render.js';
 import { repositionBattleImpacts } from './fx-battle.js';
 import { renderDailyFx } from './fx-daily.js';
+import { enabledPackIds } from './fx-daily-model.js';
+import { audioCuesOf } from './fx-camera-gate.js';
 import { peekSpriteHead, probeSpriteHead, resolveSpriteHead, spriteBackgroundSize, spriteWidthPercent } from './fx-anchor.js';
 import { applyWeatherFx, resolveWeatherFxTime } from './weather-fx-runtime.js';
 import { applySceneGrade } from './scene-grade.js';
 import { applyStageDirection, cancelCgReveal, decodeSpriteImage, revealCgImage } from './stage-direction-runtime.js';
-import { applyCastToDom, castRomanceAttr, castSlotKey, clearCastDom, isCastAlignEnabled, isCastCollapsed, isCastRomanceDuoEnabled, isStageCastEnabled, layoutCastSlots, resolveCastCapacity, resolveCastRomanceMode, resolveCastRomanceTarget, isCastLeanEnabled, markCalledCast, playCastBeats, resolveCastPosePlan, resolveCastReactPage, applySpeakerFlip, castStageEntrances } from './stage-cast-render.js';
+import { applyCastToDom, castRomanceAttr, castSlotKey, clearCastDom, isCastAlignEnabled, isCastCollapsed, isCastRomanceDuoEnabled, isStageCastEnabled, layoutCastSlots, resolveCastCapacity, resolveCastRomanceMode, resolveCastRomanceTarget, isCastLeanEnabled, markCalledCast, playCastBeats, resolveCastPosePlan, resolveCastReactPage, applySpeakerFlip, castStageEntrances, castKeyOfSnapshot, resolveSpeakerPose } from './stage-cast-render.js';
+import { BACK_HINT_DEFAULT, cancelSpriteTurn, playSpriteTurn } from './sprite-turn.js';
 import { applySavedCastSlot } from './cast-slot-edit.js';
 import { spriteIdentity } from '../../scene/character-outfits.js';
 import { planCastLayouts, playSpeakerCastMotion, playSpeakerMove, resolveCastHandoff } from './stage-cast-motion.js';
@@ -409,9 +416,16 @@ export function buildFallbackSettingsOverlay(doc, snapshot, ctx = {}) {
     head.className = 'igs-settings-head';
     shell.appendChild(head);
 
+    const navToggle = doc.createElement('button');
+    navToggle.className = 'igs-settings-nav-toggle';
+    navToggle.type = 'button';
+    navToggle.setAttribute('data-nav-toggle', '');
+    navToggle.setAttribute('aria-label', '分类菜单');
+    head.appendChild(navToggle);
+
     const title = doc.createElement('div');
     title.className = 'igs-settings-title';
-    title.textContent = '设置';
+    title.textContent = snapshot.tab && snapshot.tab !== 'dash' ? ((snapshot.tabs || []).find((tab) => tab.active) || {}).label || '设置' : '设置';
     head.appendChild(title);
 
     const themeSwitch = doc.createElement('div');
@@ -438,24 +452,36 @@ export function buildFallbackSettingsOverlay(doc, snapshot, ctx = {}) {
     close.textContent = '×';
     head.appendChild(close);
 
-    const tabs = doc.createElement('div');
-    tabs.className = 'igs-settings-tabs';
-    shell.appendChild(tabs);
+    const main = doc.createElement('div');
+    main.className = 'igs-settings-main';
+    shell.appendChild(main);
+
+    const nav = doc.createElement('nav');
+    nav.className = 'igs-settings-nav';
+    main.appendChild(nav);
     for (const tab of snapshot.tabs || []) {
         const button = doc.createElement('button');
-        button.className = `igs-settings-tab${tab.active ? ' is-active' : ''}`;
+        button.className = `igs-settings-nav-item${tab.active ? ' is-active' : ''}`;
         button.type = 'button';
-        button.setAttribute('data-tab', tab.id);
+        button.setAttribute('data-cat', tab.id);
         button.textContent = tab.label;
-        tabs.appendChild(button);
+        nav.appendChild(button);
     }
+
+    const mask = doc.createElement('div');
+    mask.className = 'igs-settings-nav-mask';
+    mask.setAttribute('data-nav-toggle', '');
+    main.appendChild(mask);
+
+    const content = doc.createElement('div');
+    content.className = 'igs-settings-content';
+    main.appendChild(content);
 
     const body = doc.createElement('div');
     body.className = 'igs-settings-body';
     if (typeof ctx.renderSettingsBody === 'function') {
-        body.innerHTML = ctx.renderSettingsBody(snapshot.tab, snapshot.draft, {
-            readerSubTab: snapshot.readerSubTab,
-            sceneSubTab: snapshot.sceneSubTab,
+        body.innerHTML = ctx.renderSettingsBody(snapshot.page, snapshot.draft, {
+            page: snapshot.page,
             promptRuleStatus: snapshot.resultText && snapshot.resultText.promptRule,
             promptRuleDraft: snapshot.resultText && snapshot.resultText.promptRuleDraft,
             imageResult: snapshot.resultText && snapshot.resultText.image,
@@ -463,7 +489,7 @@ export function buildFallbackSettingsOverlay(doc, snapshot, ctx = {}) {
             virtualRegexPreview: snapshot.resultText && snapshot.resultText.virtualRegex,
         });
     }
-    shell.appendChild(body);
+    content.appendChild(body);
     return overlay;
 }
 
@@ -1219,6 +1245,34 @@ function cancelSpriteReveal(element) {
     if (element) spriteRevealToken.delete(element);
 }
 
+function cancelSpriteExit(current, element) {
+    const exit = current && current.spriteExit;
+    if (!exit) return;
+    current.spriteExit = null;
+    try { exit.anim.cancel(); } catch (error) { /* 动画已结束 */ }
+    if (element) element.style.opacity = '';
+}
+
+// 旁白写了这个人离场：立绘朝画外淡出，动效关闭或低画质直接消失。
+function playSpriteExit(current, element, { reduced = false, lowQuality = false } = {}) {
+    if (reduced || lowQuality || !element || typeof element.animate !== 'function') return false;
+    const x = parseFloat(String(element.style.backgroundPosition || '').split(/\s+/)[0]);
+    const shift = Number.isFinite(x) && x < 50 ? '-9%' : '9%';
+    const token = {};
+    const finish = () => {
+        if (current.spriteExit !== token) return;
+        current.spriteExit = null;
+        element.style.display = 'none';
+        writeBackgroundImage(element, '');
+        element.style.opacity = '';
+    };
+    token.anim = element.animate([{ opacity: 1, translate: '0 0' }, { opacity: 0, translate: shift + ' 0' }], { duration: 320, easing: 'ease-in', fill: 'forwards' });
+    current.spriteExit = token;
+    token.anim.onfinish = finish;
+    token.anim.oncancel = finish;
+    return true;
+}
+
 function revealSpriteImage(element, url, paint) {
     if (!element || typeof paint !== 'function') return false;
     const token = {};
@@ -1354,7 +1408,9 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
             removeImageEmptyPlaceholder(bg);
             ensureImageLoadingSpinner(bg);
         } else if (expectsImage) {
-            ensureImageEmptyPlaceholder(bg, '图片未生成');
+            ensureImageEmptyPlaceholder(bg, '图片未生成', snapshot.content.illustrationSlot
+                ? { busy: snapshot.content.imageRetrying === true, reason: snapshot.content.imageFailureReason }
+                : null);
         } else {
             removeImageLoadingSpinner(bg);
             removeImageEmptyPlaceholder(bg);
@@ -1457,8 +1513,15 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
     // 站位姿态（castStage）只作用于多人布局：收成单人或槽位编辑时 castPlanInput 为空，姿态自然暂停。
     const castPlan = castPlanInput ? resolveCastPosePlan(snapshot, planCastLayouts(castPlanInput), castSpeakerKey) : null;
     const castFocus = castRomancePin;
+    let speakerBack = null;
+    const castTurnKinds = {};
+    if (castPlan) {
+        const turnKey = castKeyOfSnapshot(snapshot);
+        for (const [name, kind] of Object.entries((snapshot.content.fx && snapshot.content.fx.turns) || {})) castTurnKinds[turnKey(name) || name] = kind;
+    }
     const castFxTargets = castPlan ? castPlan.members.map((m) => ({ character: m.character, url: m.url, posX: m.posX, posY: m.posY, scale: m.scale, head: m.head, flip: m.flip === true })) : [];
     if (spriteEl && spriteAssetUrl) {
+        cancelSpriteExit(current, spriteEl);
         if (spriteEnhance && !current.spriteEditMode) spriteEl.style.setProperty('--igs-sprite-enhance', spriteEnhance);
         else spriteEl.style.removeProperty('--igs-sprite-enhance');
         const spriteNarration = ['narration', 'chat', 'system'].includes(snapshot.content.textType) && spriteSettings.dimSpriteOnNarration !== false;
@@ -1473,17 +1536,22 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
         const stageW = stageMotion.clientWidth || castView.innerWidth;
         const stageH = stageMotion.clientHeight || castView.innerHeight;
         let spritePose = null;
+        speakerBack = null;
         if (!current.spriteEditMode) {
             const spriteKey = snapshot.content.spriteCharacter || snapshot.content.speaker;
             const spriteMood = snapshot.content.spriteMood || '';
             const spriteOutfit = snapshot.content.spriteOutfit || '';
             const layout = { ...presentSpriteLayout(spriteKey, spriteMood, spriteOutfit) };
+            const speakerPose = castPlan && castPlan.speaker
+                ? { flip: castPlan.speaker.flip === true, back: castPlan.speaker.back === true, backText: castPlan.speaker.backText || '', turn: resolveSpeakerPose(snapshot, spriteKey).turn }
+                : resolveSpeakerPose(snapshot, spriteKey);
             if (castPlan && castPlan.speaker) Object.assign(layout, { posX: castPlan.speaker.posX, posY: castPlan.speaker.posY, scale: castPlan.speaker.scale });
             else if (speakerSlotX != null) layout.posX = speakerSlotX;
             stageSprite = { url: spriteAssetUrl, key: spriteKey, posX: Number(layout.posX) };
-            fxSprite = { url: spriteAssetUrl, posX: Number(layout.posX), posY: Number(layout.posY), scale: Number(layout.scale), head: resolveSpriteHead(snapshot.readerSettings.spriteHeads, spriteKey, spriteMood, spriteOutfit), multi: Boolean(castPlan && castPlan.members.length), flip: Boolean(castPlan && castPlan.speaker && castPlan.speaker.flip) };
+            fxSprite = { url: spriteAssetUrl, posX: Number(layout.posX), posY: Number(layout.posY), scale: Number(layout.scale), head: resolveSpriteHead(snapshot.readerSettings.spriteHeads, spriteKey, spriteMood, spriteOutfit), multi: Boolean(castPlan && castPlan.members.length), flip: speakerPose.flip };
             const probed = peekSpriteHead(spriteAssetUrl);
-            spritePose = { layout, flip: fxSprite.flip, widthPct: spriteWidthPercent(stageW, stageH, { ...layout, naturalW: probed && probed.naturalW, naturalH: probed && probed.naturalH }), spriteKey, spriteMood, spriteOutfit };
+            speakerBack = speakerPose.back ? speakerPose.backText || BACK_HINT_DEFAULT : null;
+            spritePose = { layout, flip: fxSprite.flip, back: speakerPose.back, turn: speakerPose.turn, widthPct: spriteWidthPercent(stageW, stageH, { ...layout, naturalW: probed && probed.naturalW, naturalH: probed && probed.naturalH }), spriteKey, spriteMood, spriteOutfit };
         }
         revealSpriteImage(spriteEl, spriteAssetUrl, () => {
             writeBackgroundImage(spriteEl, spriteAssetUrl);
@@ -1503,21 +1571,43 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
             spriteEl.style.backgroundSize = spriteBackgroundSize(spritePose.layout.scale);
             spriteEl.style.backgroundPosition = `${spritePose.layout.posX}% ${spritePose.layout.posY}%`;
             applySpeakerFlip(spriteEl, spritePose.flip, spritePose.layout.posX, spritePose.widthPct);
+            if (spritePose.back) spriteEl.setAttribute('data-igs-sprite-back', '1');
+            else spriteEl.removeAttribute('data-igs-sprite-back');
+            const turnPage = `${snapshot.messageId}:${snapshot.content.currentIndex}`;
+            const prevTurn = current.spriteTurn;
+            if (!prevTurn || prevTurn.page !== turnPage) cancelSpriteTurn(spriteEl);
+            if (prevTurn && prevTurn.page !== turnPage && prevTurn.key === spritePose.spriteKey && prevTurn.flip !== spritePose.flip) {
+                playSpriteTurn(spriteEl, {
+                    from: prevTurn.flip, to: spritePose.flip, prop: 'rotate', variant: spritePose.turn, posX: spritePose.layout.posX,
+                    reduced: prefersReducedMotion(), lowQuality: root.getAttribute('data-igs-quality') === 'low', stage: stageMotion,
+                    sound: normalizeFxSoundSettings(snapshot.readerSettings && snapshot.readerSettings.fxSound),
+                });
+            }
+            current.spriteTurn = { page: turnPage, key: spritePose.spriteKey, flip: spritePose.flip };
             igsDebug('[DEBUG-sprite] apply-layout', { mode: snapshot.mode, speaker: spritePose.spriteKey, mood: spritePose.spriteMood, outfit: spritePose.spriteOutfit, index: snapshot.content.currentIndex, layout: { ...spritePose.layout } });
         });
+    } else if (spriteEl && current.spriteExit) {
+        cancelSpriteReveal(spriteEl);
     } else if (spriteEl) {
         cancelSpriteReveal(spriteEl);
+        const exiting = snapshot.content.spriteLeft === true && Boolean(current.spriteLook) && spriteEl.style.display === 'block' && !current.spriteEditMode;
         spriteEl.style.removeProperty('--igs-sprite-enhance');
         current.spriteLook = null;
+        current.spriteTurn = null;
+        cancelSpriteTurn(spriteEl);
+        spriteEl.removeAttribute('data-igs-sprite-back');
         clearSpriteOutfitSwap(spriteEl);
-        applySpeakerFlip(spriteEl, false);
-        spriteEl.classList.remove('igs-sprite-narration');
-        applySpeakerFlip(spriteEl, false);
-        // 先藏再清图。清掉图时层还亮着，下一回读布局会把空层画成一闪黑。
-        spriteEl.style.display = 'none';
-        writeBackgroundImage(spriteEl, '');
-        spriteEl.style.filter = '';
-        spriteEl.style.setProperty('-webkit-filter', '');
+        const fading = exiting && playSpriteExit(current, spriteEl, { reduced: prefersReducedMotion(), lowQuality: root.getAttribute('data-igs-quality') === 'low' });
+        if (!fading) {
+            applySpeakerFlip(spriteEl, false);
+            spriteEl.classList.remove('igs-sprite-narration');
+            applySpeakerFlip(spriteEl, false);
+            // 先藏再清图。清掉图时层还亮着，下一回读布局会把空层画成一闪黑。
+            spriteEl.style.display = 'none';
+            writeBackgroundImage(spriteEl, '');
+            spriteEl.style.filter = '';
+            spriteEl.style.setProperty('-webkit-filter', '');
+        }
     }
     const castReduced = prefersReducedMotion();
     // 陪衬朝向说话人：减少动效、暧昧退场或开关关闭时不倾；旁白页（无说话人槽位）保持上一页朝向。
@@ -1541,7 +1631,7 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
         // 贴底探测未就绪时，新上台的陪衬等下方重排完成再滑入（applyCastToDom 内有超时兜底）。
         let releaseCastAlign = () => {};
         const castAlignReady = castPlan.pending.length ? new Promise((resolve) => { releaseCastAlign = resolve; }) : null;
-        applyCastToDom(root, markCalledCast(castPlan.members, castReact.called), { reduced: castReduced, handoff, focus: castFocus, lean: castLean, entrances: castStageEntrances(snapshot), ready: castAlignReady, spriteEnhance });
+        applyCastToDom(root, markCalledCast(castPlan.members, castReact.called), { reduced: castReduced, handoff, focus: castFocus, lean: castLean, entrances: castStageEntrances(snapshot), ready: castAlignReady, spriteEnhance, turn: castTurnKinds, lowQuality: root.getAttribute('data-igs-quality') === 'low', turnStage: stageMotion, turnSound: normalizeFxSoundSettings(snapshot.readerSettings && snapshot.readerSettings.fxSound) });
         const castReactKey = `${snapshot.messageId}:${snapshot.content.currentIndex}`;
         if (current.castReactKey !== castReactKey) {
             current.castReactKey = castReactKey;
@@ -1721,6 +1811,7 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
         settings: stageShakeSettings,
         emotion: snapshot.content && snapshot.content.statusEmotion,
         key: stageShakeKey,
+        playSfx: () => playCameraImpactSfx(normalizeFxSoundSettings(snapshot.readerSettings && snapshot.readerSettings.fxSound)),
     });
     const fxTheme = resolveActiveTheme(snapshot);
     const fxResult = applyFxToDom(root, snapshot, {
@@ -1829,6 +1920,8 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
             battle: Boolean(snapshot.content && snapshot.content.fx && snapshot.content.fx.battle),
             romance: Boolean(snapshot.content && snapshot.content.fx && snapshot.content.fx.romance),
             worldview: snapshot.readerSettings && snapshot.readerSettings._worldview,
+            packs: enabledPackIds(snapshot.readerSettings),
+            ...audioCuesOf(snapshot.content && snapshot.content.fx, snapshot.readerSettings),
             // 留白：告白标签或说出口的告白台词让音乐停几页；按页计数，同一页重绘不重复算。
             confess: Boolean(snapshot.content && snapshot.content.fx && snapshot.content.fx.confess),
             confessText: typewriterTextType === 'dialogue' && isConfessionLine(snapshot.content && snapshot.content.text),
@@ -1838,6 +1931,8 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
     });
     const speakerEl = root.querySelector('#igs-speaker');
     if (speakerEl) {
+        if (speakerBack && normalizeStageCastSettings(snapshot.readerSettings.stageCast).backHint) speakerEl.setAttribute('data-igs-back-hint', speakerBack);
+        else speakerEl.removeAttribute('data-igs-back-hint');
         const theme = resolveActiveTheme(snapshot);
         const sceneAssetsEnabled = snapshot.readerSettings._sceneAssets && snapshot.readerSettings._sceneAssets.enabled;
         if (sceneAssetsEnabled && snapshot.content.speaker) {
@@ -1971,6 +2066,11 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
                 if (current.runtime) current.runtime.dragSuppressClick = false;
                 return;
             }
+            if (isImageRetryTap(bg, Number(event && event.clientX), Number(event && event.clientY))
+                && typeof ctx.handleReaderAction === 'function') {
+                ctx.handleReaderAction('retry-failed-cg');
+                return;
+            }
             const live = current.snapshot || snapshot;
             const tripleOn = current.lastPointerType === 'touch' && live && live.readerSettings && live.readerSettings.dblclickCgOnly === true;
             if (!tripleOn) {
@@ -2007,6 +2107,7 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
                 event.target.closest('.igs-controls')
                 || event.target.closest('#igs-dialog-bar')
                 || event.target.closest('#igs-gen-strip')
+                || event.target.closest('#igs-missed-hint')
                 || event.target.closest('#igs-ctrl-bar')
                 || event.target.closest('#igs-settings')
             )) {

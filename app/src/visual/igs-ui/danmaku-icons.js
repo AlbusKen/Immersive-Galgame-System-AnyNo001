@@ -1,6 +1,9 @@
 // 直播间图标：统一 24 视框、1.6 细描边、圆角端点，描边随 currentColor；禁止用 emoji 代替。
 const svg = (body) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 
+// 各入口按钮共用的小手机图标（观众弹幕入口、社区回看入口）：32 视框，纯描边随 currentColor，无半透明底。
+export const PHONE_ENTRY_ICON = '<svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="9" y="3.2" width="14" height="25.6" rx="3.6" stroke="currentColor" stroke-width="1.6"/><path d="M13.8 6.6h4.4M14 25.4h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+
 export const LIVE_ICONS = Object.freeze({
     close: svg('<path d="M7 7l10 10M17 7 7 17"/>'),
     heart: svg('<path d="M12 20.2s-7.4-4.5-7.4-10.1A4.2 4.2 0 0 1 12 7.4a4.2 4.2 0 0 1 7.4 2.7c0 5.6-7.4 10.1-7.4 10.1z" fill="currentColor" stroke="none"/>'),

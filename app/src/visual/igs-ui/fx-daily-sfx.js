@@ -4,6 +4,8 @@ import { audioBusContext, busInput, resumeAudioBus } from './audio-bus.js';
 import { duckSceneAudio } from './scene-audio.js';
 import { GAME_SFX_DEFS } from './fx-daily-game-sfx.js';
 import { CAMPUS_SFX_DEFS } from './fx-daily-campus-sfx.js';
+import { R3_SFX_DEFS } from './fx-daily-r3-sfx.js';
+import { FX_PACK_SFX_DEFS } from '../../scene/fx-packs.js';
 
 const TONE_GAIN = 0.35;
 const NOISE_GAIN = 0.3;
@@ -509,6 +511,55 @@ const DEFS = {
             n(0.03, 0.012, 0.16, { filter: 'highpass', freq: 4200, q: 0.7, attack: 0.001 }),
         ],
     },
+    // 碰杯按材质：玻璃与金属有非谐泛音长鸣（两只杯子略失谐产生拍音），瓷短促，塑料、易拉罐、木碗只有闷响不拖尾。
+    'clink-glass': {
+        partials: [
+            p('sine', 2637, 2637, 0.02, 0.9, 0.16, { attack: 0.001 }),
+            p('sine', 2651, 2651, 0.02, 0.8, 0.12, { attack: 0.001 }),
+            p('sine', 3960, 3960, 0.02, 0.45, 0.07, { attack: 0.001 }),
+            p('sine', 5310, 5310, 0.02, 0.2, 0.04, { attack: 0.001 }),
+        ],
+        noise: [n(0.02, 0.012, 0.18, { filter: 'highpass', freq: 5000, q: 0.7, attack: 0.001 })],
+    },
+    'clink-ceramic': {
+        partials: [
+            p('sine', 1420, 1420, 0.02, 0.18, 0.16, { attack: 0.001 }),
+            p('sine', 2930, 2930, 0.02, 0.08, 0.06, { attack: 0.001 }),
+        ],
+        noise: [n(0.02, 0.02, 0.24, { freq: 2200, q: 1.4, attack: 0.001 })],
+    },
+    'clink-plastic': {
+        partials: [p('sine', 330, 220, 0.02, 0.06, 0.28, { attack: 0.002, sweep: 1 })],
+        noise: [
+            n(0.02, 0.05, 0.3, { freq: 900, q: 1, attack: 0.002 }),
+            n(0.06, 0.09, 0.07, { filter: 'highpass', freq: 3500, q: 0.6, attack: 0.01 }),
+        ],
+    },
+    'clink-can': {
+        partials: [
+            p('sine', 780, 760, 0.02, 0.12, 0.18, { attack: 0.001 }),
+            p('sine', 1172, 1150, 0.02, 0.08, 0.08, { attack: 0.001 }),
+        ],
+        noise: [
+            n(0.02, 0.04, 0.26, { freq: 1800, q: 3, attack: 0.001 }),
+            n(0.12, 0.3, 0.06, { filter: 'lowpass', freq: 600, q: 0.7, attack: 0.05 }),
+        ],
+    },
+    'clink-wood': {
+        partials: [
+            p('sine', 210, 170, 0.02, 0.1, 0.4, { attack: 0.002, sweep: 1 }),
+            p('sine', 430, 400, 0.02, 0.05, 0.12, { attack: 0.002 }),
+        ],
+        noise: [n(0.02, 0.04, 0.3, { filter: 'lowpass', freq: 650, q: 0.8, attack: 0.001 })],
+    },
+    'clink-metal': {
+        partials: [
+            p('sine', 1850, 1850, 0.02, 0.7, 0.14, { attack: 0.001 }),
+            p('sine', 2964, 2964, 0.02, 0.4, 0.07, { attack: 0.001 }),
+            p('sine', 4420, 4420, 0.02, 0.18, 0.04, { attack: 0.001 }),
+        ],
+        noise: [n(0.02, 0.015, 0.2, { freq: 3200, q: 1.2, attack: 0.001 })],
+    },
     'tv-on': {
         partials: [
             p('sine', 95, 50, 0, 0.12, 0.35, { attack: 0.002, sweep: 1 }),
@@ -556,6 +607,17 @@ const DEFS = {
         ],
         noise: [
             n(0.3, 0.6, 0.06, { filter: 'highpass', freq: 6000, q: 0.7, attack: 0.25 }),
+        ],
+    },
+    // 摸头：手落下的一记轻按，发丝窸窣三下（对应来回揉），末了一口柔和的气声。
+    pat: {
+        partials: [p('sine', 150, 96, 0.26, 0.14, 0.32, { attack: 0.01, sweep: 1 })],
+        noise: [
+            n(0.26, 0.12, 0.14, { filter: 'lowpass', freq: 700, q: 0.7, attack: 0.01 }),
+            n(0.5, 0.2, 0.13, { freq: 4200, q: 0.8, attack: 0.06 }),
+            n(0.75, 0.2, 0.13, { freq: 3600, q: 0.8, attack: 0.06 }),
+            n(1.0, 0.2, 0.11, { freq: 4000, q: 0.8, attack: 0.06 }),
+            n(1.3, 0.5, 0.05, { filter: 'highpass', freq: 5200, q: 0.7, attack: 0.2 }),
         ],
     },
     // 玩乐 · 唱歌：三个柔和的上行音，像哼出的一小段旋律。
@@ -670,6 +732,63 @@ const DEFS = {
         partials: [146.83, 196, 220, 293.66].flatMap((freq, i) => pluck(freq, [0, 0.32, 0.62, 1.0][i], 1.5, 0.2)),
         noise: [0, 0.32, 0.62, 1.0].map((start) => pluckClick(start, 0.08, 1500)),
     },
+    // 做饭：热油下锅的「滋啦」、锅铲磕锅沿一下，成品出锅时清脆一声「叮」。
+    cook: {
+        partials: bellNote(1760, 1.5, 0.8, 0.14),
+        noise: [
+            n(0, 1.3, 0.3, { filter: 'highpass', freq: 3600, freqTo: 5200, q: 0.6, attack: 0.04 }),
+            n(0, 1.2, 0.12, { filter: 'lowpass', freq: 900, freqTo: 400, q: 0.7, attack: 0.1, env: 'flat' }),
+            ...crackle(seeded(131), 0.1, 1.1, 9),
+            n(1.15, 0.03, 0.4, { filter: 'highpass', freq: 3000, q: 0.8, attack: 0.001 }),
+        ],
+    },
+    // 体温计：电子体温计「嘀嘀嘀」三短一长。
+    fever: {
+        partials: [0, 0.2, 0.4, 0.7].map((start, i) => p('sine', 2960, 2960, start, i === 3 ? 0.5 : 0.1, 0.22, { attack: 0.004 })),
+        noise: [],
+    },
+    // 撸猫：一声软软的「喵」，随后低低的呼噜，毛的窸窣。
+    cat: {
+        partials: [
+            p('triangle', 620, 940, 0, 0.18, 0.12, { attack: 0.03, sweep: 1 }),
+            p('triangle', 940, 560, 0.18, 0.3, 0.12, { attack: 0.01, sweep: 1 }),
+        ],
+        noise: [
+            n(0, 0.4, 0.1, { filter: 'bandpass', freq: 3000, freqTo: 2200, q: 0.8, attack: 0.08 }),
+            ...Array.from({ length: 12 }, (_, i) => n(0.5 + i * 0.1, 0.07, 0.12, { filter: 'lowpass', freq: 220, q: 0.8, attack: 0.02 })),
+        ],
+    },
+    // 猜拳：握拳在掌心里晃三下的闷响，出拳时一声清脆的「啪」。
+    rps: {
+        partials: [0, 0.3, 0.6].map((start) => p('sine', 210, 120, start, 0.09, 0.3, { attack: 0.002, sweep: 1 })),
+        noise: [
+            ...[0, 0.3, 0.6].map((start) => n(start, 0.04, 0.2, { filter: 'lowpass', freq: 800, q: 0.7, attack: 0.001 })),
+            n(0.92, 0.05, 0.4, { filter: 'highpass', freq: 3200, q: 0.7, attack: 0.001 }),
+            n(0.92, 0.08, 0.2, { filter: 'lowpass', freq: 600, q: 0.7, attack: 0.001 }),
+        ],
+    },
+    // 敬茶：先是茶水斟入盏中的细流，末了茶盏轻轻落在托上的瓷响。
+    tea: {
+        partials: [
+            p('sine', 3100, 3100, 1.15, 0.28, 0.14, { attack: 0.001 }),
+            p('sine', 4680, 4680, 1.15, 0.12, 0.06, { attack: 0.001 }),
+            p('sine', 520, 380, 1.15, 0.08, 0.1, { attack: 0.002, sweep: 1 }),
+        ],
+        noise: [
+            n(0, 1.0, 0.16, { filter: 'bandpass', freq: 1800, freqTo: 3000, q: 1.2, attack: 0.15 }),
+            n(0.1, 0.9, 0.08, { filter: 'lowpass', freq: 700, q: 0.7, attack: 0.2, env: 'flat' }),
+            n(1.15, 0.02, 0.18, { filter: 'highpass', freq: 3500, q: 0.8, attack: 0.001 }),
+        ],
+    },
+    // 下棋：棋子落在木棋盘上的清脆「嗒」，盘面带一点空腔的回响。
+    go: {
+        partials: [
+            p('sine', 1500, 900, 0, 0.06, 0.26, { attack: 0.001, sweep: 1 }),
+            p('sine', 2850, 2850, 0, 0.03, 0.08, { attack: 0.001 }),
+            p('sine', 240, 200, 0, 0.16, 0.14, { attack: 0.002 }),
+        ],
+        noise: [n(0, 0.025, 0.3, { filter: 'bandpass', freq: 2400, q: 1.1, attack: 0.001 })],
+    },
     // 点蜡烛：先是擦火柴的一下短促「嚓」，随即烛焰点燃的一声轻「呼」，带一点火苗的细碎噼啪。
     candle: {
         partials: [p('sine', 150, 90, 0.24, 0.3, 0.1, { attack: 0.03, sweep: 1 })],
@@ -718,6 +837,10 @@ const DEFS = {
 Object.assign(DEFS, GAME_SFX_DEFS);
 // 校园演出的音效（粉笔、传纸条、抽屉、点名、考试、文化祭、毕业、纽扣）在 fx-daily-campus-sfx.js。
 Object.assign(DEFS, CAMPUS_SFX_DEFS);
+// 古风修仙与体贴动作的专属音效在 fx-daily-r3-sfx.js。
+Object.assign(DEFS, R3_SFX_DEFS);
+// 题材包的音效在各包清单的 sfx 字段，汇总见 scene/fx-packs.js。
+Object.assign(DEFS, FX_PACK_SFX_DEFS);
 
 export const DAILY_SFX = Object.freeze(Object.fromEntries(Object.entries(DEFS).map(([kind, def]) => [
     kind,

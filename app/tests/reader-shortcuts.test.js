@@ -56,6 +56,6 @@ test('设置页冲突提示与说明文字', async () => {
     const clashed = renderShortcutSettings({ save: ['KeyS'] }, pc);
     assert.ok(clashed.includes('is-conflict'));
     assert.ok(clashed.includes('与「快速存档」冲突'));
-    assert.ok(clashed.includes('有 2 个动作的快捷键冲突'));
+    assert.ok(clashed.includes('有2个动作的快捷键冲突'));
     assert.equal(renderShortcutSettings({}, { matchMedia: () => ({ matches: false }) }), '');
 });

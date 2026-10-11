@@ -6,6 +6,7 @@ import { findCalledCast } from '../../scene/stage-cast.js';
 import { CAST_CALLED_FRAME, CAST_DIM_FRAME, CAST_FOCUS_FRAME, CAST_HANDOFF_MS, CAST_LIT_FRAME, CAST_MOVE_MS, CAST_SLIDE_PCT, castSideOf } from './stage-cast-motion.js';
 import { playSpriteAction } from './sprite-actions.js';
 import { decodeSpriteImage } from './stage-direction-runtime.js';
+import { playSpriteTurn } from './sprite-turn.js';
 import { peekSpriteHead, spriteBackgroundSize, spriteWidthPercent } from './fx-anchor.js';
 
 const NARROW_MODES = new Set(['mobile', 'embedded']);
@@ -322,7 +323,8 @@ export function applyCastToDom(root, members = [], motion = {}) {
         const focused = Boolean(focus) && m.character === focus;
         const baseFrame = focused ? CAST_FOCUS_FRAME : (m.called === true || m.front === true) ? CAST_CALLED_FRAME : CAST_DIM_FRAME;
         const enhance = typeof motion.spriteEnhance === 'string' ? motion.spriteEnhance : '';
-        const frame = enhance ? `${baseFrame} ${enhance}` : baseFrame;
+        const lit = m.back === true ? `${baseFrame} brightness(.78)` : baseFrame;
+        const frame = enhance ? `${lit} ${enhance}` : lit;
         const prevFrame = el.style.filter;
         el.style.filter = frame;
         el.style.setProperty('-webkit-filter', frame);
@@ -338,9 +340,13 @@ export function applyCastToDom(root, members = [], motion = {}) {
         if (el.style.backgroundImage !== image) el.style.visibility = 'hidden';
         const widthPct = spriteWidthPercent(host && host.clientWidth, host && host.clientHeight, { posX: m.posX, posY: m.posY, scale: m.scale, naturalW: probed && probed.naturalW, naturalH: probed && probed.naturalH });
         setStyleProp(el, '--igs-cast-origin-x', `${flipped ? castFlipOriginX(m.posX, widthPct) : m.posX}%`);
+        const wasFlipped = el.hasAttribute('data-igs-cast-flip');
         setStyleProp(el, 'scale', flipped ? '-1 1' : '');
         if (flipped) el.setAttribute('data-igs-cast-flip', '1');
         else el.removeAttribute('data-igs-cast-flip');
+        if (!entering && !leaving && wasFlipped !== flipped && motion.turn) {
+            playSpriteTurn(el, { from: wasFlipped, to: flipped, prop: 'scale', variant: motion.turn[m.character] || '', posX: m.posX, reduced, lowQuality: motion.lowQuality === true, stage: motion.turnStage || null, sound: motion.turnSound || null });
+        }
         // 呼吸由根节点 data-igs-cast-breathe（舞台调度写入）控制；相位变量常驻，开关切换时不重新起步。
         const phase = castBreathePhase(m.character);
         setStyleProp(el, '--igs-cast-breathe', `${phase.period}s`);
@@ -581,7 +587,7 @@ export const CAST_POSE_FRONT_SCALE = 1.06;
 // plan 为 planCastLayouts 的结果；speakerKey 为说话人主名（说话人条目本身不带 character）。
 // poses / links 来自 fx（键可为别名，经 keyOf 归一）；返回新 plan，条目带 flip / front，posX / scale 已套用姿态。
 // 靠近 / 拉开的方向按两人当前的左右关系决定；任一方不在台上时忽略该对。
-export function applyCastPoses(plan, { poses = {}, links = [], speakerKey = '', keyOf = (name) => name } = {}) {
+export function applyCastPoses(plan, { poses = {}, links = [], speakerKey = '', keyOf = (name) => name, turns = {} } = {}) {
     if (!plan) return plan;
     const canon = (name) => String(keyOf(String(name || '').trim()) || name || '').trim();
     const entries = [];
@@ -593,6 +599,7 @@ export function applyCastPoses(plan, { poses = {}, links = [], speakerKey = '', 
         const key = canon(name);
         if (key && value) pose.set(key, value);
     }
+    const turnOf = new Map(Object.entries(turns && typeof turns === 'object' ? turns : {}).map(([name, kind]) => [canon(name), kind]));
     const shift = new Map();
     for (const link of Array.isArray(links) ? links : []) {
         const a = byChar.get(canon(link && link.a));
@@ -604,10 +611,18 @@ export function applyCastPoses(plan, { poses = {}, links = [], speakerKey = '', 
         shift.set(right, (shift.get(right) || 0) - dir * CAST_POSE_SHIFT);
     }
     for (const e of entries) {
-        const p = pose.get(e.character) || {};
+        let p = pose.get(e.character) || {};
+        // 甩头离开留下的背对只属于离开那一页，之后回台恢复正面。
+        if (p.storm === true && turnOf.get(e.character) !== 'storm') p = {};
         if (shift.has(e)) e.ref.posX = Math.round((Number(e.ref.posX) + shift.get(e)) * 100) / 100;
         e.ref.flip = p.flip === true;
+        if (p.face && byChar.has(canon(p.face))) {
+            const other = byChar.get(canon(p.face));
+            e.ref.flip = Number(e.ref.posX) > Number(other.ref.posX);
+        }
         e.ref.front = p.front === true;
+        e.ref.back = p.back === true;
+        if (p.back === true && p.backText) e.ref.backText = String(p.backText);
         if (e.ref.front) e.ref.scale = Math.round(Number(e.ref.scale) * CAST_POSE_FRONT_SCALE * 100) / 100;
     }
     return {
@@ -615,6 +630,30 @@ export function applyCastPoses(plan, { poses = {}, links = [], speakerKey = '', 
         speaker: plan.speaker ? entries[0].ref : null,
         members: entries.filter((e) => !e.speaker).map((e) => e.ref),
     };
+}
+
+// 单人立绘的站位姿态：只跟随 castStage（与提示词注入同一开关，默认关；不需要开多角色同屏总开关）。
+// 返回 { flip, back, backText, turn }；开关关闭或没写标签时 flip 为 false。turn 为本页变体（glance / storm / face / back / turn 以外为空）。
+// 甩头离开（storm）留下的背对只属于离开那一页：之后再开口的页视为回台，朝向恢复正面。
+export function resolveSpeakerPose(snapshot, speakerKey = '') {
+    const none = { flip: false, back: false, backText: '', turn: '' };
+    const reader = (snapshot && snapshot.readerSettings) || {};
+    const cast = normalizeStageCastSettings(reader.stageCast);
+    if (!cast.castStage || !speakerKey) return none;
+    const fx = (snapshot && snapshot.content && snapshot.content.fx) || {};
+    const keyOf = castKeyOfSnapshot(snapshot);
+    const me = keyOf(speakerKey) || speakerKey;
+    const find = (table) => {
+        for (const [name, value] of Object.entries(table && typeof table === 'object' ? table : {})) {
+            if ((keyOf(name) || name) === me) return value;
+        }
+        return null;
+    };
+    const pose = find(fx.poses) || {};
+    const turn = find(fx.turns) || '';
+    const turnKind = typeof turn === 'string' ? turn : '';
+    if (pose.storm === true && turnKind !== 'storm') return none;
+    return { flip: pose.flip === true, back: pose.back === true, backText: pose.back === true && pose.backText ? String(pose.backText) : '', turn: turnKind };
 }
 
 // 站位姿态接入：stageCast.enabled 且 castStage 开启时把 fx.poses / fx.links 套到布局上，否则原样返回。
@@ -629,7 +668,7 @@ export function resolveCastPosePlan(snapshot, plan, speakerKey = '') {
         const raw = String(name || '').trim();
         return raw ? resolveCharacterKey(assets.characters, assets.characterAliases, raw) || raw : '';
     };
-    return applyCastPoses(plan, { poses: fx.poses, links: fx.links, speakerKey, keyOf });
+    return applyCastPoses(plan, { poses: fx.poses, links: fx.links, speakerKey, keyOf, turns: fx.turns });
 }
 
 // 翻转时的横向原点（百分比）：立绘元素铺满舞台、靠 background-position 摆位，绕图的中心镜像才不会整体平移。

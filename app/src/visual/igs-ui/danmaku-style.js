@@ -1,6 +1,8 @@
 // 弹幕样式：全部挂在 #igs-fx-stage（立绘之上、对话层之下）内的 .igs-dm-root，天然不压对话框。
 // 运动只用 transform / opacity 动画；描边用无模糊的硬阴影或 text-stroke；不用 backdrop-filter 与滤镜动画。
 // 减少动态效果沿用 fx-style 对 .igs-fx-layer 的整体降级，这里只补静态落位。
+import { ENTRY_DOCK_CSS } from './entry-dock.js';
+
 export const DANMAKU_STYLE_TEXT = `
 .igs-dm-root{position:absolute;inset:0;pointer-events:none;overflow:hidden;contain:layout paint style;}
 .igs-dm-front{position:absolute;inset:0;pointer-events:none;}
@@ -8,7 +10,7 @@ export const DANMAKU_STYLE_TEXT = `
 @keyframes igs-dm-top{0%{opacity:0;transform:translate(-50%,-4px);}8%{opacity:1;transform:translate(-50%,0);}88%{opacity:1;}100%{opacity:0;transform:translate(-50%,0);}}
 @keyframes igs-aud-nudge{0%,100%{transform:none;}20%{transform:rotate(-12deg);}40%{transform:rotate(10deg);}60%{transform:rotate(-6deg);}80%{transform:rotate(3deg);}}
 @keyframes igs-aud-nudge-b{0%,100%{transform:none;}20%{transform:rotate(-12deg);}40%{transform:rotate(10deg);}60%{transform:rotate(-6deg);}80%{transform:rotate(3deg);}}
-.igs-aud-entry{--igs-aud-entry:38px;position:absolute;left:var(--igs-entry-left,14px);top:var(--igs-aud-top,14px);width:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));height:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));padding:0;border:0;background:transparent;color:#f4f1ec;opacity:.55;cursor:pointer;pointer-events:auto;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));transition:opacity .2s ease;}
+.igs-aud-entry{--igs-aud-entry:38px;order:0;width:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));height:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));padding:0;border:0;background:transparent;color:#f4f1ec;opacity:.55;cursor:pointer;pointer-events:auto;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));transition:opacity .2s ease;}
 .igs-live-tools .igs-aud-entry[data-docked]{position:relative;left:auto;top:auto;width:15px;height:15px;padding:6px;margin:-6px 0 -6px -6px;box-sizing:content-box;opacity:.55;filter:none;}
 .igs-live-tools .igs-aud-entry[data-docked]:hover,.igs-live-tools .igs-aud-entry[data-docked][data-unread="1"]{opacity:1;}
 .igs-aud-entry svg{display:block;width:100%;height:100%;}
@@ -20,7 +22,7 @@ export const DANMAKU_STYLE_TEXT = `
 .igs-aud-entry[data-pulse="2"]{animation:igs-aud-nudge-b .6s ease-in-out 1;}
 .igs-aud-badge{position:absolute;top:-3px;right:-5px;min-width:16px;height:16px;padding:0 4px;box-sizing:border-box;border-radius:999px;background:#fb7299;color:#fff;font:700 10px/16px system-ui,sans-serif;text-align:center;box-shadow:0 0 0 1.5px rgba(12,14,20,.7);}
 @media (pointer:coarse){.igs-aud-entry::after{content:"";position:absolute;inset:-8px;}}
-.igs-dm-front[data-entry-full] :is(.igs-feed-entry,.igs-nc-entry){left:var(--igs-entry-left,14px);}
+${ENTRY_DOCK_CSS}
 .igs-aud-stage{position:absolute;inset:0;pointer-events:auto;}
 .igs-aud-dim{position:absolute;inset:0;background:rgba(8,10,16,.5);cursor:pointer;animation:igs-live-dim-in .35s ease both;}
 .igs-aud-phone{position:absolute;top:4%;bottom:4%;left:0;right:0;margin-inline:auto;aspect-ratio:9/18.5;max-width:92%;max-height:820px;box-sizing:border-box;display:flex;flex-direction:column;padding-top:34px;border-radius:34px;background-clip:padding-box;box-shadow:0 0 0 3px var(--igs-phone-case,#111215),0 32px 64px -24px rgba(0,0,0,.7),0 12px 28px -14px rgba(0,0,0,.45);background:linear-gradient(#000 0 34px,#fff 34px);color:#18191c;overflow:hidden;contain:layout paint style;font:13px/1.4 -apple-system,"PingFang SC","SF Pro Text","Microsoft YaHei","Noto Sans CJK SC",sans-serif;animation:igs-live-raise .5s cubic-bezier(.22,1,.36,1) both;}

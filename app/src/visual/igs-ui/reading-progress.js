@@ -71,12 +71,33 @@ function cleanPosition(pos) {
 function cleanSlot(slot) {
     const pos = cleanPosition(slot);
     if (!pos) return null;
-    const thumb = typeof slot.thumb === 'string' && /^(https?:|\/)/.test(slot.thumb) && slot.thumb.length < 600 ? slot.thumb : '';
-    return { ...pos, key: String(slot.key || `s${pos.at || Date.now()}`), name: String(slot.name || '').slice(0, 40), thumb, place: String(slot.place || '').slice(0, 40) };
+    const thumb = typeof slot.thumb === 'string' && /^(https?:|\/|user\/)/.test(slot.thumb) && slot.thumb.length < 600 ? slot.thumb : '';
+    // swipe：存档时那一楼选中的版本；旧存档没有，记 null，重来时不校验版本。
+    const swipe = slot.swipe != null && slot.swipe !== '' && Number.isInteger(Number(slot.swipe)) && Number(slot.swipe) >= 0 ? Number(slot.swipe) : null;
+    return { ...pos, key: String(slot.key || `s${pos.at || Date.now()}`), name: String(slot.name || '').slice(0, 40), thumb, place: String(slot.place || '').slice(0, 40), swipe };
+}
+
+// 重来用：把进度截到存档楼为止，作为新分支聊天的起始进度。只读入参，返回新对象。
+export function truncateReadingData(raw, upToId, pos = null) {
+    const data = normalizeReadingData(raw);
+    const limit = Number(upToId);
+    if (!Number.isInteger(limit)) return data;
+    const within = (item) => item && item.id <= limit;
+    const read = new Set(Array.from(decodeIdSet(data.read)).filter((id) => id <= limit));
+    const keep = (map) => Object.fromEntries(Object.entries(map).filter(([id]) => Number(id) <= limit));
+    return normalizeReadingData({
+        last: pos ? cleanPosition(pos) : (within(data.last) ? data.last : null),
+        far: within(data.far) ? data.far : (pos ? cleanPosition(pos) : null),
+        read: encodeIdSet(read),
+        partial: keep(data.partial),
+        chapters: keep(data.chapters),
+        slots: data.slots.filter(within),
+        quick: within(data.quick) ? data.quick : null,
+    });
 }
 
 function emptyData() {
-    return { v: 1, last: null, far: null, read: '', partial: {}, chapters: {}, slots: [], quick: null };
+    return { v: 2, last: null, far: null, read: '', partial: {}, chapters: {}, slots: [], quick: null };
 }
 
 export function normalizeReadingData(raw) {
@@ -315,6 +336,16 @@ export function createReadingProgress(options = {}) {
         return true;
     }
 
+    // 整体替换当前聊天的进度（重来进新分支用：不合并，避免带入存档楼之后的已读）。
+    function replaceData(raw) {
+        const c = load();
+        if (!c.chatId || !raw) return false;
+        c.data = normalizeReadingData(raw);
+        c.readSet = decodeIdSet(c.data.read);
+        save();
+        return true;
+    }
+
     return {
         load: () => load().data,
         notePage,
@@ -332,6 +363,7 @@ export function createReadingProgress(options = {}) {
         quickSave,
         exportData,
         importData,
+        replaceData,
         reset() { flushSave(); cache = { chatId: '', data: emptyData(), readSet: new Set() }; },
     };
 }

@@ -4,6 +4,7 @@ import { resolvePlaceAmbience } from '../../scene/place-ambience.js';
 import { resolveDateAmbience } from '../../scene/date-ambience.js';
 import { CAMPUS_AUDIO_KIND, resolveCampusAmbience } from '../../scene/campus-fx.js';
 import { createCampusVoices } from './scene-audio-campus.js';
+import { FX_PACK_AMBIENT_KINDS, FX_PACK_AMBIENT_LABELS, createPackVoices, packAmbientCandidates } from '../../scene/fx-packs.js';
 import { bgmPackOfWorldview, inferBgmMood, normalizeBgmTags, resolveBgmMood, resolveBgmSilence, resolveBgmTransition, selectBgmTrack } from './bgm-library.js';
 
 // 场景音频：BGM 用 HTMLAudio 按情绪 / 关键词选曲并交叉淡入淡出，能跨域读取的曲目接进混音总线；环境音全部 WebAudio 实时合成，不依赖音频文件。
@@ -14,6 +15,8 @@ export const AMBIENT_KINDS = Object.freeze([
     'printer', 'keyboard', 'aircon', 'serverhum', 'deskphone',
     'cafe', 'cinema', 'aquarium', 'nightview', 'palace', 'console',
     'classroom', 'library', 'playground',
+    // 题材包的环境音由各包清单登记（scene/fx-packs.js），随包总开关生效。
+    ...FX_PACK_AMBIENT_KINDS,
 ]);
 export const AMBIENT_LABELS = Object.freeze({
     birds: '鸟鸣',
@@ -58,6 +61,7 @@ export const AMBIENT_LABELS = Object.freeze({
     classroom: '教室',
     library: '图书馆',
     playground: '操场',
+    ...FX_PACK_AMBIENT_LABELS,
 });
 // moodTag：让 AI 在情绪转折时写 [igs-fx:bgm|情绪]，按情绪池选曲；关掉后只按演出与时段推断。
 export const BGM_DEFAULTS = Object.freeze({ enabled: false, volume: 0.5, moodTag: true, tracks: Object.freeze([]) });
@@ -69,6 +73,8 @@ export const AMBIENT_SOUND_DEFAULTS = Object.freeze({
 export const BGM_FADE_MS = 1600;
 export const AMBIENT_FADE_IN_S = 1.5;
 export const AMBIENT_FADE_OUT_S = 1.2;
+export const AMBIENT_LEAD_FADE_IN_S = 3;
+export const AMBIENT_TRAIL_HOLD_MS = 4000;
 // 提示音、演出音效期间 BGM 与环境音压到原音量的比例；打字音连续整页，只轻压，避免每页一次抽吸。
 export const DUCK_RATIO = 0.55;
 export const TYPING_DUCK_RATIO = 0.8;
@@ -99,6 +105,9 @@ const RAMP_STEP_MS = 50;
 const VOLUME_RAMP_MS = 300;
 const BGM_TONE_RAMP_MS = 1200;
 const MUFFLE_HZ = 700;
+// 偷听 / 隔墙：演出触发后环境音总线整体压成闷声（只动环境音，不碰 BGM 总线）；事件由题材包「地点与场景」在阅读器所在 document 上派发。
+export const AMBIENT_MUFFLE_EVENT = 'igs-ambient-muffle';
+const MUFFLE_MAX_MS = 12000;
 const FLOOR = 0.0001;
 // 用户上传的本地音频存在酒馆 user/files/ 下，与酒馆同源。
 const URL_PATTERN = /^(https?:\/\/|data:audio\/|blob:|\/?user\/files\/igs-bgm-)/i;
@@ -132,6 +141,7 @@ const DESKPHONE_WORDS = Object.freeze(['办公室', '前台', '接待', '值班�
 const LAYER_ORDER = Object.freeze([
     'thunder', 'bath', 'rain', 'wind', 'snow', 'train', 'car', 'carriage', 'plane', 'sky', 'bike', 'ship', 'waves', 'stream', 'drip', 'fire', 'tavern', 'crowd', 'traffic',
     'bell', 'cicadas', 'frogs', 'birds', 'insects', 'chimes', 'clock',
+    ...FX_PACK_AMBIENT_KINDS,
     'aircon', 'keyboard', 'printer', 'serverhum', 'deskphone',
     'cafe', 'cinema', 'aquarium', 'nightview', 'palace', 'console',
     'classroom', 'library', 'playground',
@@ -356,6 +366,8 @@ export function resolveAmbientPlan(context = {}, ambientSettings, weatherSetting
         const dateKind = campus ? CAMPUS_AUDIO_KIND[campus.kind] : date && (date.kind === 'beach' ? 'waves' : date.kind);
         if (dateKind && AMBIENT_KINDS.includes(dateKind)) add(dateKind, night ? 'light' : 'medium', false);
     }
+    // 题材包环境音候选（包总开关关着时 context.packs 里没有它）。
+    for (const item of packAmbientCandidates(ctx, { night })) add(item.kind, item.level, false, item.variant);
     if (!indoor) {
         const nature = includesAny(location, NATURE_WORDS);
         if ((time === 'dawn' || time === 'day' || !time) && nature && rain !== 'heavy') {
@@ -403,6 +415,13 @@ export function resolveAmbientPlan(context = {}, ambientSettings, weatherSetting
             steady += 1;
         }
         plan.push(layer);
+    }
+    // 提前进入（J-cut）：下一场景的第一层环境音先淡入，临时占第 4 个名额；翻页后层 key 一致，不会重建。
+    const lead = textOf(ctx.leadLocation);
+    if (lead && lead !== location) {
+        const next = resolveAmbientPlan({ ...ctx, location: lead, leadLocation: '', lcut: false }, ambientSettings, weatherSettings)
+            .find((item) => item.kind !== 'thunder' && item.kind !== 'vinyl' && !plan.some((own) => own.kind === item.kind));
+        if (next) plan.push({ ...next, lead: true });
     }
     // 回忆段落叠一层唱片沙沙声，不占层数、不单独设开关。
     if (resolveAmbientTone(ctx) === 'flashback') plan.push({ kind: 'vinyl', level: 'light', muffled: false });
@@ -452,6 +471,8 @@ function createState(root) {
         ctx: null,
         master: null,
         layers: new Map(),
+        lingering: new Set(),
+        trail: false,
         retry: null,
         hidden: false,
         visibility: null,
@@ -890,7 +911,7 @@ function impulseBuffer(ctx, kind) {
 function syncTone(state, toneKey, spaceKey) {
     const tone = state.tone;
     if (!tone || !state.ctx) return;
-    const key = `${toneKey}|${spaceKey}`;
+    const key = `${toneKey}|${spaceKey}|${state.muffled ? 1 : 0}`;
     if (tone.key === key) return;
     tone.key = key;
     const shape = TONE_SHAPES[toneKey] || TONE_SHAPES[''];
@@ -903,7 +924,7 @@ function syncTone(state, toneKey, spaceKey) {
         }
         const now = state.ctx.currentTime;
         tone.high.frequency.setTargetAtTime(shape.high, now, TONE_TC_S);
-        tone.low.frequency.setTargetAtTime(shape.low, now, TONE_TC_S);
+        tone.low.frequency.setTargetAtTime(state.muffled ? Math.min(shape.low, MUFFLE_HZ) : shape.low, now, TONE_TC_S);
         tone.gain.gain.setTargetAtTime(shape.gain, now, TONE_TC_S);
         if (tone.wet) tone.wet.gain.setTargetAtTime(wet, now, TONE_TC_S);
     } catch { /* ignore */ }
@@ -2305,6 +2326,8 @@ const VOICES = Object.freeze({
     console: voiceConsole,
     // 校园：教室 / 图书馆 / 操场，合成在 scene-audio-campus.js，原语由这里传入。
     ...createCampusVoices({ rand, chain, makeNoise, makeFilter, makeGain, makeLfo, layerLater, noiseBurst, blip, footsteps, FLOOR }),
+    // 题材包：各包清单 ambient.voices(h) 返回的合成函数，原语同上。
+    ...createPackVoices({ rand, chain, makeNoise, makeFilter, makeGain, makeLfo, layerLater, noiseBurst, blip, footsteps, FLOOR }),
 });
 
 function disposeLayer(state, layer) {
@@ -2359,7 +2382,7 @@ function startLayer(state, spec) {
         VOICES[spec.kind](layer);
         const now = ctx.currentTime;
         layer.fade.gain.setValueAtTime(0, now);
-        layer.fade.gain.linearRampToValueAtTime(LEVEL_GAIN[spec.level] || LEVEL_GAIN.medium, now + AMBIENT_FADE_IN_S);
+        layer.fade.gain.linearRampToValueAtTime(LEVEL_GAIN[spec.level] || LEVEL_GAIN.medium, now + (spec.lead === true ? AMBIENT_LEAD_FADE_IN_S : AMBIENT_FADE_IN_S));
     } catch {
         disposeLayer(state, layer);
         return null;
@@ -2367,7 +2390,15 @@ function startLayer(state, spec) {
     return layer;
 }
 
-function fadeOutLayer(state, layer) {
+function fadeOutLayer(state, layer, hold = 0) {
+    if (hold > 0 && state.lingering) {
+        state.lingering.add(layer);
+        later(state, () => {
+            state.lingering.delete(layer);
+            fadeOutLayer(state, layer);
+        }, hold);
+        return;
+    }
     const ctx = state.ctx;
     try {
         const now = ctx.currentTime;
@@ -2380,11 +2411,12 @@ function fadeOutLayer(state, layer) {
 }
 
 function syncAmbient(state, plan, volume, toneKey = '', spaceKey = '') {
+    state.toneArgs = [toneKey, spaceKey];
     const wanted = new Map(plan.map((spec) => [layerKey(spec), spec]));
     for (const [key, layer] of state.layers) {
         if (wanted.has(key)) continue;
         state.layers.delete(key);
-        fadeOutLayer(state, layer);
+        fadeOutLayer(state, layer, state.trail === true ? AMBIENT_TRAIL_HOLD_MS : 0);
     }
     if (!wanted.size) return;
     if (!ensureContext(state)) return;
@@ -2437,6 +2469,7 @@ export function applySceneAudio(root, options = {}) {
         states.set(root, state);
         liveStates.add(state);
         watchVisibility(state);
+        watchMuffle(state);
     }
     if (typeof source.schedule === 'function') state.schedule = source.schedule;
     if (typeof source.clear === 'function') state.clear = source.clear;
@@ -2447,8 +2480,42 @@ export function applySceneAudio(root, options = {}) {
     if (key === state.key) return result;
     state.key = key;
     syncBgm(state, track, bgm.volume, bgmTone, { mood: picked.mood, silent });
+    state.trail = context.lcut === true;
     syncAmbient(state, plan, ambient.volume, tone, space);
     return result;
+}
+
+function setMuffled(state, on) {
+    if (state.stopped || state.muffled === on) return;
+    state.muffled = on;
+    if (state.toneArgs) syncTone(state, state.toneArgs[0], state.toneArgs[1]);
+}
+
+function watchMuffle(state) {
+    const root = state.root?.ownerDocument || globalThis.document;
+    if (!root || typeof root.addEventListener !== 'function') return;
+    let timer = null;
+    const handler = (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+        if (timer) state.clear(timer);
+        timer = null;
+        if (detail.on === false) {
+            setMuffled(state, false);
+            return;
+        }
+        setMuffled(state, true);
+        const ms = Math.min(MUFFLE_MAX_MS, Math.max(500, Number(detail.ms) || 4000));
+        timer = state.schedule(() => {
+            timer = null;
+            setMuffled(state, false);
+        }, ms);
+    };
+    root.addEventListener(AMBIENT_MUFFLE_EVENT, handler);
+    state.unwatchMuffle = () => {
+        root.removeEventListener(AMBIENT_MUFFLE_EVENT, handler);
+        if (timer) state.clear(timer);
+        timer = null;
+    };
 }
 
 function syncVoiceSpace(kind) {
@@ -2472,6 +2539,7 @@ export function cancelSceneAudio(root) {
     liveStates.delete(state);
     disarmRetry(state);
     unwatchVisibility(state);
+    if (state.unwatchMuffle) state.unwatchMuffle();
     for (const timer of state.timers) {
         try { state.clear(timer); } catch { /* ignore */ }
     }
@@ -2487,6 +2555,8 @@ export function cancelSceneAudio(root) {
     state.bgm.chain = null;
     for (const layer of state.layers.values()) disposeLayer(state, layer);
     state.layers.clear();
+    for (const layer of state.lingering) disposeLayer(state, layer);
+    state.lingering.clear();
     for (const node of state.tone ? state.tone.nodes : []) {
         try { node.disconnect(); } catch { /* ignore */ }
     }

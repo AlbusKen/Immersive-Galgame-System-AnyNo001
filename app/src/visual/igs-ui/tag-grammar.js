@@ -1,5 +1,5 @@
 import { BGM_GRAMMAR_LINE, bgmMoodTagEnabled, cameraGrammarLines, dlcFxGrammarLines, fxDetailedBlock, fxGrammarLines, ITEM_FX_GRAMMAR_LINE, resolveBgmPromptRule, resolveCameraPromptRule, resolveDlcFxPromptRule, resolveItemFxPromptRule, resolveRomanceFxPromptRule, resolveStageCastFxPromptRule, romanceGrammarLines, stageCastGrammarLines } from './fx-prompt.js';
-import { campusDetailedBlock, campusGrammarLines, courtesyDetailedBlock, courtesyGrammarLines,dailyDetailedBlock, dailyGrammarLines, playDetailedBlock, playGrammarLines, wardrobeDetailedBlock, wardrobeGrammarLines } from './fx-daily-prompt.js';
+import { campusDetailedBlock, campusGrammarLines, courtesyDetailedBlock, courtesyGrammarLines,dailyDetailedBlock, dailyGrammarLines, packDetailedBlock, packGrammarLines, playDetailedBlock, playGrammarLines, wardrobeDetailedBlock, wardrobeGrammarLines } from './fx-daily-prompt.js';
 import { BATTLE_GRAMMAR_LINES, resolveBattleFxPromptRule } from './fx-battle-model.js';
 import { resolveTextFxPromptRule, textFxGrammarBlock } from './text-fx.js';
 import { bilingualGrammarBlock, normalizeBilingualSettings } from './bilingual-text.js';
@@ -8,10 +8,12 @@ import { enabledFxTagKinds, FX_PROMPT_KEYS, normalizeFxPromptsSettings } from '.
 import { enabledDailyFxKinds } from './fx-daily-model.js';
 import { danmakuGrammarBlocks, liveDetailedBlock, resolveDanmakuPromptRule } from './danmaku-prompt.js';
 import { feedGrammarBlocks } from './feed-prompt.js';
-import { isPromptEntryKey, normalizePromptEntries } from '../../scene/prompt-entries.js';
+import { isPromptEntryKey, normalizePromptEntries, resolveEntryPlacement } from '../../scene/prompt-entries.js';
 import { CAMPUS_FX_KINDS, COURTESY_FX_KINDS, PLAY_FX_KINDS, WARDROBE_FX_KINDS } from '../../scene/daily-fx-directives.js';
+import { FX_PACKS_ACTIVE, isPackKind, packBlockKey, packOfKind, packRequiresMet } from '../../scene/fx-packs.js';
 
 export const PROMPT_PLACEMENTS = Object.freeze(['system', 'depth0']);
+export const SEGMENT_ID_PREFIX = 'igs-scene-assets-entry-';
 export const DEPTH0_REMINDER = '本轮按系统说明中的igs标签语法输出标签。';
 
 // 通用规则只写一次，各功能块只写类型行。
@@ -79,7 +81,7 @@ export function collectGrammarBlocks(readerSettings, { ancient: era = false } = 
     const dailyKinds = enabledDailyFxKinds(rs.dailyFx);
     const dailyLines = dailyGrammarLines(rs.dailyFx);
     if (dailyLines.length) {
-        blocks.push({ key: 'daily', adaptive: true, full: fxBlock('日常演出', dailyLines, '，只在剧情里确实发生对应事件时用'), index: `日常 igs-fx:${dailyKinds.filter((k) => !WARDROBE_FX_KINDS.includes(k) && !PLAY_FX_KINDS.includes(k) && !COURTESY_FX_KINDS.includes(k) && !CAMPUS_FX_KINDS.includes(k)).join('/')}` });
+        blocks.push({ key: 'daily', adaptive: true, full: fxBlock('日常演出', dailyLines, '，只在剧情里确实发生对应事件时用'), index: `日常 igs-fx:${dailyKinds.filter((k) => !WARDROBE_FX_KINDS.includes(k) && !PLAY_FX_KINDS.includes(k) && !COURTESY_FX_KINDS.includes(k) && !CAMPUS_FX_KINDS.includes(k) && !isPackKind(k)).join('/')}` });
     }
     // 衣橱类（换装登场等）单独成块，只在提到换衣 / 披衣时才补完整写法，不占日常每轮预算。
     const wardrobeLines = wardrobeGrammarLines(rs.dailyFx);
@@ -100,6 +102,14 @@ export function collectGrammarBlocks(readerSettings, { ancient: era = false } = 
     const campusLines = campusGrammarLines(rs.dailyFx);
     if (campusLines.length) {
         blocks.push({ key: 'campus', adaptive: true, full: fxBlock('校园演出', campusLines, '，学校与校园生活里对应场面发生时才用'), index: `校园 igs-fx:${dailyKinds.filter((k) => CAMPUS_FX_KINDS.includes(k)).join('/')}` });
+    }
+    // 题材包：每包一块，只在提到该包场面时才补完整写法；前置开关（如亲密演出）没开的包整块不发。
+    for (const pack of FX_PACKS_ACTIVE) {
+        if (!packRequiresMet(pack, rs)) continue;
+        const packLines = packGrammarLines(rs.dailyFx, pack.id);
+        if (!packLines.length) continue;
+        const own = dailyKinds.filter((k) => { const owner = packOfKind(k); return owner && owner.id === pack.id; });
+        blocks.push({ key: packBlockKey(pack.id), adaptive: true, full: fxBlock(`${pack.label}演出`, packLines, `，${pack.when}`), index: `${pack.label} igs-fx:${own.join('/')}` });
     }
     if (plain(rs.battleFx).enabled === true) {
         blocks.push({ key: 'battle', adaptive: true, full: fxBlock('战斗', BATTLE_GRAMMAR_LINES, '，只有画面效果不显示数值，非战斗场景不用'), index: '战斗 igs-fx:battle/battle-end/hit' });
@@ -137,6 +147,7 @@ const DETAILED_BUILDERS = Object.freeze({
     play: (rs) => playDetailedBlock(rs.dailyFx),
     courtesy: (rs) => courtesyDetailedBlock(rs.dailyFx),
     campus: (rs) => campusDetailedBlock(rs.dailyFx),
+    ...Object.fromEntries(FX_PACKS_ACTIVE.map((pack) => [packBlockKey(pack.id), (rs) => packDetailedBlock(rs.dailyFx, pack.id)])),
     battle: () => resolveBattleFxPromptRule(true),
     romance: (rs) => resolveRomanceFxPromptRule(rs.romanceFx),
     cast: (rs) => resolveStageCastFxPromptRule(rs.stageCast),
@@ -169,33 +180,49 @@ function indexLine(blocks) {
     return `【按需】以下演出的完整写法在剧情需要时另附：${blocks.map((b) => b.index.split(' ')[0]).join('、')}`;
 }
 
-// 按设置里的条目改写块：关闭的整块去掉（索引里也不列），常驻的当作固定块每轮都发。
-function applyPromptEntries(blocks, entries) {
-    if (!entries) return blocks;
-    const normalized = normalizePromptEntries(entries);
+// 按设置里的条目改写块：关闭的整块去掉（索引里也不列），常驻的当作固定块每轮都发，写了位置的带上自己的注入位置。
+function applyPromptEntries(blocks, normalized) {
+    if (!normalized) return blocks;
     return blocks.flatMap((block) => {
         if (!isPromptEntryKey(block.key)) return [block];
-        const mode = normalized[block.key].mode;
-        if (mode === 'off') return [];
-        return mode === 'always' ? [{ ...block, adaptive: false }] : [block];
+        const entry = normalized[block.key];
+        if (entry.mode === 'off') return [];
+        const placement = resolveEntryPlacement(entry);
+        const next = entry.mode === 'always' ? { ...block, adaptive: false } : block;
+        return [placement ? { ...next, placement } : next];
     });
 }
 
 // 演出提示词入口：inject 关掉就把「演出 / 日常演出 / 直播间 / 手机社区」整块拿掉（索引里也不列）；
 // 覆盖文本非空时替换该块完整写法（用户自己写的每轮都发，不再折叠成索引）。物品 / 配乐 / 亲密各有自己的开关，不受此影响。
 // resident（全量常驻）开启时，所有按场合块也每轮都发（不再折叠成索引），更费 token。
-function applyFxPromptSettings(blocks, readerSettings) {
+function applyFxPromptSettings(blocks, readerSettings, normalizedEntries = null) {
     const fp = normalizeFxPromptsSettings(plain(readerSettings).fxPrompts);
     return blocks.flatMap((block) => {
-        if (!FX_PROMPT_KEYS.includes(block.key)) return fp.resident ? [{ ...block, adaptive: false }] : [block];
-        if (!fp.inject) return [];
-        const custom = fp[block.key].trim();
-        if (custom) return [{ ...block, full: custom, adaptive: false }];
-        return fp.resident ? [{ ...block, adaptive: false }] : [block];
+        // 没有 fxPrompts 对应项的块（换装、玩乐、校园、题材包）正文覆盖存在条目自己的 text 里。
+        const own = !FX_PROMPT_KEYS.includes(block.key);
+        if (own && !(normalizedEntries && isPromptEntryKey(block.key))) return fp.resident ? [{ ...block, adaptive: false }] : [block];
+        if (!own && !fp.inject) return [];
+        const custom = (own ? normalizedEntries[block.key].text : fp[block.key]).trim();
+        // 写了正文只换内容；是否每轮都发由条目的「常驻」决定（固定块本来就常驻）。
+        const next = custom ? { ...block, full: custom } : block;
+        return fp.resident && block.adaptive ? [{ ...next, adaptive: false }] : [next];
     });
 }
 
-// 返回 { system, depth0 }：system 放稳定部分（通用规则、场景、始终展开的块、按需索引），
+// 写了自己注入位置的块：位置与深度相同的并成一段，每段一个独立的 key（给注入器直接用）。
+function addSegment(map, block) {
+    const { position, depth } = block.placement;
+    const atEnd = position === 'depth0' || (position === 'depth' && depth === 0);
+    const kind = position === 'system' ? 'system' : atEnd ? 'depth0' : 'depth';
+    const id = kind === 'depth' ? `${SEGMENT_ID_PREFIX}d${depth}` : `${SEGMENT_ID_PREFIX}${kind}`;
+    const seg = map.get(id) || { id, position: kind === 'depth' ? 'depth' : kind, depth: kind === 'depth' ? depth : 0, content: '', keys: [] };
+    seg.content = [seg.content, block.full].filter(Boolean).join('\n\n');
+    seg.keys.push(block.key);
+    map.set(id, seg);
+}
+
+// 返回 { system, depth0, segments }：system 放稳定部分（通用规则、场景、始终展开的块、按需索引），
 // depth0 放本轮按需展开的块和逐轮变化的内容（交互摘要）。placement 为 depth0 时由调用方把两段合并注入。
 export function buildTagGrammar({
     readerSettings,
@@ -207,18 +234,21 @@ export function buildTagGrammar({
     moodWord = '',
     entries = null,
 } = {}) {
-    const blocks = applyFxPromptSettings(applyPromptEntries(collectGrammarBlocks(readerSettings, { ancient }), entries), readerSettings);
-    if (!sceneRule && !blocks.length) return { system: '', depth0: '', expanded: [], indexed: [], sizes: {} };
+    const normalizedEntries = entries ? normalizePromptEntries(entries) : null;
+    const blocks = applyFxPromptSettings(applyPromptEntries(collectGrammarBlocks(readerSettings, { ancient }), normalizedEntries), readerSettings, normalizedEntries);
+    if (!sceneRule && !blocks.length) return { system: '', depth0: '', expanded: [], indexed: [], sizes: {}, segments: [], placements: {} };
     const rs = plain(readerSettings);
     const example = buildExample({ sceneRule, moodWord, fxKinds: enabledFxTagKinds(rs.fxTags), itemOn: plain(rs.itemFx).enabled === true });
     const staticParts = [];
     const dynamicParts = [];
     const indexed = [];
+    const segmentMap = new Map();
     const adaptiveIndexed = [];
     for (const block of blocks) {
         const wanted = !block.adaptive || expand.has(block.key);
         if (wanted) {
-            (block.adaptive ? dynamicParts : staticParts).push(block.full);
+            if (block.placement) addSegment(segmentMap, block);
+            else (block.adaptive ? dynamicParts : staticParts).push(block.full);
         } else if (block.adaptive) {
             adaptiveIndexed.push(block);
         } else {
@@ -232,7 +262,7 @@ export function buildTagGrammar({
     const depth0 = [...dynamicParts, ...dynamicRules].filter(Boolean).join('\n\n');
     // 每块完整写法的字数，供诊断显示「花了多少字」。
     const sizes = Object.fromEntries(blocks.map((b) => [b.key, Array.from(String(b.full || '')).length]));
-    return { system, depth0, expanded: allAdaptive.filter((b) => !adaptiveIndexed.includes(b)).map((b) => b.key), indexed: [...indexed, ...adaptiveIndexed].map((b) => b.key), sizes };
+    return { system, depth0, segments: [...segmentMap.values()], placements: Object.fromEntries(blocks.filter((b) => b.placement).map((b) => [b.key, b.placement])), expanded: allAdaptive.filter((b) => !adaptiveIndexed.includes(b)).map((b) => b.key), indexed: [...indexed, ...adaptiveIndexed].map((b) => b.key), sizes };
 }
 
 export function normalizePromptPlacement(value) {

@@ -83,7 +83,7 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         const actions = doc.createElement('div');
         actions.className = 'igs-asset-review-actions';
         // 立绘额外提供「入库并编辑 DNA」：先收入角色立绘，再把 tags 作为 DNA 候选交给设置页，由用户确认后才写入。
-        const acts = [['library', item.type === 'background' ? '入库到场景' : '入库到角色'], ['chat', '仅本聊天'], ['discarded', '丢弃']];
+        const acts = [['library', item.type === 'background' ? '存为背景' : '存为立绘'], ['chat', '仅本聊天'], ['discarded', '丢弃']];
         if (item.type === 'sprite') acts.splice(1, 0, ['library-dna', '入库并编辑 DNA']);
         for (const [act, text] of acts) {
             const button = doc.createElement('button');

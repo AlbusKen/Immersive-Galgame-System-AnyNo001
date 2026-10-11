@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { applyDanmakuToDom, cancelDanmaku } from '../src/visual/igs-ui/danmaku-runtime.js';
 import { phoneGeometry } from '../src/visual/igs-ui/danmaku-live.js';
 import { FEED_STYLE_TEXT } from '../src/visual/igs-ui/feed-style.js';
+import { DANMAKU_STYLE_TEXT } from '../src/visual/igs-ui/danmaku-style.js';
 import { splitAuthor, starsOf, workOf } from '../src/visual/igs-ui/feed-phone.js';
 import { grownCount, lowBattery, storyClock } from '../src/visual/igs-ui/phone-sense.js';
 
@@ -286,6 +287,7 @@ test('gate:feed:all-off-costs-nothing-and-news-style-exists', () => {
     assert.equal(cancelDanmaku(root), false);
     assert.match(FEED_STYLE_TEXT, /data-platform="news"/);
     assert.doesNotMatch(FEED_STYLE_TEXT, /backdrop-filter/);
+    assert.match(FEED_STYLE_TEXT, /#igs-fx-stage:has\(\.igs-feed-stage\[data-skin="phone"\]:not\(\[hidden\]\)\)\{z-index:4;\}/, 'phone lifts the stage layer above the click layer so it can scroll');
 });
 
 test('gate:feed:phone-geometry-matches-live-phone', () => {
@@ -435,7 +437,7 @@ test('gate:feed:review-entry-opens-same-page-and-closes', () => {
     c.run(600);
     const entry = front.querySelector('.igs-feed-entry');
     assert.equal(entry.hidden, false);
-    assert.equal(entry.getAttribute('data-beside'), '0', 'no audience entry: same spot');
+    assert.equal(entry.parentNode.className, 'igs-entry-dock', 'entry lives in the shared dock');
     assert.ok(entry.innerHTML.includes('<svg'));
     assert.equal(entry.querySelector('.igs-feed-entry-dot').style.get('background'), '#ff8200');
     let stopped = 0;
@@ -481,8 +483,10 @@ test('gate:feed:review-entry-sits-beside-the-audience-entry', () => {
     const aud = front.querySelector('.igs-aud-entry');
     const entry = front.querySelector('.igs-feed-entry');
     assert.ok(entry && !entry.hidden);
-    assert.equal(entry.getAttribute('data-beside'), aud && !aud.hidden ? '1' : '0');
-    assert.match(FEED_STYLE_TEXT, /\.igs-feed-entry\[data-beside="1"\]/);
+    assert.equal(entry.parentNode.className, 'igs-entry-dock', 'review entry sits in the shared dock column');
+    if (aud) assert.equal(entry.parentNode, aud.parentNode, 'both entries share one dock column');
+    assert.equal(front.querySelectorAll('.igs-feed-entry').length, 1, 'one review entry only');
+    assert.match(DANMAKU_STYLE_TEXT, /\.igs-entry-dock\{[^}]*flex-direction:column/);
 });
 
 test('gate:feed:review-entry-needs-feed-enabled-and-costs-nothing-off', () => {

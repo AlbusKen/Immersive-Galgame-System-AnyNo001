@@ -32,6 +32,7 @@ export const STAGE_DIRECTION_STYLE_TEXT = `
 #igs-overlay[data-igs-sd-cam="wide"] #igs-sprite:not(.igs-sprite-editing){--igs-sd-closeup-scale:.82;transform-origin:var(--igs-sd-origin-x,50%) 100%;}
 #igs-overlay[data-igs-sd-cam="wide"] #igs-bg{animation:none;scale:1;}
 #igs-overlay[data-igs-sd-cam="focus"] #igs-stage-motion:not([data-igs-rm-glow]):not([data-igs-fx-flashback]):not([data-igs-fx-dream]) #igs-bg{filter:brightness(var(--igs-bg-brightness,1)) blur(6px) var(--igs-grade-bg,)!important;-webkit-filter:brightness(var(--igs-bg-brightness,1)) blur(6px) var(--igs-grade-bg,)!important;scale:1.05;}
+#igs-overlay[data-igs-sd-cam="focus"] #igs-sprite:not(.igs-sprite-editing){filter:drop-shadow(0 0 10px rgba(255,255,255,.35));transition:filter .8s ease;}
 #igs-overlay[data-igs-sd-cam^="pan-"] #igs-bg{animation:igs-sd-pan 9s cubic-bezier(.45,.05,.4,1) both;}
 #igs-overlay[data-igs-sd-cam="pan-left"] #igs-bg{animation-direction:reverse;}
 #igs-overlay[data-igs-sd-cam="tilt"] #igs-bg{rotate:-3deg;scale:1.12;transition:opacity .3s ease,scale .9s cubic-bezier(.3,.7,.2,1),rotate .9s cubic-bezier(.3,.7,.2,1);}

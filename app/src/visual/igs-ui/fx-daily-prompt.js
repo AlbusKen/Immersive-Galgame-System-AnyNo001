@@ -1,5 +1,6 @@
 import { enabledDailyFxKinds } from './fx-daily-model.js';
 import { CAMPUS_FX_KINDS, COURTESY_FX_KINDS, PLAY_FX_KINDS, WARDROBE_FX_KINDS } from '../../scene/daily-fx-directives.js';
+import { FX_PACK_GRAMMAR_LINES, FX_PACK_PROMPT_LINES, getPack, isPackKind, packOfKind } from '../../scene/fx-packs.js';
 
 // 衣橱类（换装登场等）走独立的 wardrobe 块，玩乐类（唱歌、游乐…）走独立的 play 块，日常块里都不列。
 const isWardrobe = (kind) => WARDROBE_FX_KINDS.includes(kind);
@@ -8,7 +9,8 @@ const isPlay = (kind) => PLAY_FX_KINDS.includes(kind);
 const isCourtesy = (kind) => COURTESY_FX_KINDS.includes(kind);
 // 校园类（黑板、传纸条、抽屉、点名、考试、文化祭、毕业、纽扣）走独立的 campus 块。
 const isCampus = (kind) => CAMPUS_FX_KINDS.includes(kind);
-const isDailyBlock = (kind) => !isWardrobe(kind) && !isPlay(kind) && !isCourtesy(kind) && !isCampus(kind);
+// 题材包的 kind 各走自己的 pack<id> 块，见文末 packGrammarLines / packDetailedBlock。
+const isDailyBlock = (kind) => !isWardrobe(kind) && !isPlay(kind) && !isCourtesy(kind) && !isCampus(kind) && !isPackKind(kind);
 
 const DAILY_PROMPT_LINES = Object.freeze({
     timeskip: '[igs-fx:timeskip|三小时后]：剧情时间明显跳跃时报幕，文字写经过的时间，如「第二天清晨」',
@@ -30,7 +32,7 @@ const DAILY_PROMPT_LINES = Object.freeze({
     pat: '[igs-fx:pat|角色名]：主角摸了摸角色的头',
     poke: '[igs-fx:poke|角色名]：主角捏或戳了一下角色的脸',
     fever: '[igs-fx:fever|38.2]：测量体温、确认是否发烧的时刻，读数写数字',
-    cheers: '[igs-fx:cheers]：两人举杯相碰',
+    cheers: '[igs-fx:cheers|材质]：两人举杯相碰；材质按正文里实际的容器写 玻璃、陶瓷、塑料、易拉罐、木、金属 之一，如塑料瓶写[igs-fx:cheers|塑料]',
     cook: '[igs-fx:cook|料理名]：做好一道菜或便当，料理名写菜名',
     eat: '[igs-fx:eat|食物名|反应]：说话的角色吃下或喝下东西的那一刻，食物名写具体名称；反应只写 好吃、甜、辣、烫、酸、苦、噎住、饱 之一，可省；角色喂对方吃时写「喂」，被对方喂时写「被喂」，如[igs-fx:eat|草莓蛋糕|被喂]',
     cat: '[igs-fx:cat]：与小动物亲昵互动的片刻',
@@ -161,7 +163,7 @@ export const DAILY_GRAMMAR_LINES = Object.freeze({
     pat: 'pat|角色名：主角摸了摸角色的头',
     poke: 'poke|角色名：主角捏或戳了一下角色的脸',
     fever: 'fever|38.2：测体温，读数写数字',
-    cheers: 'cheers：两人举杯相碰',
+    cheers: 'cheers|材质：举杯相碰，材质写玻璃/陶瓷/塑料/罐/木/金属',
     cook: 'cook|料理名：做好一道菜或便当',
     eat: 'eat|食物名|反应：说话的角色吃下或喝下东西的那一刻，反应只写 好吃/甜/辣/烫/酸/苦/噎住/饱 之一，可省；喂对方写「喂」，被喂写「被喂」',
     cat: 'cat：与小动物亲昵',
@@ -280,4 +282,26 @@ export function campusDetailedBlock(settings) {
     return `【校园演出】学校与校园生活里的小场面，完整写法照抄方括号格式：
 ${kinds.map((kind, index) => `${index + 1}. ${DAILY_PROMPT_LINES[kind]}`).join('\n')}
 使用约束：剧情里确实发生对应场面时才用，每层最多1个；上下课铃用 bell、广播用 broadcast、成绩用 score；标签之外正文仍要把场面写出来。`;
+}
+
+// 题材包 id 对应的已启用 kind。
+function packKindsOf(settings, id) {
+    return enabledDailyFxKinds(settings).filter((kind) => {
+        const pack = packOfKind(kind);
+        return pack && pack.id === id;
+    });
+}
+
+// 题材包的精简语法行，单独走 pack<id> 触发块，不占日常预算。
+export function packGrammarLines(settings, id) {
+    return packKindsOf(settings, id).map((kind) => FX_PACK_GRAMMAR_LINES[kind]).filter(Boolean);
+}
+
+export function packDetailedBlock(settings, id) {
+    const pack = getPack(id);
+    const kinds = pack ? packKindsOf(settings, id) : [];
+    if (!kinds.length) return '';
+    return `【${pack.label}演出】${pack.when}，完整写法照抄方括号格式：
+${kinds.map((kind, index) => `${index + 1}. ${FX_PACK_PROMPT_LINES[kind]}`).join('\n')}
+使用约束：剧情里确实发生对应场面时才用，每层最多1个；标签之外正文仍要把场面写出来。`;
 }

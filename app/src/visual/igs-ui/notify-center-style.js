@@ -1,6 +1,6 @@
 // 手机通知中心样式：入口排在观众弹幕入口、回看入口之后；下拉通知栏只用 transform / opacity，色块一律实色。
 export const NOTIFY_CENTER_STYLE_TEXT = `
-.igs-nc-entry{--igs-aud-entry:38px;position:absolute;left:calc(14px + var(--igs-nc-slot,0) * (var(--igs-aud-entry) * var(--igs-hud-scale,1) + 8px));top:var(--igs-nc-top,14px);width:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));height:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));padding:7px;box-sizing:border-box;border:0;background:transparent;color:#f4f1ec;opacity:.55;cursor:pointer;pointer-events:auto;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));transition:opacity .2s ease;}
+.igs-nc-entry{--igs-aud-entry:38px;order:2;width:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));height:calc(var(--igs-aud-entry) * var(--igs-hud-scale,1));padding:7px;box-sizing:border-box;border:0;background:transparent;color:#f4f1ec;opacity:.55;cursor:pointer;pointer-events:auto;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));transition:opacity .2s ease;}
 .igs-nc-entry[hidden]{display:none;}
 .igs-nc-entry svg{display:block;width:100%;height:100%;}
 .igs-nc-entry[data-size="small"]{--igs-aud-entry:30px;}

@@ -8,6 +8,7 @@ import { findBaibaiApi, requestBaibaiImage } from './baibai-client.js';
 import { waitFloorPromptTags } from './floor-prompt-tags.js';
 import { writeCaptionsWithLlm } from './illustration/caption-writer.js';
 import { clampPixelPair } from './illustration/cg-pixel-cap.js';
+import { annotateImageFailure, readImageRetrySettings, sharedRateGate, withImageRetry } from './retry-policy.js';
 
 // 生图来源：nai = IGS 内置 NAI；dbgen = 数据库生图插件（window.NaiDbGen）；
 // extension = 智绘姬：剧情 CG、素材与物品图经智绘姬的出图事件生成，剧情 CG 优先用它写在楼层里的词；
@@ -131,7 +132,12 @@ function reportLong(report, title, text) {
     }
 }
 
-export function createImageBackend({ nai, getBridge, global: globalObject = globalThis, chatu8, llm, report, dbgenTimeouts, floorPromptWait } = {}) {
+export function createImageBackend({ nai, getBridge, global: globalObject = globalThis, chatu8, llm, report, dbgenTimeouts, floorPromptWait, onRetry, retryGate = sharedRateGate, retrySleep, retryRandom } = {}) {
+    const retryRun = (source, run) => withImageRetry(run, {
+        source, gate: retryGate, onRetry, settings: readImageRetrySettings(readBridge().autoIllustration),
+        ...(retrySleep && { sleep: retrySleep }), ...(retryRandom && { random: retryRandom }),
+    });
+    const naiGenerate = (slot, settings) => retryRun('nai', () => nai.generate(slot, settings));
     const timeouts = { ...DBGEN_TIMEOUTS, ...(dbgenTimeouts && typeof dbgenTimeouts === 'object' ? dbgenTimeouts : {}) };
     const readBridge = (override) => (override && typeof override === 'object' ? override : (getBridge ? getBridge() || {} : {}));
     // chatu8 可注入 { findHost, request } 供测试替换；默认走真实的智绘姬事件桥。
@@ -145,7 +151,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         if (mode === 'dbgen') {
             return findDbgenApi(globalObject)
                 ? { mode, via: 'dbgen', ownPrompts: true, ready: { ok: true } }
-                : { mode, via: 'none', ownPrompts: true, ready: { ok: false, error: `未检测到${DBGEN_LABEL}，请确认已安装并启用，或在「生图 → 图像来源」改用内置 NAI` } };
+                : { mode, via: 'none', ownPrompts: true, ready: { ok: false, error: `未检测到${DBGEN_LABEL}，请确认已安装并启用，或在「生图与AI › 图像来源」改用内置 NAI` } };
         }
         const settings = normalizeAutoIllustrationSettings(bridge.autoIllustration).nai;
         const hasNaiKey = Boolean(String(settings.apiKey || '').trim());
@@ -153,15 +159,15 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             if (findBaibaiApi(globalObject)) return { mode, via: 'baibai', ownPrompts: false, ready: { ok: true } };
             return hasNaiKey
                 ? { mode, via: 'nai', ownPrompts: false, ready: { ok: true } }
-                : { mode, via: 'none', ownPrompts: false, ready: { ok: false, error: `未检测到${BAIBAI_LABEL}，请确认已安装并启用；或在「生图 → 图像来源」填写 NAI Key 作兜底` } };
+                : { mode, via: 'none', ownPrompts: false, ready: { ok: false, error: `未检测到${BAIBAI_LABEL}，请确认已安装并启用；或在「生图与AI › 图像来源」填写 NAI Key 作兜底` } };
         }
         if (mode === 'extension') {
             if (findChatu8()) return { mode, via: 'chatu8', ownPrompts: false, ready: { ok: true } };
             return hasNaiKey
                 ? { mode, via: 'nai', ownPrompts: false, ready: { ok: true } }
-                : { mode, via: 'none', ownPrompts: false, ready: { ok: false, error: `未检测到${CHATU8_LABEL}，请确认已安装并启用；或在「生图 → 图像来源」填写 NAI Key 作兜底` } };
+                : { mode, via: 'none', ownPrompts: false, ready: { ok: false, error: `未检测到${CHATU8_LABEL}，请确认已安装并启用；或在「生图与AI › 图像来源」填写 NAI Key 作兜底` } };
         }
-        if (!hasNaiKey) return { mode, via: 'none', ownPrompts: false, ready: { ok: false, error: '请先在「生图 → 图像来源」填写 NAI Key' } };
+        if (!hasNaiKey) return { mode, via: 'none', ownPrompts: false, ready: { ok: false, error: '请先在「生图与AI › 图像来源」填写 NAI Key' } };
         return { mode, via: 'nai', ownPrompts: false, ready: { ok: true } };
     }
 
@@ -305,24 +311,27 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             ...(meta.transparent === true && { straight_alpha: true, tag_hint_transparent_background: true }),
             ...(Number.isInteger(meta.seed) && meta.seed >= 0 && { seed: meta.seed }),
         };
-        let result;
-        try {
-            result = await withTimeout(api.generate({
-                caption: merged,
-                replaceCharacterKeywords: true,
-                ...(artist && { artist: { positivePrompt: artist.positive, negativePrompt: artist.negative } }),
-                ...(Object.keys(params).length && { params }),
-            }), timeouts.paint);
-        } catch (error) {
-            return { ok: false, error: `${DBGEN_LABEL}出图失败：${(error && error.message) || error}`, prompt: promptFromCaption(merged) };
-        }
-        const image = result && result.ok && Array.isArray(result.value) ? result.value[0] : null;
-        if (!image || !image.blob) return { ok: false, error: `${DBGEN_LABEL}出图失败：${describeResultError(result, '未返回图片')}`, prompt: promptFromCaption(merged) };
-        try {
-            return { ok: true, dataUrl: await blobToDataUrl(image.blob, image.mimeType, globalObject), prompt: promptFromCaption(merged) };
-        } catch (error) {
-            return { ok: false, error: `${DBGEN_LABEL}图片读取失败：${(error && error.message) || error}`, prompt: promptFromCaption(merged) };
-        }
+        return retryRun('dbgen', async ({ seed }) => {
+            const attemptParams = seed ? { ...params, seed } : params;
+            let result;
+            try {
+                result = await withTimeout(api.generate({
+                    caption: merged,
+                    replaceCharacterKeywords: true,
+                    ...(artist && { artist: { positivePrompt: artist.positive, negativePrompt: artist.negative } }),
+                    ...(Object.keys(attemptParams).length && { params: attemptParams }),
+                }), timeouts.paint);
+            } catch (error) {
+                return { ok: false, error: `${DBGEN_LABEL}出图失败：${(error && error.message) || error}`, prompt: promptFromCaption(merged) };
+            }
+            const image = result && result.ok && Array.isArray(result.value) ? result.value[0] : null;
+            if (!image || !image.blob) return { ok: false, error: `${DBGEN_LABEL}出图失败：${describeResultError(result, '未返回图片')}`, prompt: promptFromCaption(merged) };
+            try {
+                return { ok: true, dataUrl: await blobToDataUrl(image.blob, image.mimeType, globalObject), prompt: promptFromCaption(merged) };
+            } catch (error) {
+                return { ok: false, error: `${DBGEN_LABEL}图片读取失败：${(error && error.message) || error}`, prompt: promptFromCaption(merged) };
+            }
+        });
     }
 
     async function generateDbgenCaption(meta = {}) {
@@ -359,7 +368,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         try { result = await generate(slot, settings, meta); } catch (error) { result = { ok: false, error: (error && error.message) || String(error) }; }
         return result && result.ok && result.dataUrl
             ? { ok: true, dataUrl: result.dataUrl, prompt, via: result.via }
-            : { ok: false, error: (result && result.error) || '出图失败', prompt };
+            : { ok: false, error: (result && result.error) || '出图失败', prompt, ...(result && result.failure && { failure: result.failure }) };
     }
 
     // 智绘姬出图；未安装、失败或图片取不到时，填了 NAI Key 就退回内置 NAI。
@@ -369,10 +378,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             : normalizeAutoIllustrationSettings(readBridge().autoIllustration).nai;
         if (!String(settings.apiKey || '').trim()) return { ok: false, error: reason };
         const painted = withSlotArtist(slot, settings, meta);
-        const result = await nai.generate(painted.slot, painted.naiSettings);
+        const result = await naiGenerate(painted.slot, painted.naiSettings);
         return result && result.ok
             ? { ...result, via: 'nai' }
-            : { ok: false, error: `${reason}；内置 NAI 兜底也失败：${(result && result.error) || '未知错误'}` };
+            : { ok: false, error: `${reason}；内置 NAI 兜底也失败：${(result && result.error) || '未知错误'}`, ...(result && result.status && { status: result.status }) };
     }
 
     // 柏宝绘出图；未安装或失败时同样退回内置 NAI。
@@ -394,7 +403,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         if (!api) return naiFallback(slot, naiSettings, `未检测到${BAIBAI_LABEL}`, meta);
         const size = naiSettings && naiSettings.size;
         const floorTag = await pluginFloorTag('baibai', BAIBAI_LABEL, meta);
-        const result = await requestBaibaiImage(api, slot, { size, seed: naiSettings && naiSettings.seed, floorTag });
+        const baseSeed = naiSettings && naiSettings.seed;
+        const result = await retryRun('baibai', ({ seed }) => requestBaibaiImage(api, slot, { size, seed: seed || baseSeed, floorTag }));
         if (!result.ok) return naiFallback(slot, naiSettings, result.error, meta);
         return { ok: true, via: 'baibai', dataUrl: result.dataUrl, prompt: promptFromText(result.prompt, '') };
     }
@@ -406,7 +416,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         const floorTag = await pluginFloorTag('chatu8', CHATU8_LABEL, meta);
         const prompt = floorTag ? floorTag.tag : buildChatu8Prompt(slot);
         if (!prompt) return { ok: false, error: `没有可交给${CHATU8_LABEL}的提示词` };
-        const result = await requestChatu8(host, prompt);
+        const result = await retryRun('chatu8', () => requestChatu8(host, prompt));
         if (!result || !result.ok) return fallback((result && result.error) || `${CHATU8_LABEL}出图失败`);
         try {
             return { ok: true, via: 'chatu8', dataUrl: await chatu8ImageToDataUrl(result.imageData, host.win || globalObject), prompt: promptFromText(prompt, '') };
@@ -455,6 +465,11 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
 
     // 剧情 CG / 素材补全入口，签名与 nai-official-client 的 generate 一致，多一个 meta。
     async function generate(slot, naiSettings, meta = {}) {
+        const result = await generateRouted(slot, naiSettings, meta);
+        return annotateImageFailure(result, describe().via);
+    }
+
+    async function generateRouted(slot, naiSettings, meta) {
         const mode = describe().mode;
         const model = kindModel(meta);
         if (model && naiSettings && typeof naiSettings === 'object') naiSettings = { ...naiSettings, model };
@@ -462,7 +477,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         if (mode === 'extension') return viaChatu8(slot, naiSettings, meta);
         if (mode === 'baibai') return viaBaibai(slot, naiSettings, meta);
         ({ slot, naiSettings } = withSlotArtist(slot, naiSettings, meta));
-        return nai.generate(slot, naiSettings);
+        return naiGenerate(slot, naiSettings);
     }
 
     // 阅读器「重画 / 测试生成」入口：返回 reader-image-service 需要的 { url }。
@@ -487,8 +502,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         if (!prompt) return { ok: false, reason: '没有可用于生图的提示词' };
         const cgModel = kindModel({ imageKind: 'cg' });
         if (cgModel) settings = { ...settings, model: cgModel };
-        const result = await nai.generate({ scene: prompt }, settings);
-        return result && result.ok ? { url: result.dataUrl, providerId: 'vn.provider.nai' } : { ok: false, reason: (result && result.error) || 'NAI 生成失败' };
+        const result = await naiGenerate({ scene: prompt }, settings);
+        return result && result.ok ? { url: result.dataUrl, providerId: 'vn.provider.nai' } : { ok: false, reason: (result && result.error) || 'NAI 生成失败', failure: result && result.failure };
     }
 
     // 局部重绘能力协商：与普通 generate 分开；只有内置 NAI 且客户端提供 edit 时可用。
@@ -497,8 +512,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         const base = describe(bridgeOverride);
         if (base.mode !== 'nai') {
             return { supported: false, reason: 'image-edit-unsupported', message: base.mode === 'dbgen'
-                ? `${DBGEN_LABEL}不支持局部重绘，请在「生图 → 图像来源」改用内置 NAI`
-                : `${base.mode === 'baibai' ? BAIBAI_LABEL : CHATU8_LABEL}不支持局部重绘，请在「生图 → 图像来源」改用内置 NAI` };
+                ? `${DBGEN_LABEL}不支持局部重绘，请在「生图与AI › 图像来源」改用内置 NAI`
+                : `${base.mode === 'baibai' ? BAIBAI_LABEL : CHATU8_LABEL}不支持局部重绘，请在「生图与AI › 图像来源」改用内置 NAI` };
         }
         if (!nai || typeof nai.edit !== 'function') {
             return { supported: false, reason: 'image-edit-unsupported', message: '当前 NAI 客户端不支持局部重绘' };

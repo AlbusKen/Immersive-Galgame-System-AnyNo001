@@ -1,9 +1,10 @@
 import { normalizePhoneWallpaper } from './my-phone.js';
 import { normalizePromptEntry } from '../../scene/prompt-entries.js';
+import { isPackSwitchPath } from '../../scene/fx-packs.js';
 import { defaultPromptKeywords } from '../../scene/prompt-triggers.js';
 import { LEGACY_READER_MODES, resolveLegacyReaderMode } from '../../storage/legacy-igs.js';
 import { buildNarrativeSegments } from '../../scene/image-slots.js';
-import { SETTINGS_TAB_ALIASES, SETTINGS_TAB_DEFS } from './settings-tabs.js';
+import { normalizeSettingsTab as normalizeSettingsCategory } from './settings-pages.js';
 import { DEFAULT_DIALOG_BAR_BUTTONS, DIALOG_BAR_ALIGNS, TOOLBAR_ACTIONS, TOOLBAR_PLATE_MODES, TOOLBAR_SPLIT_MODES, VN_THEME_PRESETS } from './reader-host-constants.js';
 import { esc, normalizeFiniteNumber } from './reader-value-utils.js';
 import { CLASSIC_DIALOG_THEME_DEFAULTS, isClassicDialogSkin, normalizeDialogSkin } from './classic-dialog-skin.js';
@@ -21,10 +22,9 @@ export function normalizeReaderMode(mode, bridge) {
     return LEGACY_READER_MODES.includes(resolved) ? resolved : 'pc';
 }
 
+// settingsState.tab 现在是分类 id（dash / style / ... / data）；旧的 basic / reader / scene / image 也认，映射到对应分类。
 export function normalizeSettingsTab(tab) {
-    const raw = String(tab || 'basic').trim();
-    const normalized = SETTINGS_TAB_ALIASES[raw] || raw;
-    return SETTINGS_TAB_DEFS.some(([id]) => id === normalized) ? normalized : 'basic';
+    return normalizeSettingsCategory(tab);
 }
 
 export function normalizePerformanceSettings(value) {
@@ -56,16 +56,18 @@ export function normalizeSettingsValue(path, value) {
             return (typeof value === 'string' ? value : '').slice(0, 6000);
         }
         if (path === 'readerSettings.fxPrompts.style') return value === 'detailed' ? 'detailed' : 'compact';
-        if (/^readerSettings\.(sceneTransition|timeTint|spriteMotion|spriteActions|camera|stageCast|textFx|bilingual|clickWaitMark|bgm|ambientSound|uiSound)\.(enabled|moodTag|night|alignHeads|romanceDuo|castReact|castStage|breathing|castBreathing|castLean|speakBounce|enterExit|emotionFade|kenBurns|parallax|closeUp|aiShots|birds|rain|wind|insects|waves|crowd|thunder|stream|fire|snow|cicadas|frogs|chimes|bell|clock|drip|train|tavern|ship|traffic|car|carriage|bath|underwater|space)$/.test(path)
+        if (/^readerSettings\.(sceneTransition|timeTint|spriteMotion|spriteActions|camera|stageCast|textFx|bilingual|clickWaitMark|bgm|ambientSound|uiSound)\.(enabled|moodTag|night|alignHeads|romanceDuo|castReact|castStage|backHint|breathing|castBreathing|castLean|speakBounce|enterExit|emotionFade|kenBurns|parallax|closeUp|aiShots|birds|rain|wind|insects|waves|crowd|thunder|stream|fire|snow|cicadas|frogs|chimes|bell|clock|drip|train|tavern|ship|traffic|car|carriage|bath|underwater|space)$/.test(path)
             || /^readerSettings\.dailyFx\.[a-zA-Z]+$/.test(path)
+            || (path.startsWith('readerSettings.') && isPackSwitchPath(path.slice('readerSettings.'.length)))
             || /^readerSettings\.(liveFx|audienceFx|innerFx|feedFx)\.(enabled|muteOnNsfw|ambient|useThought|interact|followTheme)$/.test(path)
             || /^readerSettings\.feedFx\.platforms\.[a-z]+\.enabled$/.test(path)
             || path === 'readerSettings.feedFx.storm.enabled'
+            || path === 'readerSettings.cameraPackFx.sound'
             || path === 'readerSettings.typewriter.punctuationPause'
             || path === 'readerSettings.typewriter.prosody') {
             return value === true || value === 'true' || value === 1 || value === '1';
         }
-        if (path === 'readerSettings.fxSound.volume' || path === 'readerSettings.bgm.volume' || path === 'readerSettings.ambientSound.volume' || path === 'readerSettings.uiSound.volume' || path === 'readerSettings.audioMaster.volume') {
+        if (path === 'readerSettings.fxSound.volume' || path === 'readerSettings.bgm.volume' || path === 'readerSettings.ambientSound.volume' || path === 'readerSettings.uiSound.volume' || path === 'readerSettings.audioMaster.volume' || path === 'readerSettings.cameraPackFx.volume') {
             const volume = Number(value);
             return Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0.5;
         }
@@ -119,7 +121,7 @@ export function normalizeSettingsValue(path, value) {
     if (path === 'bridge.sceneAssets.spriteEnhance.size') return [0.4, 0.6, 0.8, 1, 1.2, 1.6, 2].includes(Number(value)) ? Number(value) : 0.8;
     if (path === 'bridge.sceneAssets.promptPlacement') return value === 'depth0' ? 'depth0' : 'system';
     // 按需块条目：关键词与默认一致时存空（留空即用默认），其余字段按条目规范化。
-    const promptEntry = path.match(/^bridge.sceneAssets.promptEntries.([a-z]+).(mode|keys|secondary|exclude|scan|sticky|cooldown)$/);
+    const promptEntry = path.match(/^bridge.sceneAssets.promptEntries.([a-z]+).(mode|keys|position|depth|text)$/);
     if (promptEntry) {
         if (promptEntry[2] === 'keys' && String(value || '').trim() === defaultPromptKeywords(promptEntry[1])) return '';
         return normalizePromptEntry({ [promptEntry[2]]: value })[promptEntry[2]];

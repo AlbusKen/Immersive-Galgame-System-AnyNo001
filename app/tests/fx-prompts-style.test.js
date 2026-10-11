@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildTagGrammar, collectGrammarBlocks } from '../src/visual/igs-ui/tag-grammar.js';
 import { FX_PROMPT_KEYS, normalizeFxPromptsSettings } from '../src/visual/igs-ui/fx-settings.js';import { resolveDanmakuPromptRule } from '../src/visual/igs-ui/danmaku-prompt.js';
-import { renderFxPromptsFields, fxPromptsCopyText } from '../src/visual/igs-ui/fx-settings-fields.js';
+import { fxPromptsCopyText } from '../src/visual/igs-ui/fx-settings-fields.js';
+import { renderPromptEntryFields } from '../src/visual/igs-ui/prompt-entries-fields.js';
 
 const BASE = Object.freeze({
     fxTags: { enabled: true, call: true, sfx: true },
@@ -39,11 +40,20 @@ test('gate:fx-prompts:detailed-keeps-on-demand-but-expands-to-full-bracket-synta
     assert.match(hit.depth0, /【直播间】/);
 });
 
+const EVERYTHING_DAILY = Object.freeze({ dailyFx: { enabled: true, dressup: true } });
+
 test('gate:fx-prompts:inject-off-drops-live-and-feed-and-override-replaces', () => {
     const off = buildTagGrammar({ readerSettings: { ...BASE, fxPrompts: { inject: false } }, expand: new Set(KEYS) });
     assert.doesNotMatch(off.system + off.depth0, /手机社区|直播间|igs-fx:call/);
-    const custom = buildTagGrammar({ readerSettings: { ...BASE, fxPrompts: { feed: '自定义社区写法' } } });
-    assert.match(custom.system, /自定义社区写法/);
+    // 写了正文只换内容；是否每轮都发由条目的「常驻」决定：默认按关键词，命中才进聊天末尾，设为常驻进系统说明区。
+    const custom = buildTagGrammar({ readerSettings: { ...BASE, fxPrompts: { feed: '自定义社区写法' } }, expand: new Set(['feed']) });
+    assert.match(custom.depth0, /自定义社区写法/);
+    assert.doesNotMatch(buildTagGrammar({ readerSettings: { ...BASE, fxPrompts: { feed: '自定义社区写法' } } }).system, /自定义社区写法/);
+    const always = buildTagGrammar({ readerSettings: { ...BASE, fxPrompts: { feed: '自定义社区写法' } }, entries: { feed: { mode: 'always' } } });
+    assert.match(always.system, /自定义社区写法/);
+    // 没有 fxPrompts 对应项的块（换装等）正文覆盖存在条目自己的 text 里。
+    const own = buildTagGrammar({ readerSettings: EVERYTHING_DAILY, entries: { wardrobe: { mode: 'always', text: '我写的换装规则' } } });
+    assert.match(own.system, /我写的换装规则/);
     assert.equal(resolveDanmakuPromptRule({ liveFx: { enabled: true } }, { live: false }), '');
     assert.equal(resolveDanmakuPromptRule({ liveFx: { enabled: true } }, { live: '我的直播写法' }), '我的直播写法');
 });
@@ -80,15 +90,31 @@ test('gate:fx-prompts:detailed-covers-every-block-with-full-syntax-and-keeps-ada
     }
 });
 
-test('gate:fx-prompts:settings-fold-boxes-follow-feature-switches', () => {
-    const html = renderFxPromptsFields(EVERYTHING, true);
+test('gate:fx-prompts:rules-page-rows-follow-feature-switches', () => {
+    const open = () => true;
+    const html = renderPromptEntryFields({}, { reader: EVERYTHING, isOpen: open });
     assert.match(html, /data-segment-path="readerSettings\.fxPrompts\.style"/);
-    for (const key of FX_PROMPT_KEYS.filter((k) => k !== 'dlc')) assert.match(html, new RegExp(`data-path="readerSettings\\.fxPrompts\\.${key}"`), key);
-    const fewer = renderFxPromptsFields({ ...EVERYTHING, battleFx: { enabled: false } }, true);
-    assert.doesNotMatch(fewer, /fxPrompts\.battle"/);
-    const kept = renderFxPromptsFields({ ...EVERYTHING, battleFx: { enabled: false }, fxPrompts: { battle: '我写的战斗' } }, true);
-    assert.match(kept, /我写的战斗/, '改过的框关掉功能也留着，方便清空');
-    assert.match(html, /data-action="fx-prompts-copy-all"/, '标题行应有复制全部键');
+    // 固定写法（无触发词的块）与带关键词的条目都有正文框。
+    for (const key of ['fx', 'item', 'bgm', 'cast', 'text', 'bilingual', 'daily', 'battle', 'romance', 'camera', 'chat', 'live', 'feed']) {
+        assert.match(html, new RegExp(`data-path="readerSettings\.fxPrompts\.${key}"`), key);
+    }
+    assert.match(html, /data-path="bridge\.sceneAssets\.promptEntries\.battle\.position"/);
+    assert.doesNotMatch(html, /promptEntries\.[a-z]+\.(secondary|exclude|scan|sticky|cooldown)/);
+    // 收起时只剩一行一条，不带字段。
+    const closed = renderPromptEntryFields({}, { reader: EVERYTHING });
+    assert.doesNotMatch(closed, /data-path="bridge\.sceneAssets\.promptEntries/);
+    assert.match(closed, /data-action="ui-toggle-open:prompt-entry-battle"/);
+    // 深度输入只在选「指定深度」时出现。
+    assert.doesNotMatch(html, /promptEntries\.battle\.depth"/);
+    const deep = renderPromptEntryFields({ promptEntries: { battle: { position: 'depth', depth: 6 } } }, { reader: EVERYTHING, isOpen: open });
+    assert.match(deep, /promptEntries\.battle\.depth"/);
+    assert.match(deep, /指定深度 @D6/);
+    // 固定写法随功能开关增减；改过的框关掉功能也留着，方便清空。
+    const fewer = renderPromptEntryFields({}, { reader: { ...EVERYTHING, itemFx: { enabled: false } }, isOpen: open });
+    assert.doesNotMatch(fewer, /data-path="readerSettings\.fxPrompts\.item"/);
+    const kept = renderPromptEntryFields({}, { reader: { ...EVERYTHING, itemFx: { enabled: false }, fxPrompts: { item: '我写的物品' } }, isOpen: open });
+    assert.match(kept, /我写的物品/);
+    assert.match(html, /data-action="fx-prompts-copy-all"/);
 });
 
 test('gate:fx-prompts:copy-all-joins-boxes-and-follows-overrides', () => {
@@ -112,7 +138,7 @@ test('gate:fx-prompts:resident-defaults-off-and-forces-every-block-every-turn', 
     assert.match(on.system, /【日常演出】/);
     assert.match(on.system, /【手机社区】/);
     // 渲染出开关。
-    assert.match(renderFxPromptsFields(EVERYTHING, true), /data-switch="readerSettings\.fxPrompts\.resident"/);
+    assert.match(renderPromptEntryFields({}, { reader: EVERYTHING }), /data-switch="readerSettings\.fxPrompts\.resident"/);
 });
 
 test('gate:fx-prompts:legacy-danmaku-rule-takes-per-part-overrides', () => {

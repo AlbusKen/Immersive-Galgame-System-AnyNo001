@@ -117,5 +117,7 @@ test('applyFxWorldview writes worldview into feedFx without mutating input', () 
     assert.equal(out.feedFx.worldview, 'ancient');
     assert.equal(input.feedFx.worldview, undefined);
     const plainInput = { fxTags: {} };
-    assert.equal(applyFxWorldview(plainInput, 'modern'), plainInput);
+    assert.deepEqual(applyFxWorldview(plainInput, 'modern'), { fxTags: {}, dailyFx: { sigil: false } });
+    assert.deepEqual(plainInput, { fxTags: {} });
+    assert.equal(applyFxWorldview(plainInput, 'bogus'), plainInput);
 });

@@ -12,7 +12,7 @@ import { AUDIENCE_AMBIENT_LINES, INNER_PHRASES, classifyAudienceMood, mixInnerPh
 import { myPhoneOf, phoneWallUrl } from './my-phone.js';
 import { fitLiveFace, fitLivePhone, fitLiveSwitch, likeLive, phoneGeometry, pushLiveMessages, stopLivePhone, syncLivePhone, syncLiveSwitch, triggerLiveWarning } from './danmaku-live.js';
 import { fitLiveControls, liveActionMessage, recordLiveAction, stopLiveControls, syncLiveControls } from './danmaku-interact.js';
-import { dockAudienceEntry, isAudienceEntryShown, placeAudienceEntry, stopAudience, syncAudience } from './danmaku-audience.js';
+import { dockAudienceEntry, isAudienceEntryShown, stopAudience, syncAudience } from './danmaku-audience.js';
 import { estimateTextWidth, occupyTrack, pickScrollTrack } from './danmaku-lanes.js';
 import { resolveChatTheme } from './chat-themes.js';
 import { fitFeedPhone, stopFeedPhone, syncFeedPhone } from './feed-phone.js';
@@ -22,9 +22,10 @@ import { detectLiveScale, fanNameFromText, liveTier, mergeLiveScale } from './li
 import { applyLiveFull, classifySubtitle, clearLiveFull, refreshLiveFullOverflow } from './live-full.js';
 import { enterFocus, exitFocus, focusOn, holdFocusText, isNewAppearance, phoneIdentity, setFocusHooks } from './phone-focus.js';
 import { normalizeFeedFxSettings } from './feed-settings.js';
-import { isFeedEntryShown, placeFeedEntry, stopFeedReview, syncFeedReview } from './feed-review.js';
+import { placeEntryDock } from './entry-dock.js';
+import { isFeedEntryShown, stopFeedReview, syncFeedReview } from './feed-review.js';
 import { phoneStatusFor } from './phone-sense.js';
-import { collectNotices, isNotifyEntryShown, noticeStoreFor, normalizeNotifyCenterSettings, placeNotifyEntry, recordNotices, stopNotify, syncNotify } from './notify-center.js';
+import { collectNotices, isNotifyEntryShown, noticeStoreFor, normalizeNotifyCenterSettings, recordNotices, stopNotify, syncNotify } from './notify-center.js';
 import { LIVE_HOST_ATTR, setStageCovered } from './stage-pause.js';
 
 // 弹幕运行时：直播间（掏出手机看直播）、观众弹幕（HUD 下方小手机入口，点开看）、内心弹幕（立绘周围爆发）。
@@ -592,12 +593,9 @@ export function applyDanmakuToDom(root, snapshot, options = {}) {
             if (feedPhone) fitFeedPhone(host, stage);
             if (stormPhone) fitStorm(host, stage, phoneGeometry(stage, ctx.look.model, ctx.look.size));
             watchPhoneStage(state, ctx, layers.motion, refit, Boolean(phone || feedPhone || stormPhone));
-            if (entryShown) placeAudienceEntry(front, top);
-            if (reviewShown) placeFeedEntry(front, top - (entryShown ? step : 0));
-            if (notifyShown) {
-                const slot = (entryShown ? 1 : 0) + (reviewShown ? 1 : 0);
-                placeNotifyEntry(front, top - slot * step, slot);
-            }
+            // 三个入口共用一个纵向排列的坞；全屏直播时坞向上多留出 (个数 - 1) 格，让最后一个仍落在名次卡上方。
+            const count = (entryShown ? 1 : 0) + (reviewShown ? 1 : 0) + (notifyShown ? 1 : 0);
+            if (count) placeEntryDock(front, top - Math.max(0, count - 1) * step);
             if (plan.inner) playInner(ctx, plan.inner, stage);
         });
     }

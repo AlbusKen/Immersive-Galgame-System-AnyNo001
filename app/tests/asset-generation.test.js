@@ -1404,7 +1404,7 @@ test('gate:assets:expression-set-writes-once-then-paints-eight-in-order', async 
         temp: [{ key: 'k1', type: 'sprite', name: '冬月', imageId: 'def' }],
         resolveUrl: () => '',
     });
-    assert.ok(pane.includes('入库到角色'));
+    assert.ok(pane.includes('存为立绘'));
     assert.ok(pane.includes('修复抠图'));
     assert.equal(pane.includes('绑定到角色'), false);
     assert.equal(pane.includes('提示词'), false);
@@ -1646,7 +1646,7 @@ test('gate:assets:character-sprite-honors-nai-and-extension-image-source', async
 test('gate:assets:default-sprite-extension-failure-falls-back-through-image-backend', async () => {
     const { createImageBackend } = await import('../src/generated-images/image-backend.js');
     const calls = [];
-    const bridge = { imageApi: { mode: 'extension' }, autoIllustration: { nai: { apiKey: 'test-key' } } };
+    const bridge = { imageApi: { mode: 'extension' }, autoIllustration: { nai: { apiKey: 'test-key' }, retry: { enabled: false } } };
     const image = 'data:image/png;base64,QQ==';
     const backend = createImageBackend({
         global: {}, getBridge: () => bridge,

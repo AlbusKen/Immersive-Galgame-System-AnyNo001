@@ -11,6 +11,7 @@ import { normalizeTextFxSettings } from './text-fx.js';
 import { normalizeBilingualSettings } from './bilingual-text.js';
 import { normalizeClickWaitMarkSettings } from './click-wait-mark.js';
 import { normalizeDailyFxSettings } from './fx-daily-model.js';
+import { FX_PACK_SETTING_GROUPS } from '../../scene/fx-packs.js';
 import { normalizeBattleFxSettings } from './fx-battle-model.js';
 import { normalizeRomanceFxSettings } from './romance-settings.js';
 import { normalizeMetaFxSettings } from './meta-settings.js';
@@ -212,6 +213,8 @@ export const FX_SETTINGS_NORMALIZERS = Object.freeze({
     bilingual: normalizeBilingualSettings,
     clickWaitMark: normalizeClickWaitMarkSettings,
     dailyFx: normalizeDailyFxSettings,
+    // 题材包自带开关的设置组（如 aboFx），登记见 scene/fx-packs.js。
+    ...FX_PACK_SETTING_GROUPS,
     // 结果展示（选项检定掷骰卡）独立渲染（fx-result），不进入 FX_FEATURE_KEYS。
     resultFx: normalizeResultFxSettings,
     // 漫画演出模式独立渲染（comic-bubble），不进入 FX_FEATURE_KEYS。

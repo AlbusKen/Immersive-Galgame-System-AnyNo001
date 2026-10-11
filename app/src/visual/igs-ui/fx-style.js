@@ -1,4 +1,5 @@
 import { EAT_FX_STYLE_TEXT } from './fx-eat-style.js';
+import { RANGE_FX_STYLE_TEXT } from './fx-range-style.js';
 import { EMERGENCY_FX_STYLE_TEXT } from './fx-emergency-style.js';
 
 // 演出样式：#igs-fx-stage 在立绘之上、对话层之下；#igs-fx-front 在对话层与选项之上、工具栏之下。
@@ -12,6 +13,9 @@ const CALL_TIMER_ANIMATION = 'igs-fx-mm 3600s steps(60,end) infinite,igs-fx-ss 6
 export const FX_STYLE_TEXT = `
 @property --igs-fx-mm{syntax:"<integer>";inherits:false;initial-value:0;}
 @property --igs-fx-ss{syntax:"<integer>";inherits:false;initial-value:0;}
+/* 题材包共用的对话框避让：--igs-dialog-h 由阅读器写在 #igs-overlay 上（漫画模式固定 72px）；safe=底部被对话框占掉的高度，vis=对话框上方可视高度；直播全屏对话框收成字幕，只留 64px。 */
+#igs-overlay{--igs-fx-safe:min(calc(var(--igs-dialog-h,160px) + 32px),62%);--igs-fx-vis:calc(100% - var(--igs-fx-safe));}
+#igs-overlay[data-igs-live-full]{--igs-fx-safe:64px;}
 .igs-fx-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden;contain:layout paint style;}
 #igs-fx-stage{z-index:2;}
 #igs-fx-front{z-index:6;}
@@ -83,6 +87,7 @@ export const FX_STYLE_TEXT = `
 @keyframes igs-fx-flash-snap{0%{opacity:1;}18%{opacity:0;}32%{opacity:.9;}52%{opacity:0;}100%{opacity:0;}}
 @keyframes igs-fx-speed{0%{opacity:0;transform:scale(1.08);}16%{opacity:1;transform:scale(1);}72%{opacity:1;}100%{opacity:0;transform:scale(1);}}
 @keyframes igs-fx-speed-snap{0%{opacity:1;transform:translate(0,0);}12%{transform:translate(-.6%,.4%);}24%{transform:translate(.5%,-.3%);}36%{transform:translate(-.4%,-.4%);}48%{transform:translate(.4%,.5%);}60%{transform:translate(0,0);}76%{opacity:1;}88%{opacity:.5;}100%{opacity:0;}}
+@keyframes igs-fx-heartbeat-pulse{0%{opacity:0}1.2%{opacity:1}7%{opacity:.25}8.3%{opacity:.75}14%{opacity:.1}45.8%{opacity:0}47%{opacity:1}53%{opacity:.25}54.2%{opacity:.75}60%{opacity:.1}100%{opacity:0}}
 @keyframes igs-fx-beat{0%,100%{opacity:0;}12%{opacity:.9;}24%{opacity:.35;}36%{opacity:.8;}60%{opacity:0;}}
 @keyframes igs-fx-drop{0%{opacity:0;transform:translate(-50%,-120%);}12%{opacity:1;transform:translate(-50%,0);}86%{opacity:1;transform:translate(-50%,0);}100%{opacity:0;transform:translate(-50%,-120%);}}
 @keyframes igs-fx-rise{0%{opacity:0;transform:translateY(10px);}14%{opacity:1;transform:translateY(0);}82%{opacity:1;}100%{opacity:0;transform:translateY(-6px);}}
@@ -210,7 +215,7 @@ export const FX_STYLE_TEXT = `
 #igs-overlay[data-igs-dialog-skin="black-white-manga"] .igs-fx-svg .igs-fx-flame-in{fill:#fff;}
 .igs-fx-speedlines{position:absolute;inset:0;background:repeating-conic-gradient(from 0deg at 50% 45%,rgba(255,255,255,0) 0deg 3deg,rgba(255,255,255,.55) 3deg 3.5deg,rgba(255,255,255,0) 3.5deg 7deg);animation:igs-fx-speed var(--igs-fx-life,.7s) ease-out both;}
 .igs-fx-speedlines[data-baked]{background-color:transparent;background-position:50% 45%;background-size:cover;background-repeat:no-repeat;}
-.igs-fx-heartbeat{position:absolute;inset:0;--igs-fx-beat:255,110,160;background:radial-gradient(ellipse at 50% 50%,transparent 45%,rgba(var(--igs-fx-beat),.55) 100%);animation:igs-fx-beat 1.2s ease-in-out 2 both;}
+.igs-fx-heartbeat{position:absolute;inset:0;--igs-fx-beat:255,110,160;background:radial-gradient(ellipse at 50% 50%,transparent 45%,rgba(var(--igs-fx-beat),.55) 100%);animation:igs-fx-heartbeat-pulse 2.4s linear both;}
 .igs-fx-heartbeat[data-tone="tense"]{--igs-fx-beat:120,10,20;}
 .igs-fx-flash{position:absolute;inset:0;background:#fff;animation:igs-fx-flash .8s ease-out both;}
 .igs-fx-title-card{position:absolute;left:0;right:0;top:20%;display:flex;flex-direction:column;align-items:center;gap:6px;color:#fff;text-shadow:0 2px 10px rgba(0,0,0,.65);animation:igs-fx-fade var(--igs-fx-life,2.7s) ease both;}
@@ -394,6 +399,8 @@ export const FX_STYLE_TEXT = `
 #igs-stage-motion[data-igs-fx-flashback] .igs-fx-flashback-grain{opacity:1;will-change:transform;animation:igs-fx-grain .5s steps(2) infinite;}
 .igs-fx-dream-mist{position:absolute;inset:-8%;opacity:0;pointer-events:none;transition:opacity .8s ease;background:radial-gradient(ellipse 58% 48% at 28% 34%,rgba(206,196,255,.22),transparent 70%),radial-gradient(ellipse 54% 44% at 72% 68%,rgba(170,184,255,.18),transparent 70%),repeating-radial-gradient(circle at 30% 40%,rgba(235,238,255,.08) 0 1px,transparent 1px 4px);mix-blend-mode:screen;filter:blur(2px);}
 #igs-stage-motion[data-igs-fx-dream] .igs-fx-dream-mist{opacity:1;will-change:transform;animation:igs-fx-dream-drift 8s ease-in-out infinite alternate;}
+#igs-overlay[data-igs-quality="low"] .igs-fx-flashback-grain,#igs-overlay[data-igs-quality="low"] .igs-fx-dream-mist{animation:none!important;will-change:auto;}
+#igs-overlay[data-igs-quality="low"] .igs-fx-call-ring::after,#igs-overlay[data-igs-quality="low"] .igs-fx-call-badge::before,#igs-overlay[data-igs-quality="low"] .igs-fx-call-pip[data-speaking]::before{animation-iteration-count:1;}
 #igs-stage-motion[data-igs-fx-flashback] #igs-bg{filter:brightness(var(--igs-bg-brightness,1)) sepia(.55) saturate(.55) brightness(.92) contrast(.95)!important;-webkit-filter:brightness(var(--igs-bg-brightness,1)) sepia(.55) saturate(.55) brightness(.92) contrast(.95)!important;}
 #igs-stage-motion[data-igs-fx-flashback] #igs-sprite{filter:sepia(.55) saturate(.55) brightness(.92) contrast(.95)!important;-webkit-filter:sepia(.55) saturate(.55) brightness(.92) contrast(.95)!important;}
 #igs-stage-motion[data-igs-fx-dream] #igs-bg{filter:brightness(var(--igs-bg-brightness,1)) saturate(.72) brightness(1.03) contrast(.94)!important;-webkit-filter:brightness(var(--igs-bg-brightness,1)) saturate(.72) brightness(1.03) contrast(.94)!important;}
@@ -419,6 +426,7 @@ export const FX_STYLE_TEXT = `
 .igs-fx-notify.is-ancient{transform:none;}
 .igs-fx-symbol{transform:none;}
 }
+${RANGE_FX_STYLE_TEXT}
 ${EAT_FX_STYLE_TEXT}
 ${EMERGENCY_FX_STYLE_TEXT}
 `.trim();

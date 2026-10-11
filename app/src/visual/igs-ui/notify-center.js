@@ -1,4 +1,5 @@
 import { LIVE_ICONS } from './danmaku-icons.js';
+import { mountEntry, unmountEntry } from './entry-dock.js';
 import { feedPlatformById } from '../../scene/feed-platforms.js';
 import { spamAllowed, spamBrandColor, spamKindOf } from '../../scene/spam-sms.js';
 
@@ -265,7 +266,7 @@ export function syncNotify(front, info, ctx) {
         if (!show) return null;
         view = { front, doc: ctx.doc, store, overlay: null, list: null, rendered: -1 };
         view.els = buildEntry(view);
-        front.appendChild(view.els.entry);
+        mountEntry(front, view.els.entry);
         views.set(front, view);
     }
     view.store = store || view.store;
@@ -286,21 +287,6 @@ export function syncNotify(front, info, ctx) {
     return view;
 }
 
-// 入口贴在 HUD 下缘，排在观众弹幕入口、回看入口之后（slot = 前面已有几个入口）；变化才写。
-export function placeNotifyEntry(front, top, slot) {
-    const view = views.get(front);
-    if (!view) return;
-    const value = `${Math.round(top)}px`;
-    if (view.top !== value) {
-        view.top = value;
-        view.els.entry.style.setProperty('--igs-nc-top', value);
-    }
-    if (view.slot !== slot) {
-        view.slot = slot;
-        view.els.entry.style.setProperty('--igs-nc-slot', String(slot));
-    }
-}
-
 export function isNotifyEntryShown(front) {
     const view = views.get(front);
     return Boolean(view && !view.els.entry.hidden);
@@ -310,7 +296,7 @@ export function stopNotify(front) {
     const view = front && views.get(front);
     if (!view) return false;
     closePanel(view);
-    view.els.entry.remove();
+    unmountEntry(front, view.els.entry);
     views.delete(front);
     return true;
 }

@@ -245,7 +245,7 @@ test('gate:fx-daily-underwater-space ambience shows on nsfw pages and one-shots 
     assert.equal(render({ sceneLocation: '舱外', sceneNsfw: true }).result.ambience, 'space');
     const deep = render({ sceneLocation: '海底', fx: { daily: [{ type: 'dive' }, { type: 'bubble' }] } });
     assert.deepEqual(deep.result.played, ['dive', 'bubble']);
-    assert.deepEqual(deep.sounds, ['dive', 'blub']);
+    assert.deepEqual(deep.sounds, ['dive', 'blub', 'bubble-pop']);
     // 认不出载具时水下不当成船：刹车按汽车。
     assert.deepEqual(render({ sceneLocation: '海底', fx: { daily: [{ type: 'brake' }] } }).sounds, ['screech']);
     assert.deepEqual(render({ fx: { daily: [{ type: 'vacuum' }] } }, { readerSettings: { _ancientEra: true } }).sounds, ['vacuum']);

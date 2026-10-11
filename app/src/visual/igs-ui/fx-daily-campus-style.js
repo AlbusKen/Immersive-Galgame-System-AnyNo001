@@ -101,7 +101,7 @@ export const CAMPUS_FX_STYLE_TEXT = `
 #igs-overlay .igs-dfx-drawer-mail{position:relative;display:block;width:100%;height:100%;background:linear-gradient(160deg,#fffaf0,#f3e8d2);border:1px solid #c9b48a;border-radius:3px;box-shadow:0 6px 12px rgba(0,0,0,.35);}
 #igs-overlay .igs-dfx-drawer-flap{position:absolute;left:0;right:0;top:0;height:64%;background:#efe0c4;clip-path:polygon(0 0,100% 0,50% 100%);}
 #igs-overlay .igs-dfx-drawer-seal{position:absolute;left:50%;top:40%;width:20%;aspect-ratio:1;margin-left:-10%;border-radius:50%;background:#e0526e;box-shadow:0 1px 3px rgba(0,0,0,.4);}
-#igs-overlay .igs-dfx-drawer-seal::before{content:"♥";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-size:.7em;line-height:1;}
+#igs-overlay .igs-dfx-drawer-seal::before{content:"";position:absolute;inset:0;background:url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27%3E%3Cpath d=%27M12 20C5.5 15.4 3.2 11.8 3.2 8.6A4.6 4.6 0 0 1 12 7a4.6 4.6 0 0 1 8.8 1.6C20.8 11.8 18.5 15.4 12 20Z%27 fill=%27%23fff%27/%3E%3C/svg%3E") center/50% no-repeat;}
 #igs-overlay .igs-dfx-drawer-gift{position:relative;display:block;width:100%;height:100%;background:#ff8fa8;border-radius:3px;box-shadow:0 6px 12px rgba(0,0,0,.35);}
 #igs-overlay .igs-dfx-drawer-lid{position:absolute;left:-4%;right:-4%;top:0;height:30%;background:#ff7f9b;border-radius:3px;box-shadow:0 2px 0 rgba(0,0,0,.15);}
 #igs-overlay .igs-dfx-drawer-ribbon{position:absolute;left:44%;top:0;width:12%;height:100%;background:#ffd66b;}

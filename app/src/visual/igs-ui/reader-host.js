@@ -1,4 +1,4 @@
-import { narrationKeepsSprite } from '../../scene/narration-sprite.js';
+import { narrationKeepsSprite, narrationCastLeft, otherNamesOf } from '../../scene/narration-sprite.js';
 import {
     buildIgsTextPayload,
     getMessagePrimaryText,
@@ -24,9 +24,11 @@ import { liveFallbackOf, withLiveFallback } from '../../scene/live-context.js';
 import { withStormCarry } from '../../scene/storm-context.js';
 import { normalizeItemImageSettings } from '../../generated-images/illustration/item-image-settings.js';
 import { createCgGalleryPanel } from './cg-gallery-panel.js';
+import { createRewindController, REWIND_NOTICE } from './rewind.js';
 import { createReadingProgress, resolvePositionFloor, resolvePositionPage, segmentText, textHash, textHead, READING_METADATA_KEY } from './reading-progress.js';
 import { createTurnIndexPanel, positionLabel } from './turn-index-panel.js';
 import { createGenerationStrip } from './generation-strip.js';
+import { createMissedHint, detectMissedAssets } from './missed-assets.js';
 import { cancelFxEffects } from './fx-runtime.js';
 import { cancelDanmaku } from './danmaku-runtime.js';
 import { cancelStageDirection } from './stage-direction-runtime.js';
@@ -70,19 +72,7 @@ import {
     ORIGINAL_READER_REQUIRED_SELECTORS,
     ORIGINAL_READER_STYLE_CONTRACT,
 } from './original-reader-source.js';
-import {
-    getImageSubTabTemplate,
-    getReaderSubTabTemplate,
-    getSettingsTabTemplate,
-    normalizeImageSubTab,
-    normalizeSceneSubTab,
-    normalizeReaderSubTab,
-    IMAGE_SUBTAB_DEFS,
-    SCENE_RULES_TEMPLATE,
-    SCENE_SUBTAB_DEFS,
-    READER_SUBTAB_DEFS,
-    SETTINGS_TAB_DEFS,
-} from './settings-tabs.js';
+import { SETTINGS_CATEGORIES, categoryOfPage, currentSettingsPage, openSettingsPage } from './settings-pages.js';
 import { normalizeSettingsTheme } from './settings-theme.js';
 import {
     DEFAULT_IMAGE_API,
@@ -187,6 +177,7 @@ import {
     getOwnerWindow,
     getRootDocument,
     removeImageLoadingSpinner,
+    setImageRetryState,
     syncSettingsViewportVars,
     unmountNode,
 } from './reader-dom-utils.js';
@@ -217,6 +208,8 @@ import { createRecordPanelController } from './record-panel.js';
 import { createShujukuClient } from '../../data/shujuku/client.js';
 import { buildStatusHudModel, normalizeStatusHudSettings, resolveStatusAvatar } from '../../data/shujuku/status-hud-model.js';
 import { readOptionItems } from '../../choices/option-table.js';
+import { buildItemActionText, extractBodyChoices, listPresentNames, normalizeOptionSources, splitQuickActions } from '../../choices/option-sources.js';
+import { buildItemCatalog } from '../../data/shujuku/item-catalog.js';
 import { createIgsModal } from './igs-modal.js';
 import { createOnboardingController } from './onboarding-guide-controller.js';
 import { applyPerformanceProfile, applyProfileDetails } from './performance-profile.js';
@@ -326,6 +319,22 @@ export function createIgsReaderHost(options = {}) {
         getChatId: () => (typeof options.getCurrentChatId === 'function' ? options.getCurrentChatId() : ''),
         storage: () => (options.global || globalThis).localStorage,
     });
+    const rewindController = createRewindController({
+        getContext: () => getSillyTavernContext(options.global || globalThis),
+        getChatId: () => (typeof options.getCurrentChatId === 'function' ? options.getCurrentChatId() : ''),
+        storage: () => (options.global || globalThis).localStorage,
+        progress: readingProgress,
+        loadBranchApi: async () => {
+            const g = options.global || globalThis;
+            for (const win of [g, g.parent, g.top]) {
+                try {
+                    const origin = win && win.location && win.location.origin;
+                    if (origin && origin !== 'null') return await import(/* @vite-ignore */ `${origin}/scripts/bookmarks.js`);
+                } catch (_) { /* 换下一层窗口 */ }
+            }
+            return null;
+        },
+    });
     const progressRuntime = { navigating: false, offered: new Set(), pulled: new Set(), pushed: new Map(), newFloorToastAt: 0 };
     const PROGRESS_NAV_ACTIONS = new Set(['prev', 'next', 'first-page', 'last-page', 'prev-turn', 'next-turn', 'resume-reading', 'turn-first', 'turn-latest', 'skip-read', 'quick-load']);
     let turnIndexPanel = null;
@@ -334,6 +343,10 @@ export function createIgsReaderHost(options = {}) {
     const generationStrip = createGenerationStrip({
         timers: options.autoPlayTimers || globalThis,
         getDialog: () => (state.activeReader && state.activeReader.dom && state.activeReader.dom.dialog) || null,
+    });
+    const missedHint = createMissedHint({
+        getDialog: () => (state.activeReader && state.activeReader.dom && state.activeReader.dom.dialog) || null,
+        onRetry: () => runManualIllustration(),
     });
     // 新手引导：会话标记与当前步骤挂在宿主实例上，状态只存独立的 localStorage 键。
     const onboarding = createOnboardingController({
@@ -412,7 +425,7 @@ export function createIgsReaderHost(options = {}) {
                 if (state.activeSettings) readerStaleBehindSettings = true;
                 else rerenderActiveReader();
             }
-            if (doSettings && state.activeSettings && state.activeSettings.tab === 'scene') {
+            if (doSettings && state.activeSettings && isAssetSettingsPage(state.activeSettings)) {
                 // 交互中先搁着，松手或菜单收起时由 flushDeferredImageRefresh 补刷。
                 if (settingsInteracting()) settingsImageRefreshPending = true;
                 else rerenderSettings();
@@ -431,17 +444,17 @@ export function createIgsReaderHost(options = {}) {
             }
             if (!settings) return;
             if (imageLoaded) {
-                if (settings.tab === 'scene') scheduleImageRefresh({ settings: true });
+                if (isAssetSettingsPage(settings)) scheduleImageRefresh({ settings: true });
                 return;
             }
-            if (settings.asyncState.sceneSubTab === 'review') rerenderSettings();
+            if (currentSettingsPage(settings) === 'review') rerenderSettings();
         })
         : () => {};
     // 日志更新时只替换列表 DOM，不整页重渲染，避免打断正在输入的设置项。
     const offImageJobLog = options.imageJobLog && typeof options.imageJobLog.onChange === 'function'
         ? options.imageJobLog.onChange(() => {
             const current = state.activeSettings;
-            if (!current || current.tab !== 'image' || normalizeImageSubTab(current.asyncState.imageSubTab) !== 'logs') return;
+            if (!current || currentSettingsPage(current) !== 'logs') return;
             const list = current.dom && current.dom.root && current.dom.root.querySelector
                 ? current.dom.root.querySelector('[data-image-log-list]') : null;
             if (list) list.innerHTML = renderImageJobLogList();
@@ -533,7 +546,7 @@ export function createIgsReaderHost(options = {}) {
         getSettingsSnapshotContract() {
             return {
                 selectors: Array.from(SETTINGS_PANEL_REQUIRED_SELECTORS),
-                tabs: SETTINGS_TAB_DEFS.map(([id, label]) => ({
+                tabs: SETTINGS_CATEGORIES.map(([id, label]) => ({
                     id,
                     label,
                     requiredPaths: Array.from((SETTINGS_PANEL_TAB_CONTRACT[id] || {}).requiredPaths || []),
@@ -542,6 +555,12 @@ export function createIgsReaderHost(options = {}) {
             };
         },
     };
+
+    // 角色、场景两个分类的页面里有缩略图：图片到了要刷新它们。
+    function isAssetSettingsPage(settings) {
+        const category = categoryOfPage(currentSettingsPage(settings));
+        return category === 'chars' || category === 'scenes';
+    }
 
     // 翻页配置缓存（见 resolveRenderConfig）；闭包变量必须写在 return 之前。
     let renderConfigCache = null;
@@ -608,6 +627,8 @@ export function createIgsReaderHost(options = {}) {
         };
         const current = state.activeReader;
         current.progressArmed = progressRuntime.navigating;
+        // 重来待办先取：分支会带着原聊天的阅读进度元数据，先按截断后的进度覆盖，再跳过元数据合并。
+        arriveAtRewind(current);
         pullProgressFromMetadata();
         current.titleGate = openOptions.skipTitle !== true && payload.skipTitle !== true && shouldGateTitleScreen({
             readerSettings,
@@ -1418,7 +1439,122 @@ export function createIgsReaderHost(options = {}) {
             clickAction: ob.clickAction === 'fill' ? 'fill' : 'send',
             widthFollowsText: ob.widthFollowsText === true,
             fontSize: reader.optionFontSize,
+            sources: normalizeOptionSources(ob),
         };
+    }
+
+    function readOptionItemCatalog(api) {
+        try {
+            const catalog = buildItemCatalog(createShujukuClient(api).readTables());
+            return catalog && Array.isArray(catalog.items) ? catalog.items : [];
+        } catch (error) {
+            return [];
+        }
+    }
+
+    function showItemPanel(container, cfg, catalog) {
+        const doc = container.ownerDocument || getRootDocument(options.global);
+        const overlay = container.closest && container.closest('#igs-overlay');
+        const content = state.activeReader && state.activeReader.snapshot && state.activeReader.snapshot.content;
+        const context = getSillyTavernContext(options.global || globalThis);
+        const present = listPresentNames(content, context && context.name1 ? String(context.name1) : '');
+        const make = (className, text) => {
+            const button = doc.createElement('button');
+            button.type = 'button';
+            button.className = `igs-option-bubble igs-bubble ${className}`;
+            button.textContent = text;
+            return button;
+        };
+        const bind = (button, handler) => {
+            button.addEventListener('pointerenter', () => playReaderUiSfx('hover'));
+            button.addEventListener('click', (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                playReaderUiSfx('confirm');
+                handler();
+            });
+            return button;
+        };
+        const back = (label, handler) => bind(make('igs-option-mini', label), handler);
+        const toList = () => showOptionBubbles(container, cfg, { silent: true });
+        const startPanel = (className) => {
+            clearChildren(container);
+            container.setAttribute('data-igs-panel', 'item');
+            const panel = doc.createElement('div');
+            panel.className = `igs-option-panel ${className}`;
+            container.appendChild(panel);
+            return panel;
+        };
+        const sendAction = (action, item, target) => {
+            const text = buildItemActionText(action, item.name, target);
+            if (!text) return;
+            container.removeAttribute('data-igs-panel');
+            onOptionBubbleClick(container, text, cfg);
+        };
+        const chooseAction = (item) => {
+            const panel = startPanel('igs-option-actions');
+            const title = doc.createElement('div');
+            title.className = 'igs-option-panel-title';
+            title.textContent = `【${item.name}】`;
+            panel.appendChild(title);
+            if (item.description) {
+                const desc = doc.createElement('div');
+                desc.className = 'igs-option-panel-desc';
+                desc.textContent = item.description;
+                panel.appendChild(desc);
+            }
+            const row = doc.createElement('div');
+            row.className = 'igs-option-row';
+            row.appendChild(bind(make('igs-option-mini', '使用'), () => sendAction('use', item)));
+            if (present.length) {
+                for (const name of present) row.appendChild(bind(make('igs-option-mini', `交给${name}`), () => sendAction('give', item, name)));
+            } else {
+                row.appendChild(bind(make('igs-option-mini', '交给…'), () => {
+                    const text = buildItemActionText('give', item.name, '');
+                    container.removeAttribute('data-igs-panel');
+                    hideOptionBubbles(container);
+                    if (overlay && overlay.classList) overlay.classList.add('igs-free-input');
+                    onOptionBubbleClick(container, text, cfg, null, true);
+                }));
+            }
+            row.appendChild(bind(make('igs-option-mini', '查看'), () => sendAction('inspect', item)));
+            row.appendChild(back('返回', () => choosePick()));
+            panel.appendChild(row);
+        };
+        const choosePick = () => {
+            const panel = startPanel('igs-option-items');
+            const grid = doc.createElement('div');
+            grid.className = 'igs-option-grid';
+            for (const item of catalog) {
+                const button = make('igs-option-item', '');
+                let url = '';
+                try { url = options.itemImages && typeof options.itemImages.imageUrlFor === 'function' ? options.itemImages.imageUrlFor(item.name) : ''; } catch (error) { url = ''; }
+                if (url) {
+                    const img = doc.createElement('img');
+                    img.className = 'igs-option-item-img';
+                    img.setAttribute('src', url);
+                    img.setAttribute('alt', '');
+                    img.setAttribute('draggable', 'false');
+                    button.appendChild(img);
+                }
+                const name = doc.createElement('span');
+                name.className = 'igs-option-item-name';
+                name.textContent = item.name;
+                button.appendChild(name);
+                if (item.description) {
+                    const desc = doc.createElement('span');
+                    desc.className = 'igs-option-item-desc';
+                    desc.textContent = item.description;
+                    button.appendChild(desc);
+                }
+                grid.appendChild(bind(button, () => chooseAction(item)));
+            }
+            panel.appendChild(grid);
+            const row = doc.createElement('div');
+            row.className = 'igs-option-row';
+            row.appendChild(back('返回', toList));
+            panel.appendChild(row);
+        };
+        choosePick();
     }
 
     function isReaderLastPage(snapshot) {
@@ -1459,6 +1595,7 @@ export function createIgsReaderHost(options = {}) {
     function hideOptionBubbles(container) {
         if (!container) return;
         container.setAttribute('hidden', '');
+        container.removeAttribute('data-igs-panel');
         syncStatusHudOptionSuppression(container, false);
         clearChildren(container);
     }
@@ -1466,11 +1603,19 @@ export function createIgsReaderHost(options = {}) {
     function showOptionBubbles(container, cfg, optionsForShow = {}) {
         const doc = container.ownerDocument || getRootDocument(options.global);
         const api = (options.global || globalThis).AutoCardUpdaterAPI || null;
-        const items = readOptionItems(createShujukuClient(api));
+        const sources = cfg.sources || normalizeOptionSources(null);
+        let items = readOptionItems(createShujukuClient(api));
+        // 有选项表时以表为准；表缺失或为空才读正文末尾的编号选项。
+        if (!items.length && sources.bodyFallback) {
+            const content = state.activeReader && state.activeReader.snapshot && state.activeReader.snapshot.content;
+            items = extractBodyChoices(content && (content.fullText || content.text));
+        }
+        const quick = splitQuickActions(sources.quickActions);
+        const itemCatalog = sources.itemButton ? readOptionItemCatalog(api) : [];
         const floatOverlay = container.closest && container.closest('#igs-overlay');
         const floatInput = Boolean(floatOverlay && floatOverlay.getAttribute('data-igs-input') === 'float');
         // 悬浮输入框没有选项时也只给一条「采取其他行动」，点了才出框。
-        if (!items.length && !floatInput) {
+        if (!items.length && !quick.length && !itemCatalog.length && !floatInput) {
             hideOptionBubbles(container);
             if (!optionsForShow.silent) writeToastSafe('未找到选项表（选项 / 选项表 / 行动选项 / 检定建议表）或表为空');
             return;
@@ -1494,6 +1639,38 @@ export function createIgsReaderHost(options = {}) {
                 onOptionBubbleClick(container, send, cfg, dice ? { display, dice } : null);
             });
             container.appendChild(bubble);
+        }
+        container.removeAttribute('data-igs-panel');
+        if (quick.length) {
+            const row = doc.createElement('div');
+            row.className = 'igs-option-row';
+            for (const phrase of quick) {
+                const mini = doc.createElement('button');
+                mini.type = 'button';
+                mini.className = 'igs-option-bubble igs-bubble igs-option-mini';
+                mini.textContent = phrase;
+                mini.addEventListener('pointerenter', () => playReaderUiSfx('hover'));
+                mini.addEventListener('click', (event) => {
+                    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                    playReaderUiSfx('confirm');
+                    onOptionBubbleClick(container, phrase, cfg);
+                });
+                row.appendChild(mini);
+            }
+            container.appendChild(row);
+        }
+        if (itemCatalog.length) {
+            const entry = doc.createElement('button');
+            entry.type = 'button';
+            entry.className = 'igs-option-bubble igs-bubble igs-item-entry-bubble';
+            entry.textContent = '使用物品';
+            entry.addEventListener('pointerenter', () => playReaderUiSfx('hover'));
+            entry.addEventListener('click', (event) => {
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                playReaderUiSfx('confirm');
+                showItemPanel(container, cfg, itemCatalog);
+            });
+            container.appendChild(entry);
         }
         const overlayForInput = container.closest && container.closest('#igs-overlay');
         if (overlayForInput && overlayForInput.classList) overlayForInput.classList.remove('igs-free-input');
@@ -1553,10 +1730,10 @@ export function createIgsReaderHost(options = {}) {
         if (played && played.settled) await played.settled;
     }
 
-    async function onOptionBubbleClick(container, rawText, cfg, check = null) {
+    async function onOptionBubbleClick(container, rawText, cfg, check = null, forceFill = false) {
         hideOptionBubbles(container);
         const text = await resolveOptionSendText(rawText, check);
-        if (cfg.clickAction === 'fill') {
+        if (cfg.clickAction === 'fill' || forceFill) {
             if (state.activeReader && isEmbeddedReaderMode(state.activeReader.mode)) {
                 const fill = typeof options.setInputText === 'function'
                     ? options.setInputText
@@ -1704,6 +1881,9 @@ export function createIgsReaderHost(options = {}) {
         }
         if (normalizedAction === 'reroll-cg') {
             return rerollCurrentIllustration();
+        }
+        if (normalizedAction === 'retry-failed-cg') {
+            return rerollCurrentIllustration({ skipConfirm: true });
         }
         if (normalizedAction === 'cg-gallery') {
             return openCgGallery();
@@ -2051,9 +2231,10 @@ export function createIgsReaderHost(options = {}) {
                 const far = readingProgress.getFarthest();
                 return state.activeReader ? skipToUnread(far ? far.id : 0) : null;
             },
+            onRewind: (pos) => rewindFromPosition(pos),
             onSaveSlot: (key) => saveReadingSlot(key),
             onQuickSave: () => quickSaveReading(),
-            confirm: (message) => pageModal.confirm(message),
+            confirm: (message, labels) => pageModal.confirm(message, labels),
             prompt: (message, value) => pageModal.prompt(message, value),
             getTheme: () => readSettingsTheme(),
             setTheme: (settingsTheme) => saveBridgePatch({ settingsTheme }),
@@ -2070,7 +2251,39 @@ export function createIgsReaderHost(options = {}) {
         const page = Math.max(0, Math.min(segments.length - 1, Number(current.index) || 0));
         const thumb = [content.illustrationUrl, content.currentImageUrl, content.backgroundImage]
             .find((url) => typeof url === 'string' && /^(https?:|\/|user\/)/.test(url)) || '';
-        return { id, page, head: textHead(segmentText(segments[page])), hash: textHash(content.fullText), thumb, place: content.sceneLocation || '' };
+        return { id, page, head: textHead(segmentText(segments[page])), hash: textHash(content.fullText), thumb, place: content.sceneLocation || '', swipe: messageSwipeId(id) };
+    }
+
+    // 该楼当前选中的版本号；读不到记 null。
+    function messageSwipeId(id) {
+        try {
+            const ctx = getSillyTavernContext(options.global || globalThis);
+            const swipe = ctx && Array.isArray(ctx.chat) && ctx.chat[id] ? ctx.chat[id].swipe_id : null;
+            return Number.isInteger(swipe) && swipe >= 0 ? swipe : null;
+        } catch (_) { return null; }
+    }
+
+    // 从存档位或某一楼重来：建分支并切过去。失败不改动，只提示。
+    async function rewindFromPosition(pos) {
+        const result = await rewindController.rewind(pos);
+        if (!result.ok) { if (!result.canUseCurrent) writeToast(result.text); return result; }
+        // 阅读器若随聊天切换留着就立刻定位，否则等新聊天里阅读器打开时取走待办。
+        if (state.activeReader) arriveAtRewind(state.activeReader);
+        return result;
+    }
+
+    // 新分支里取走重来待办：导入截断后的进度，阅读器停在存档那页并提示一行。
+    function arriveAtRewind(current) {
+        const target = rewindController.consumePending();
+        if (!target) return;
+        progressRuntime.offered.add(currentChatIdText());
+        progressRuntime.pulled.add(currentChatIdText());
+        pushProgressToMetadata();
+        setTimeout(async () => {
+            if (state.activeReader !== current) return;
+            await jumpToPosition({ pos: target });
+            writeToast(REWIND_NOTICE);
+        }, 400);
     }
 
     function saveReadingSlot(key) {
@@ -2282,7 +2495,7 @@ export function createIgsReaderHost(options = {}) {
         return regen;
     }
 
-    async function rerollCurrentIllustration() {
+    async function rerollCurrentIllustration({ skipConfirm = false } = {}) {
         const current = state.activeReader;
         if (!current) return { ok: false, reason: 'reader-not-open' };
         const content = current.snapshot && current.snapshot.content || {};
@@ -2295,7 +2508,7 @@ export function createIgsReaderHost(options = {}) {
             writeToastSafe('当前未接入单张重画。');
             return { ok: false, reason: 'reroll-unavailable' };
         }
-        if (!(await pageModal.confirm('只重画这一张？提示词不变。'))) {
+        if (!skipConfirm && !(await pageModal.confirm('只重画这一张？提示词不变。'))) {
             return { ok: true, reason: 'cancelled' };
         }
         const messageId = current.contentMessageId != null ? current.contentMessageId : current.payload.messageId;
@@ -2306,6 +2519,7 @@ export function createIgsReaderHost(options = {}) {
         }
         current.illustrationPending = true;
         writeGenerating();
+        paintRetryPlaceholder(current, { busy: true });
         try {
             const result = await service.rerollSlot({
                 chatId: identity.chatId,
@@ -2318,13 +2532,27 @@ export function createIgsReaderHost(options = {}) {
                 else if (result.reason === 'not-eligible') imageNotice('warn', '请打开当前聊天最新的非空 AI 楼层');
                 else imageNotice('success', '这一张已重画。');
             }
+            current.imageFailureReason = result && result.ok !== false ? '' : retryFailureReason(result);
             return result || { ok: false, reason: 'error' };
         } catch (error) {
+            current.imageFailureReason = retryFailureReason(error);
             if (state.activeReader === current) imageNotice('error', `重画异常：${(error && error.message) || error || '未知错误'}`);
             return { ok: false, reason: 'error' };
         } finally {
             current.illustrationPending = false;
+            if (state.activeReader === current) paintRetryPlaceholder(current, { busy: false, reason: current.imageFailureReason });
         }
+    }
+
+    function retryFailureReason(source) {
+        const failure = source && source.failure;
+        return String((failure && failure.reason) || '').trim();
+    }
+
+    function paintRetryPlaceholder(current, retry) {
+        const overlay = current && current.dom && current.dom.overlay;
+        const bg = overlay && overlay.querySelector ? overlay.querySelector('#igs-bg') : null;
+        setImageRetryState(bg, retry);
     }
 
     async function clearFloorIllustrations() {
@@ -2406,7 +2634,7 @@ export function createIgsReaderHost(options = {}) {
                 ? await service.rerollFloor(Number(target.messageId))
                 : await service.processMessage(Number(target.messageId), { manual: true });
             const skipped = {
-                disabled: '请在设置「生图 → 分类」开启 NSFW 或过场插图并保存',
+                disabled: '请在设置「生图与AI › 画师与模型」开启 NSFW 或过场插图并保存',
                 'not-eligible': '当前楼层不是最新的非空 AI 回复',
                 'nothing-missing': '本楼插图都已生成',
                 'not-selected': (result && result.why) || '本楼不需要插图',
@@ -2892,7 +3120,7 @@ export function createIgsReaderHost(options = {}) {
             }
             return;
         }
-        writeToast(`有新服装待确认：${fresh.map((f) => `「${f.character}」的「${f.word}」`).join('、')}。到「素材 → 待确认」里归入已有服装或新建。`, 4200);
+        writeToast(`有新服装待确认：${fresh.map((f) => `「${f.character}」的「${f.word}」`).join('、')}。到「角色 › 待确认」里归入已有服装或新建。`, 4200);
     }
 
     function buildReaderSnapshot(payload, mode, readerSettings, index = 0) {
@@ -3048,6 +3276,7 @@ export function createIgsReaderHost(options = {}) {
         let spriteOutfit = '';
         let nsfwCgPortrait = '';
         let castSprites = [];
+        let spriteLeft = false;
         let speakerCastOrder = null;
         // 只给「复制本页诊断」用：记下立绘 / 背景这一页实际命中了哪一路。
         let spriteMatch = null;
@@ -3380,6 +3609,7 @@ export function createIgsReaderHost(options = {}) {
             }
             // 旁白页沿用的立绘：写到这个人离开就清掉；离台词超过 2 页且旁白不再写这个人也收起（见 narration-sprite）。
             let narrationDropped = false;
+            let narrationDroppedKey = '';
             if (spriteChar && inheritFrom >= 0) {
                 const assetsForKey = sceneAssets || {};
                 const keyOf = (name) => resolveCharacterKey(assetsForKey.characters, assetsForKey.characterAliases, name) || name;
@@ -3388,10 +3618,12 @@ export function createIgsReaderHost(options = {}) {
                 const userName = String((getSillyTavernContext(options.global || globalThis) || {}).name1 || '');
                 const pov = (userName && keyOf(userName) === key)
                     || sceneDirectives.some((d) => d && d.type === 'thought' && d.character && keyOf(d.character) === key);
-                if (!narrationKeepsSprite({ name: spriteChar, aliases: [key, ...(Array.isArray(aliasMap[key]) ? aliasMap[key] : [])], pov, pages: segments.slice(inheritFrom + 1, normalizedIndex + 1) })) {
+                if (!narrationKeepsSprite({ name: spriteChar, aliases: [key, ...(Array.isArray(aliasMap[key]) ? aliasMap[key] : [])], others: otherNamesOf(assetsForKey.characters, aliasMap, key, [userName]), pov, pages: segments.slice(inheritFrom + 1, normalizedIndex + 1) })) {
                     spriteChar = '';
                     spriteMood = '';
                     narrationDropped = true;
+                    spriteLeft = true;
+                    narrationDroppedKey = key;
                 }
             }
             if (!spriteChar && !narrationDropped && sceneStateForBg && sceneStateForBg.character) {
@@ -3407,7 +3639,7 @@ export function createIgsReaderHost(options = {}) {
                 nsfwCgPortrait = resolveGenerated(resolveNudeSpriteAsset(bubbleSpeaker, bubbleMood, assetMatchCtx).url) || '';
             }
             // HTML 卡片独占舞台前景：不继承上一段角色的立绘，也不发起素材解析。
-            if (htmlCardIndex < 0 && !hideChatSprite && !slotBoundUrl && !cgActive && sceneAssets && sceneAssets.enabled && spriteChar && !(sceneStateForBg && sceneStateForBg.nsfw && hideSpriteOnNsfw)) {
+            if (htmlCardIndex < 0 && !hideChatSprite && !slotBoundUrl && !cgActive && sceneAssets && sceneAssets.enabled && (spriteChar || narrationDropped) && !(sceneStateForBg && sceneStateForBg.nsfw && hideSpriteOnNsfw)) {
                 // 服装按当前页在原文中的位置取该角色最近一次服装栏，本楼没写时取跨楼继承，再按表格 / 装备 / DNA 兜底；指令与偏移同源于原文。
                 const outfitMap = sceneAssets.characterOutfits;
                 // 对白页正文带「[名字]：」前缀，原文里是「名字|表情|服装|对白」，去掉前缀再定位，避免取到整楼最后一条服装。
@@ -3445,12 +3677,12 @@ export function createIgsReaderHost(options = {}) {
                     noteFormGender(name, entry && entry.form ? entry.form.gender : '');
                     return outfit;
                 };
-                const wantedOutfit = outfitFor(spriteChar);
+                const wantedOutfit = spriteChar ? outfitFor(spriteChar) : '';
                 const outfitWhy = { outfitSource: (outfitTrace && outfitTrace.source) || '', outfitReason: (outfitTrace && outfitTrace.reason) || '', outfitOffset };
-                const spriteHit = resolveSpriteAsset(spriteChar, spriteMood, assetMatchCtx, wantedOutfit);
-                spriteMatch = { character: spriteChar, mood: spriteMood || '', outfit: wantedOutfit || '', source: spriteHit.source, quality: spriteHit.quality || '', slot: spriteHit.slot || '', ...outfitWhy };
-                noteUnlistedMood(spriteHit, spriteMood, sceneAssets);
-                spriteImage = resolveGenerated(spriteHit.url) || null;
+                const spriteHit = spriteChar ? resolveSpriteAsset(spriteChar, spriteMood, assetMatchCtx, wantedOutfit) : { url: '', source: '' };
+                if (spriteChar) spriteMatch = { character: spriteChar, mood: spriteMood || '', outfit: wantedOutfit || '', source: spriteHit.source, quality: spriteHit.quality || '', slot: spriteHit.slot || '', ...outfitWhy };
+                if (spriteChar) noteUnlistedMood(spriteHit, spriteMood, sceneAssets);
+                spriteImage = spriteChar ? resolveGenerated(spriteHit.url) || null : null;
                 if (spriteImage) {
                     spriteCharacter = spriteHit.character || spriteChar;
                     spriteOutfit = spriteHit.outfit || '';
@@ -3461,11 +3693,11 @@ export function createIgsReaderHost(options = {}) {
                 }
                 if (!chatPage && normalizeStageCastSettings(readerSettings.stageCast).enabled) {
                     const castKeyOf = (name) => resolveCharacterKey(sceneAssets.characters, sceneAssets.characterAliases, name) || name;
-                    const speakerKey = castKeyOf(spriteChar);
+                    const speakerKey = spriteChar ? castKeyOf(spriteChar) : '';
                     // 修罗场：恋爱对象先于最近开口的人入选，保证对象在台上（romanceDuo 关闭时不钉）。
-                    const castPin = normalizeStageCastSettings(readerSettings.stageCast).romanceDuo
+                    const castPin = speakerKey && normalizeStageCastSettings(readerSettings.stageCast).romanceDuo
                         ? resolveRomanceRivalTarget(pageFx, speakerKey, castKeyOf) : '';
-                    const cast = resolveStageCast({
+                    const castAll = resolveStageCast({
                         directives: outfitDirectives,
                         // 定位失败时按页码取最近一条台词重新定位，避免名单整体清空。
                         offset: outfitOffset,
@@ -3474,6 +3706,18 @@ export function createIgsReaderHost(options = {}) {
                         limit: STAGE_CAST_SCAN_LIMIT,
                         // 站位「离开」（castStage 开启时）：离开后没再开口的人不进名单，再次开口即回台。
                         goneAt: normalizeStageCastSettings(readerSettings.stageCast).castStage ? pageFx.goneAt : null,
+                    });
+                    // 正文写了离场（或旁白已收起的那位）的人不再当陪衬：从他最后一次开口那行之后到本页的原文里找离开。
+                    const castOthersBase = otherNamesOf(sceneAssets.characters, sceneAssets.characterAliases, '', [String((getSillyTavernContext(options.global || globalThis) || {}).name1 || '')]);
+                    const cast = castAll.filter((m) => {
+                        if (narrationDroppedKey && m.character === narrationDroppedKey) return false;
+                        if (m.character === speakerKey || !(outfitOffset >= 0)) return true;
+                        let at = -1;
+                        for (const d of outfitDirectives) if (d && (d.type === 'char' || d.type === 'thought') && Number(d.offset) <= outfitOffset && castKeyOf(String(d.character || '')) === m.character) at = Number(d.offset);
+                        if (at < 0) return true;
+                        const lineEnd = sceneSourceForOffset.indexOf(String.fromCharCode(10), at);
+                        const aliasList = (sceneAssets.characterAliases || {})[m.character];
+                        return !narrationCastLeft({ name: m.character, aliases: Array.isArray(aliasList) ? aliasList : [], others: castOthersBase.filter((n) => n !== m.character), text: sceneSourceForOffset.slice(lineEnd < 0 ? at : lineEnd, outfitOffset) });
                     });
                     const picked = pickCastMembers(cast, {
                         speakerKey,
@@ -3554,6 +3798,7 @@ export function createIgsReaderHost(options = {}) {
                 spriteCharacter,
                 spriteMood,
                 spriteOutfit,
+                spriteLeft,
                 statusEmotion: bubbleMood,
                 textType,
                 text: currentText,
@@ -3588,6 +3833,8 @@ export function createIgsReaderHost(options = {}) {
                 currentImageUrl: displayImageState.displayUrl || displayImageState.currentUrl,
                 currentSlotImageUrl: displayImageState.slotUrl,
                 imageLoading: Boolean(state.activeReader && state.activeReader.imagePolling),
+                imageRetrying: Boolean(state.activeReader && state.activeReader.illustrationPending),
+                imageFailureReason: (state.activeReader && state.activeReader.imageFailureReason) || '',
                 sourceKind: firstDefined(scene.sourceKind, payload.sourceKind, 'raw-text'),
                 warnings: extracted.warnings,
                 errors: extracted.errors,
@@ -3754,6 +4001,12 @@ export function createIgsReaderHost(options = {}) {
                 menu.setAttribute('hidden', '');
                 const arrow = host.querySelector?.('.igs-hud-entry-arrow');
                 arrow?.setAttribute('aria-expanded', 'false'); arrow?.focus?.();
+                return;
+            }
+            const optionLayer = state.activeReader.dom?.overlay?.querySelector?.('#igs-option-bubbles');
+            if (event.key === 'Escape' && optionLayer && !optionLayer.hasAttribute('hidden') && optionLayer.hasAttribute('data-igs-panel')) {
+                event.preventDefault(); event.stopPropagation?.();
+                hideOptionBubbles(optionLayer);
                 return;
             }
             // Focused controls own their keyboard input; sliders must not turn pages.
@@ -4089,7 +4342,26 @@ export function createIgsReaderHost(options = {}) {
         }
         syncOptionBubblesAfterRender(current, snapshot);
         syncAssetReviewAfterRender(current, snapshot);
+        syncMissedAssetsHint(current, snapshot);
         if (generationStripRemount) { generationStripRemount = false; generationStrip.remount(); }
+    }
+
+    function syncMissedAssetsHint(current, snapshot) {
+        const idle = current.awaitingReply !== true && current.streamPhase !== 'streaming' && !current.illustrationPending
+            && !(snapshot.content && snapshot.content.imageLoading) && generationStrip.getState().phase === 'idle';
+        const target = idle && typeof options.isIllustrationEnabled === 'function' && options.isIllustrationEnabled()
+            ? readManualFloor(current) : {};
+        const floor = target.floor;
+        const content = snapshot.content || {};
+        const detection = floor ? detectMissedAssets({
+            enabled: true,
+            busy: false,
+            isLatest: floor.isLatest !== false,
+            text: floor.text,
+            expected: content.imageExpectedCount,
+            bound: content.imageBoundCount,
+        }) : { missed: false };
+        missedHint.sync(detection, floor ? `${floor.chatId}:${floor.messageId}:${floor.swipeId}:${detection.reason}` : '');
     }
 
     // 第 0 层之后有没有 AI 楼层：决定「开始」先进世界观页还是直接重播，以及出不出「继续」。
@@ -4168,10 +4440,10 @@ export function createIgsReaderHost(options = {}) {
 
     // 主菜单「生成主角立绘」：打开设置的角色页，走和「＋ › 用酒馆用户设定生成主角」同一个动作，进度和结果都在那里看；关掉设置回到主菜单。
     async function generateUserCharFromTitle(current) {
-        openSettings({ tab: 'scene', mode: current.mode });
+        openSettings({ page: 'chars', mode: current.mode });
         const settings = state.activeSettings;
         if (!settings || !settings.controller || typeof settings.controller.invoke !== 'function') return { ok: false, reason: 'settings-not-open' };
-        settings.asyncState.sceneSubTab = 'characters';
+        openSettingsPage(settings, 'chars');
         rerenderSettings();
         return settings.controller.invoke('scene-add-user-char');
     }
@@ -4303,9 +4575,9 @@ export function createIgsReaderHost(options = {}) {
             if (added && added.ok !== false) {
                 removeOutfitReview((options.global || globalThis).localStorage, ask.character, ask.word);
                 writeToastSafe(`已把「${ask.word}」归入「${ask.character}」的「${name}」`);
-            } else writeToastSafe('归入失败，可到「素材 → 待确认」里处理');
+            } else writeToastSafe('归入失败，可到「角色 › 待确认」里处理');
         } else if (picked) {
-            if (!state.activeSettings) openSettings({ tab: 'scene', mode: state.activeReader ? state.activeReader.mode : 'pc' });
+            if (!state.activeSettings) openSettings({ page: 'review', mode: state.activeReader ? state.activeReader.mode : 'pc' });
             const settings = state.activeSettings;
             if (settings && settings.controller && typeof settings.controller.invoke === 'function') {
                 settings.controller.invoke(`outfit-review-auto:${encodeURIComponent(ask.character)}:${encodeURIComponent(ask.word)}:${encodeURIComponent(picked)}`);
@@ -4394,11 +4666,9 @@ export function createIgsReaderHost(options = {}) {
     }
 
     function openDnaCandidate(characterName, tags) {
-        if (!state.activeSettings) openSettings({ tab: 'scene', mode: state.activeReader ? state.activeReader.mode : 'pc' });
+        if (!state.activeSettings) openSettings({ page: 'chars', mode: state.activeReader ? state.activeReader.mode : 'pc' });
         if (!state.activeSettings) return { ok: false, reason: 'settings-not-open' };
-        state.activeSettings.tab = 'scene';
-        state.activeSettings.tab = 'scene';
-        state.activeSettings.asyncState.sceneSubTab = 'characters';
+        openSettingsPage(state.activeSettings, 'chars');
         state.activeSettings.asyncState.dnaCandidate = { name: String(characterName || ''), tags: String(tags || '') };
         return rerenderSettings();
     }
@@ -4641,10 +4911,10 @@ function clearReaderToast(current) {
 }
 
 const REGEN_FAILURE_TEXT = Object.freeze({
-    'provider-not-enabled': '当前图像来源无法重画，请在设置「生图 → 图像来源」选择 IGS 内置 NAI 或数据库生图插件并填好配置',
+    'provider-not-enabled': '当前图像来源无法重画，请在设置「生图与AI › 图像来源」选择 IGS 内置 NAI 或数据库生图插件并填好配置',
     'invalid-message-id': '找不到当前楼层',
     'regen-failed': '请求出错',
-    'regen-button-not-found': '当前楼层没有找到插图插件的生图按钮。若未安装智绘姬，请在设置「生图 → 图像来源」改选 IGS 内置 NAI 或数据库生图插件',
+    'regen-button-not-found': '当前楼层没有找到插图插件的生图按钮。若未安装智绘姬，请在设置「生图与AI › 图像来源」改选 IGS 内置 NAI 或数据库生图插件',
     'image-poll-timeout': '已点击插图插件的生图按钮，但等待超时仍没有新图片，请检查该插件是否正常工作',
 });
 
