@@ -43,7 +43,7 @@ export function renderPerformancePresetBar(reader, { home = false, extraRows = '
     if (compact) {
         const undoSmall = canUndo ? '<button type="button" class="igs-perf-undo" data-action="perf-preset-undo">撤销档位切换</button>' : '';
         const tail = (note || undoSmall) ? `<div class="igs-perf-presets-note">${note ? `<span>${esc(note)}</span>` : ''}${undoSmall}</div>` : '';
-        return `<div class="igs-perf-presets is-compact"><div class="igs-perf-preset-row">${buttons}</div>${tail}</div>`;
+        return `<div class="igs-perf-presets is-compact"><div class="igs-key-title">演出档位</div><div class="igs-perf-preset-row">${buttons}</div>${tail}</div>`;
     }
     const title = home ? '演出档位' : '一键档位';
     return `<div class="igs-source-filter igs-perf-presets"><div class="igs-source-filter-title">${title}</div><div class="igs-perf-preset-row">${buttons}</div>${undo}${extraRows}${note ? `<div class="igs-source-filter-note">${esc(note)}</div>` : ''}</div>`;

@@ -102,7 +102,10 @@ test('gate:settings-pages:category-click-remembers-page-and-legacy-switches-map'
         assert.doesNotMatch(controller.getSnapshot().html, /class="igs-page-tabs"/);
         // 旧的子页切换都映射到新页面。
         assert.equal(controller.switchReaderSubTab('performance').snapshot.page, 'perf-text');
-        assert.equal(controller.switchReaderSubTab('interface').snapshot.page, 'ui');
+        assert.equal(controller.switchReaderSubTab('interface').snapshot.page, 'ui-reader');
+        // 旧页 id 'ui' 仍可打开，指到第一个子页。
+        assert.equal(controller.switchPage('ui').snapshot.page, 'ui-reader');
+        assert.equal(controller.switchTab('ui').snapshot.page, 'ui-reader');
         assert.equal(controller.switchSceneSubTab('rules').snapshot.page, 'rules');
         assert.equal(controller.switchSceneSubTab('characters').snapshot.page, 'chars');
         assert.equal(controller.switchImageSubTab('cg').snapshot.page, 'cglib');
@@ -118,7 +121,10 @@ test('gate:settings-pages:ui-page-leads-with-reader-card-and-ai-parse-page-keeps
     const { vn, controller } = openApp();
     try {
         const ui = controller.switchPage('ui').snapshot.html;
-        assert.ok(ui.indexOf('>阅读器</div>') > 0 && ui.indexOf('>阅读器</div>') < ui.indexOf('>背景图'));
+        assert.ok(ui.indexOf('>阅读器</div>') > 0);
+        assert.match(ui, /igs-key-block/);
+        assert.doesNotMatch(ui, />背景图/);
+        assert.match(controller.switchPage('ui-bg').snapshot.html, />背景图/);
         assert.match(ui, /data-segment-path="bridge.openMode"/);
         assert.match(ui, /data-switch="bridge.showToasts"/);
         const parse = controller.switchPage('parse').snapshot.html;

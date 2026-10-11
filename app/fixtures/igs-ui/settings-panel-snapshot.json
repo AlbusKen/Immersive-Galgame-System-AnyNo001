@@ -74,8 +74,8 @@
     "flatSegmentedIndicator": ".igs-segmented-indicator{display:none",
     "mobileMedia": "@media (max-width:640px)",
     "navItemActive": ".igs-settings-nav-item.is-active{background:var(--igs-settings-raised);color:var(--igs-settings-ink);font-weight:600",
-    "pageTabs": ".igs-page-tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:0;margin:0 0 12px;padding:0;overflow-x:auto",
-    "pageTabActive": ".igs-page-tab.is-active{color:var(--igs-settings-ink);font-weight:700",
+    "pageTabs": ".igs-page-tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:2px;margin:0 0 12px;padding:3px;overflow-x:auto",
+    "pageTabActive": ".igs-page-tab.is-active{background:var(--igs-settings-raised)",
     "navDrawer": "transform:translateX(-100%)",
     "wideShell": "--igs-settings-width:min(980px,calc(var(--igs-settings-vw) - 48px))"
   },
@@ -96,8 +96,23 @@
       "category": "text"
     },
     {
-      "id": "ui",
-      "label": "界面",
+      "id": "ui-reader",
+      "label": "阅读器",
+      "category": "ui"
+    },
+    {
+      "id": "ui-bg",
+      "label": "背景状态",
+      "category": "ui"
+    },
+    {
+      "id": "ui-option",
+      "label": "选项",
+      "category": "ui"
+    },
+    {
+      "id": "ui-bar",
+      "label": "工具栏",
       "category": "ui"
     },
     {

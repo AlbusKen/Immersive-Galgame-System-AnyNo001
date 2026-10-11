@@ -595,6 +595,17 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
                 },
             };
         });
+        // 阅读器打开方式：「界面 › 阅读器」和仪表盘共用这一段，同一个存储路径 bridge.openMode。
+        const openModeHtml = () => `<div class="igs-segmented-field igs-key-block">${field(
+            'bridge.openMode',
+            '打开方式',
+            segmentedInput(
+                'bridge.openMode',
+                bridge.openMode,
+                PUBLIC_READER_MODES.map((id) => [id, getReaderModeLabel(id), getReaderModeIcon(id)]),
+                '打开方式',
+            ),
+        )}</div>`;
         const getReaderValues = memo(() => {
         const sceneEnabled = !!(bridge.sceneAssets && bridge.sceneAssets.enabled);
         const classicDialog = reader.dialogSkin === DIALOG_SKIN_WESTERN_CLASSIC;
@@ -631,17 +642,8 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
             customFontManager: renderCustomFontManager(customFonts, asyncState.customFontMessage || ''),
             shortcutsField: renderShortcutSettings(reader.shortcuts, hostGlobal, asyncState),
             ...sectionResetPlaceholders(),
-                openModeField: `<div class="igs-segmented-field">${field(
-                    'bridge.openMode',
-                    '打开方式',
-                    segmentedInput(
-                        'bridge.openMode',
-                        bridge.openMode,
-                        PUBLIC_READER_MODES.map((id) => [id, getReaderModeLabel(id), getReaderModeIcon(id)]),
-                        '打开方式',
-                    ),
-                )}</div>`,
-                settingsToggles: checkbox('bridge.showToasts', bridge.showToasts, '显示提示弹窗'),
+            openModeField: openModeHtml(),
+            settingsToggles: checkbox('bridge.showToasts', bridge.showToasts, '显示提示弹窗'),
             fontSizeField: field('readerSettings.fontSize', '字体大小', selectInput('readerSettings.fontSize', reader.fontSize, [12, 13, 14, 15, 16, 18, 20, 22, 24, 26, 28, 30].map((n) => [n, `${n}px`]))),
             dialogFontWeightField: field('readerSettings.dialogFontWeight', '对话框字重', selectInput('readerSettings.dialogFontWeight', reader.dialogFontWeight == null ? 'null' : reader.dialogFontWeight, [['null', '跟随当前样式'], [300, '细体'], [400, '常规'], [500, '中等'], [700, '粗体']])),
             // 文字增强是开关（借分段点击写值：开=硬描边，关=off），开了才出现种类和三个参数。
@@ -806,7 +808,10 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
         switch (page) {
         case 'style':
         case 'text':
-        case 'ui':
+        case 'ui-reader':
+        case 'ui-bg':
+        case 'ui-option':
+        case 'ui-bar':
             return pageTabs() + renderTemplate(getPageTemplate(page), getReaderValues());
         case 'chars': {
             const scene = sceneValues();
@@ -864,7 +869,7 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
             };
             const storage = (options.global || globalThis).localStorage;
             return renderDashboard({
-                presetBar: renderPerformancePresetBar(reader, { home: true, canUndo: Boolean(asyncState.perfPresetUndo), extraRows: renderWorldviewRow(worldviewAssets) + renderQualityRow(reader) }),
+                presetBar: renderPerformancePresetBar(reader, { home: true, canUndo: Boolean(asyncState.perfPresetUndo), extraRows: openModeHtml() + renderWorldviewRow(worldviewAssets) + renderQualityRow(reader) }),
                 rows: SETTINGS_CATEGORIES.filter(([id]) => id !== 'dash').map(([id, label]) => ({ id, label, status: status[id] || '' })),
                 recent: idx ? [] : loadSettingsRecent(storage),
             });

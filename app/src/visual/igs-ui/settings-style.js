@@ -48,6 +48,7 @@ ${THEMED.map(([value, palette]) => `${themeSelector(value)}::before{opacity:${pa
 .igs-settings-theme-option:hover,.igs-settings-theme-option:focus-visible{transform:translateY(-1px)}
 .igs-settings-theme-option.is-active{outline-color:var(--igs-settings-accent)}
 .igs-settings-close,.igs-settings-action{border:0;background:var(--igs-settings-field);color:var(--igs-settings-ink-2);border-radius:var(--igs-settings-radius-control);height:34px;padding:0 12px;font:inherit;font-size:12px;letter-spacing:.04em;cursor:pointer;transition:background-color .14s ease,color .14s ease}
+.igs-settings-close{background:var(--igs-settings-close-bg,var(--igs-settings-field))}
 .igs-settings-close{width:34px;padding:0;font-size:18px;letter-spacing:0}
 .igs-settings-close:hover,.igs-settings-close:focus-visible,.igs-settings-action:hover,.igs-settings-action:focus-visible{background:var(--igs-settings-accent);color:var(--igs-settings-on-accent);outline:none}
 .igs-settings-danger{color:var(--igs-settings-danger);background:transparent}
@@ -173,7 +174,11 @@ details.igs-settings-advanced>.igs-switch,details.igs-settings-advanced>.igs-set
 details.igs-settings-advanced>.igs-settings-inline-action{display:block;width:auto;min-width:96px}
 .igs-perf-item .igs-switch{height:38px;padding:0;background:transparent}
 .igs-perf-item .igs-switch:hover,.igs-perf-item .igs-switch:focus-visible,.igs-perf-item .igs-switch.is-on{background:transparent}
-.igs-perf-presets.is-compact{margin:0 0 8px}
+.igs-perf-presets.is-compact{margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--igs-settings-line,rgba(128,128,128,.18))}
+.igs-key-title,.igs-key-block>.igs-settings-field>span{font-size:13px;line-height:20px;font-weight:600;letter-spacing:.04em;color:var(--igs-settings-ink)}
+.igs-perf-presets.is-compact .igs-key-title{margin:0 0 6px}
+.igs-key-block{grid-column:1/-1;padding:0 0 14px;border-bottom:1px solid var(--igs-settings-line,rgba(128,128,128,.18))}
+.igs-perf-presets .igs-key-block{padding:0;border-bottom:0}
 .igs-perf-presets.is-compact .igs-perf-preset{height:30px;font-size:12px}
 .igs-perf-presets-note{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;margin-top:4px;font-size:11px;line-height:1.4;color:var(--igs-settings-ink-4)}
 .igs-perf-undo{border:0;background:transparent;padding:0;font:inherit;color:var(--igs-settings-ink-3);text-decoration:underline;cursor:pointer}
@@ -423,12 +428,11 @@ details.igs-perf-more>summary{cursor:pointer;user-select:none}
 .igs-settings-nav-item:hover,.igs-settings-nav-item:focus-visible{background:var(--igs-settings-highlight);color:var(--igs-settings-ink);outline:none}
 .igs-settings-nav-item.is-active{background:var(--igs-settings-raised);color:var(--igs-settings-ink);font-weight:600}
 /* 子页条：一行扁平文字按钮，放不下就横向滚动，不换行。 */
-.igs-page-tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:0;margin:0 0 12px;padding:0;overflow-x:auto;flex-shrink:0;border-bottom:1px solid var(--igs-settings-line,rgba(128,128,128,.18));scrollbar-width:none}
+.igs-page-tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:2px;margin:0 0 12px;padding:3px;overflow-x:auto;flex-shrink:0;background:var(--igs-settings-field);border-radius:var(--igs-settings-radius-control);scrollbar-width:none}
 .igs-page-tabs::-webkit-scrollbar{display:none}
-.igs-page-tab{position:relative;height:36px;padding:0 8px;border:0;background:transparent;color:var(--igs-settings-ink-4);font:inherit;font-size:12px;text-align:center;white-space:nowrap;cursor:pointer;transition:color .14s ease}
-.igs-page-tab:hover,.igs-page-tab:focus-visible{color:var(--igs-settings-ink-2);outline:none}
-.igs-page-tab.is-active{color:var(--igs-settings-ink);font-weight:700}
-.igs-page-tab.is-active::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;border-radius:1px;background:var(--igs-settings-accent)}
+.igs-page-tab{position:relative;height:32px;padding:0 8px;border:0;border-radius:var(--igs-settings-radius-small);background:transparent;color:var(--igs-settings-ink-4);font:inherit;font-size:12px;text-align:center;white-space:nowrap;cursor:pointer;transition:color .14s ease}
+.igs-page-tab:hover,.igs-page-tab:focus-visible{background:var(--igs-settings-highlight);color:var(--igs-settings-ink);outline:none}
+.igs-page-tab.is-active{background:var(--igs-settings-raised);color:var(--igs-settings-ink);font-weight:600}
 .igs-page-tab-count{margin-left:5px;font-size:10px;font-weight:400;line-height:16px;color:var(--igs-settings-ink-4);font-variant-numeric:tabular-nums}
 .igs-page-tab-count.is-on{color:var(--igs-settings-accent)}
 /* 窄屏：胶囊挪到页名下面，等宽后「情绪与提示」不会被挤宽、不换行、不截断。 */

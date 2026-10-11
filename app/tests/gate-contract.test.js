@@ -825,7 +825,7 @@ test('gate:igs-ui:settings-shell-has-sidebar-and-page-registry', () => {
         if (!['dash', 'chars', 'scenes', 'review'].includes(id)) assert.ok(getPageTemplate(id).length > 0, id);
     }
     // 只有一个子页的分类不显示子页条；演出 5 页、角色 3 页、场景 3 页、生图与AI 5 页、数据 2 页。
-    assert.deepEqual(['perf', 'chars', 'scenes', 'ai', 'data', 'style'].map((c) => pagesOfCategory(c).length), [5, 3, 3, 5, 2, 1]);
+    assert.deepEqual(['perf', 'chars', 'scenes', 'ai', 'data', 'style', 'ui'].map((c) => pagesOfCategory(c).length), [5, 3, 3, 5, 2, 1, 4]);
 
     // 角色、场景分类的页面共用同一个头部：素材模式开关 + 当前角色卡。
     assert.match(SCENE_HEAD_TEMPLATE, /sceneToggle/);
@@ -842,7 +842,7 @@ test('gate:igs-ui:settings-shell-has-sidebar-and-page-registry', () => {
     const legacy = [
         [{ tab: 'basic' }, 'dash'], [{ tab: 'regex' }, 'parse'], [{ tab: 'basic', open: ['source-filter'] }, 'parse'], [{ tab: 'basic', open: ['body-format'] }, 'parse'],
         [{ tab: 'reader' }, 'style'], [{ tab: 'reader', readerSubTab: 'display' }, 'style'], [{ tab: 'reader', readerSubTab: 'theme' }, 'text'],
-        [{ tab: 'reader', readerSubTab: 'toolbar' }, 'ui'], [{ tab: 'reader', readerSubTab: 'visual' }, 'ui'], [{ tab: 'reader', readerSubTab: 'options' }, 'ui'],
+        [{ tab: 'reader', readerSubTab: 'toolbar' }, 'ui-reader'], [{ tab: 'reader', readerSubTab: 'visual' }, 'ui-reader'], [{ tab: 'reader', readerSubTab: 'options' }, 'ui-reader'], [{ page: 'ui' }, 'ui-reader'], [{ tab: 'ui' }, 'ui-reader'],
         [{ tab: 'reader', readerSubTab: 'performance' }, 'perf-text'], [{ tab: 'reader', readerSubTab: 'performance', open: ['perf-group-sound'] }, 'sound'],
         [{ tab: 'reader', readerSubTab: 'performance', open: ['perf-group-rhythm'] }, 'perf-rhythm'],
         [{ tab: 'scene' }, 'chars'], [{ tab: 'scene', sceneSubTab: 'scenes' }, 'scenes'], [{ tab: 'scene', sceneSubTab: 'review' }, 'review'],
@@ -860,7 +860,7 @@ test('gate:igs-ui:settings-shell-has-sidebar-and-page-registry', () => {
     const dialogTemplate = getPageTemplate('style');
     const textTemplate = getPageTemplate('text');
     const performanceTemplate = getPageTemplate('perf-stage');
-    const interfaceTemplate = getPageTemplate('ui');
+    const interfaceTemplate = ['ui-reader', 'ui-bg', 'ui-option', 'ui-bar'].map((id) => getPageTemplate(id)).join(' ');
     assert.match(dialogTemplate, /data-reader-pane="dialog"/);
     const dialogHierarchy = [
         '风格', 'dialogSkinField', 'gradientVeilFields', 'statusLineToggle',
@@ -991,8 +991,8 @@ test('gate:igs-ui:settings-style-uses-soft-radius-tokens', () => {
     assert.match(styleText, /\.igs-settings-field input,[^{]+\{[^}]*border-radius:var\(--igs-settings-radius-control\)/);
     assert.match(styleText, /\.igs-settings-nav-item\{[^}]*border-radius:var\(--igs-settings-radius-small\)/);
     const pageTab = styleText.match(/\.igs-page-tab\{[^}]*\}/)[0];
-    assert.match(pageTab, /border:0;background:transparent/);
-    assert.match(styleText, /\.igs-page-tab\.is-active::after\{[^}]*height:2px;[^}]*background:var\(--igs-settings-accent\)/);
+    assert.match(pageTab, /border:0;border-radius:var\(--igs-settings-radius-small\);background:transparent/);
+    assert.doesNotMatch(styleText, /.igs-page-tab.is-active::after/);
     assert.doesNotMatch(styleText, /border-radius:999px/);
     assert.doesNotMatch(styleText, /(?:linear|radial)-gradient\(/);
     const shadows = Array.from(styleText.matchAll(/box-shadow:([^;}]+)/g), (match) => match[1].trim());

@@ -2670,7 +2670,7 @@ test('gate:simulation:auto-play-button-management-filters-removed-speed-from-old
         }
         assert.deepEqual(normalized.btnOrder.slice(0, 2), ['next', 'auto-play']);
         const settings = opened.controller.openSettings('reader').controller;
-        settings.switchReaderSubTab('interface');
+        settings.switchPage('ui-bar');
         const html = settings.getSnapshot().html;
         assert.ok(html.includes('自动播放'));
         assert.ok(!html.includes('auto-speed'));
@@ -4416,17 +4416,26 @@ test('gate:simulation:reader-sub-tab-switches-functional-pages', async () => {
     assert.doesNotMatch(performanceView.snapshot.html, /读取 igs-fx/);
 
     const interfaceView = settings.switchReaderSubTab('interface');
+    assert.equal(interfaceView.snapshot.page, 'ui-reader');
     assert.match(interfaceView.snapshot.html, /data-reader-pane="interface"/);
-    assert.match(interfaceView.snapshot.html, /背景图/);
+    assert.match(interfaceView.snapshot.html, /data-segment-path="bridge.openMode"/);
+    assert.match(interfaceView.snapshot.html, /data-switch="bridge.showToasts"/);
     assert.doesNotMatch(interfaceView.snapshot.html, /检测图像数量/, '挪到了 生图与AI › 正文解析');
-    assert.match(interfaceView.snapshot.html, /图像显示模式/);
-    assert.match(interfaceView.snapshot.html, /图片亮度/);
-    assert.match(interfaceView.snapshot.html, /选项字体大小/);
-    assert.match(interfaceView.snapshot.html, /启用选项气泡/);
-    assert.match(interfaceView.snapshot.html, /工具栏位置/);
-    assert.match(interfaceView.snapshot.html, /工具栏大小/);
-    assert.match(interfaceView.snapshot.html, /按钮管理/);
-    assert.match(interfaceView.snapshot.html, /显示状态栏/);
+    const backgroundView = settings.switchPage('ui-bg');
+    assert.match(backgroundView.snapshot.html, /data-ui-sub="bg"/);
+    assert.match(backgroundView.snapshot.html, /背景图/);
+    assert.match(backgroundView.snapshot.html, /图像显示模式/);
+    assert.match(backgroundView.snapshot.html, /图片亮度/);
+    assert.match(backgroundView.snapshot.html, /显示状态栏/);
+    const optionView = settings.switchPage('ui-option');
+    assert.match(optionView.snapshot.html, /data-ui-sub="option"/);
+    assert.match(optionView.snapshot.html, /选项字体大小/);
+    assert.match(optionView.snapshot.html, /启用选项气泡/);
+    const toolbarView = settings.switchPage('ui-bar');
+    assert.match(toolbarView.snapshot.html, /data-ui-sub="bar"/);
+    assert.match(toolbarView.snapshot.html, /工具栏位置/);
+    assert.match(toolbarView.snapshot.html, /工具栏大小/);
+    assert.match(toolbarView.snapshot.html, /按钮管理/);
 
     settings.setValue('readerSettings.typewriter.enabled', true);
     settings.setValue('readerSettings.typewriter.speed', 'slow');
@@ -8172,7 +8181,7 @@ test('gate:simulation:status-hud-settings-collapse-when-disabled-without-reading
     const opened = await vn.openLatestAvailable('pc');
     const settings = (await opened.reader.controller.invokeAction('settings')).controller;
     settings.switchTab('reader');
-    const html = settings.switchReaderSubTab('interface').snapshot.html;
+    const html = settings.switchPage('ui-bg').snapshot.html;
 
     assert.match(html, /data-status-hud/);
     assert.match(html, /显示状态栏/);
@@ -8212,7 +8221,7 @@ test('gate:simulation:status-hud-settings-expand-and-persist-table-selection', a
 
     settings.setValue('readerSettings.statusHud.enabled', true);
     settings.setValue('readerSettings.statusHud.showLocation', true);
-    const enabled = settings.switchReaderSubTab('interface').snapshot.html;
+    const enabled = settings.switchPage('ui-bg').snapshot.html;
     assert.match(enabled, /显示状态栏/);
     assert.match(enabled, /显示情绪标签/);
     assert.match(enabled, /显示地点栏（仅旁白）/);
@@ -8263,7 +8272,7 @@ test('gate:simulation:status-hud-settings-expand-and-persist-table-selection', a
     settings.invoke('status-hud-toggle-table:sheet_quest:%E4%BB%BB%E5%8A%A1%E8%A1%A8');
     settings.invoke('status-hud-toggle-table:sheet_stats:%E8%A7%92%E8%89%B2%E6%95%B0%E5%80%BC%E8%A1%A8');
     assert.deepEqual(settings.getSnapshot().draft.readerSettings.statusHud.tables.map((t) => t.uid), ['sheet_quest', 'sheet_stats']);
-    settings.switchReaderSubTab('interface');
+    settings.switchPage('ui-bg');
     assert.equal((settings.getSnapshot().html.match(/class="igs-table-pick is-on"/g) || []).length, 2);
 
     settings.invoke('status-hud-toggle-table:sheet_quest:%E4%BB%BB%E5%8A%A1%E8%A1%A8');
@@ -8282,7 +8291,7 @@ test('gate:simulation:status-hud-settings-expand-and-persist-table-selection', a
     // 关闭总开关后：顶部 UI 的状态栏子设置隐藏，其他分类互不受影响。
     opened.reader.controller.openSettings('reader');
     settings.setValue('readerSettings.statusHud.enabled', false);
-    const disabled = settings.switchReaderSubTab('interface').snapshot.html;
+    const disabled = settings.switchPage('ui-bg').snapshot.html;
     assert.match(disabled, /显示状态栏/);
     assert.doesNotMatch(disabled, /显示情绪标签/);
     assert.doesNotMatch(disabled, /显示地点栏/);
@@ -8311,7 +8320,7 @@ test('gate:simulation:status-hud-position-switch-device-commit-reset-and-apply',
     assert.equal(hud.hasAttribute('data-igs-hud-pos'), false, '没挪过位置的状态栏不挂属性');
     const settings = (await opened.reader.controller.invokeAction('settings')).controller;
     settings.switchTab('reader');
-    let html = settings.switchReaderSubTab('interface').snapshot.html;
+    let html = settings.switchPage('ui-bg').snapshot.html;
     assert.match(html, /显示状态栏[\s\S]*状态栏大小[\s\S]*data-hud-pos="pc"[\s\S]*显示的表格/, '位置栏排在大小 / 圆角之后、表格之前');
     assert.match(html, /data-hud-pos-reset disabled>/);
 

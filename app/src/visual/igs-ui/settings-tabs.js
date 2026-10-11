@@ -251,15 +251,27 @@ const READER_PERFORMANCE_TEMPLATE = `
 <div class="igs-settings-grid" data-reader-pane="performance">{{performanceSections}}</div>
 `.trim();
 
-const READER_INTERFACE_TEMPLATE = `
-<div class="igs-settings-grid" data-reader-pane="interface">
+// 「界面」分类拆四个子页：阅读器 / 背景状态 / 选项 / 工具栏；每页都保留 data-reader-pane="interface"，引导和测试按它找。
+const READER_UI_READER_TEMPLATE = `
+<div class="igs-settings-grid" data-reader-pane="interface" data-ui-sub="reader">
+  {{openModeField}}
   <div class="igs-source-filter">
     <div class="igs-source-filter-title">阅读器</div>
-    {{openModeField}}
     <div class="igs-settings-row">{{settingsToggles}}</div>
   </div>
+  {{shortcutsField}}
+</div>
+`.trim();
+
+const READER_UI_BG_TEMPLATE = `
+<div class="igs-settings-grid" data-reader-pane="interface" data-ui-sub="bg">
   <div class="igs-source-filter"><div class="igs-source-filter-title">背景图{{resetReaderInterfaceBackground}}</div><div class="igs-source-filter-grid">{{imgModeField}}{{imgBrightnessField}}</div></div>
   <div class="igs-source-filter"><div class="igs-source-filter-title">状态栏{{resetReaderInterfaceStatusHud}}</div>{{statusHudSection}}</div>
+</div>
+`.trim();
+
+const READER_UI_OPTION_TEMPLATE = `
+<div class="igs-settings-grid" data-reader-pane="interface" data-ui-sub="option">
   <div class="igs-source-filter">
     <div class="igs-source-filter-title">选项气泡{{resetReaderInterfaceOptionBubble}}</div>
     {{optionBubbleToggle}}
@@ -270,8 +282,12 @@ const READER_INTERFACE_TEMPLATE = `
       {{optionSourcesField}}
     </div>
   </div>
+</div>
+`.trim();
+
+const READER_UI_BAR_TEMPLATE = `
+<div class="igs-settings-grid" data-reader-pane="interface" data-ui-sub="bar">
   <div class="igs-source-filter"><div class="igs-source-filter-title">工具栏{{resetReaderInterfaceToolbar}}</div><div class="igs-source-filter-grid">{{toolbarScaleField}}{{toolbarDockField}}{{inputPlacementField}}{{toolbarSplitField}}{{toolbarPlateField}}{{dialogBarAlignField}}</div>{{pinnedButtonsField}}</div>
-  {{shortcutsField}}
 </div>
 `.trim();
 
@@ -337,7 +353,10 @@ export { RULES_TEMPLATE, WARDROBE_TEMPLATE, EVENTCG_TEMPLATE, SCENE_HEAD_TEMPLAT
 const PAGE_TEMPLATES = Object.freeze({
     style: READER_DIALOG_TEMPLATE,
     text: READER_TEXT_TEMPLATE,
-    ui: READER_INTERFACE_TEMPLATE,
+    'ui-reader': READER_UI_READER_TEMPLATE,
+    'ui-bg': READER_UI_BG_TEMPLATE,
+    'ui-option': READER_UI_OPTION_TEMPLATE,
+    'ui-bar': READER_UI_BAR_TEMPLATE,
     'perf-text': READER_PERFORMANCE_TEMPLATE,
     'perf-stage': READER_PERFORMANCE_TEMPLATE,
     'perf-story': READER_PERFORMANCE_TEMPLATE,

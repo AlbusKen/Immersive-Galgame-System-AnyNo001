@@ -41,12 +41,12 @@ export const ONBOARDING_STEPS = Object.freeze([
         body: '在这里换对话框风格；字号、字体在「文字」。',
     }),
     Object.freeze({
-        id: 'mode', page: 'ui', target: ['[data-segment-path="bridge.openMode"]'],
+        id: 'mode', page: 'ui-reader', target: ['[data-segment-path="bridge.openMode"]'],
         title: '打开方式',
         body: '可选电脑、窄屏模式、网页全屏、全屏、楼层内嵌，建议「楼层内嵌」。',
     }),
     Object.freeze({
-        id: 'toolbar', page: 'ui', target: ['[data-reader-pane="interface"] .igs-btn-mgr-list'],
+        id: 'toolbar', page: 'ui-bar', target: ['[data-reader-pane="interface"] .igs-btn-mgr-list'],
         title: '工具栏',
         body: '目录、存档、CG库都在工具栏，可在这里隐藏或排序。',
     }),

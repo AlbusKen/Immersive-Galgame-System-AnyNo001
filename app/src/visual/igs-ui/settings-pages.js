@@ -20,7 +20,10 @@ export const SETTINGS_PAGES = Object.freeze([
     Object.freeze(['dash', '仪表盘', 'dash']),
     Object.freeze(['style', '对话框', 'style']),
     Object.freeze(['text', '文字', 'text']),
-    Object.freeze(['ui', '界面', 'ui']),
+    Object.freeze(['ui-reader', '阅读器', 'ui']),
+    Object.freeze(['ui-bg', '背景状态', 'ui']),
+    Object.freeze(['ui-option', '选项', 'ui']),
+    Object.freeze(['ui-bar', '工具栏', 'ui']),
     Object.freeze(['perf-text', '台词', 'perf']),
     Object.freeze(['perf-stage', '画面', 'perf']),
     Object.freeze(['perf-story', '情绪与提示', 'perf']),
@@ -44,13 +47,20 @@ export const SETTINGS_PAGES = Object.freeze([
 
 export const DEFAULT_SETTINGS_PAGE = 'dash';
 
+// 旧页面 id → 现行页面 id（「界面」拆成四个子页后，'ui' 仍可打开，指到第一个子页）。
+const PAGE_ALIASES = Object.freeze({ ui: 'ui-reader' });
+const canon = (page) => {
+    const id = String(page || '').trim();
+    return PAGE_ALIASES[id] || id;
+};
+
 const PAGE_BY_ID = new Map(SETTINGS_PAGES.map((page) => [page[0], page]));
 const CATEGORY_IDS = new Set(SETTINGS_CATEGORIES.map(([id]) => id));
 const CATEGORY_LABELS = new Map(SETTINGS_CATEGORIES);
 
 // 点分类时进入的页面（分类 id 与页面 id 相同的直接进同名页）。
 const CATEGORY_DEFAULT_PAGE = Object.freeze({
-    perf: 'perf-text', chars: 'chars', scenes: 'scenes', ai: 'source', data: 'data',
+    ui: 'ui-reader', perf: 'perf-text', chars: 'chars', scenes: 'scenes', ai: 'source', data: 'data',
 });
 
 // 演出组 id → 页面 id（旧 open key `perf-group-<g>` 用）。
@@ -62,10 +72,10 @@ export const PAGE_PERFORMANCE_GROUPS = Object.freeze(Object.fromEntries(Object.e
 const LEGACY_READER_ALIASES = Object.freeze({ display: 'dialog', theme: 'text', toolbar: 'interface', visual: 'interface', options: 'interface' });
 const LEGACY_SCENE_ALIASES = Object.freeze({ generated: 'review' });
 const LEGACY_IMAGE_PAGES = Object.freeze({ source: 'source', llm: 'llm', auto: 'kinds', prompts: 'kinds', content: 'kinds', logs: 'logs', cg: 'cglib', other: 'source' });
-const LEGACY_READER_PAGES = Object.freeze({ dialog: 'style', text: 'text', interface: 'ui', performance: 'perf-text' });
+const LEGACY_READER_PAGES = Object.freeze({ dialog: 'style', text: 'text', interface: 'ui-reader', performance: 'perf-text' });
 
 export function isSettingsPage(page) {
-    return PAGE_BY_ID.has(String(page || '').trim());
+    return PAGE_BY_ID.has(canon(page));
 }
 
 export function isSettingsCategory(category) {
@@ -73,12 +83,12 @@ export function isSettingsCategory(category) {
 }
 
 export function normalizeSettingsPage(page) {
-    const id = String(page || '').trim();
+    const id = canon(page);
     return PAGE_BY_ID.has(id) ? id : DEFAULT_SETTINGS_PAGE;
 }
 
 export function categoryOfPage(page) {
-    const found = PAGE_BY_ID.get(String(page || '').trim());
+    const found = PAGE_BY_ID.get(canon(page));
     return found ? found[2] : 'dash';
 }
 
@@ -87,7 +97,7 @@ export function categoryLabel(category) {
 }
 
 export function pageLabel(page) {
-    const found = PAGE_BY_ID.get(String(page || '').trim());
+    const found = PAGE_BY_ID.get(canon(page));
     return found ? found[1] : '';
 }
 
@@ -97,7 +107,7 @@ export function pagesOfCategory(category) {
 
 export function defaultPageOfCategory(category) {
     const id = String(category || '').trim();
-    return CATEGORY_DEFAULT_PAGE[id] || (PAGE_BY_ID.has(id) ? id : DEFAULT_SETTINGS_PAGE);
+    return CATEGORY_DEFAULT_PAGE[id] || (PAGE_BY_ID.has(canon(id)) ? canon(id) : DEFAULT_SETTINGS_PAGE);
 }
 
 // 「分类 › 子页」路径；分类只有一页时只写分类名。
@@ -148,7 +158,7 @@ function legacyScenePage(sub, open, wardrobeFocus) {
 export function resolveSettingsPage(spec = {}) {
     const src = spec && typeof spec === 'object' ? spec : {};
     const open = openList(src.open);
-    if (src.page != null && src.page !== '' && isSettingsPage(src.page)) return String(src.page).trim();
+    if (src.page != null && src.page !== '' && isSettingsPage(src.page)) return canon(src.page);
     const rawTab = String(src.tab || '').trim();
     const tab = rawTab;
     if (!tab) return DEFAULT_SETTINGS_PAGE;
@@ -158,7 +168,7 @@ export function resolveSettingsPage(spec = {}) {
     if (tab === 'reader') return legacyReaderPage(src.readerSubTab, open);
     if (tab === 'scene') return legacyScenePage(src.sceneSubTab, open, src.wardrobeFocus);
     if (tab === 'image') return legacyImagePage(src.imageSubTab);
-    if (CATEGORY_IDS.has(tab) || PAGE_BY_ID.has(tab)) return defaultPageOfCategory(tab);
+    if (CATEGORY_IDS.has(tab) || PAGE_BY_ID.has(canon(tab))) return defaultPageOfCategory(tab);
     return DEFAULT_SETTINGS_PAGE;
 }
 
@@ -181,7 +191,7 @@ export function normalizeSettingsTab(tab) {
 export function currentSettingsPage(settingsState) {
     const state = settingsState || {};
     const asyncState = state.asyncState || {};
-    if (isSettingsPage(asyncState.page)) return String(asyncState.page).trim();
+    if (isSettingsPage(asyncState.page)) return canon(asyncState.page);
     return resolveSettingsPage({
         tab: state.tab,
         readerSubTab: asyncState.readerSubTab,
@@ -195,7 +205,7 @@ export function currentSettingsPage(settingsState) {
 // 所有「写旧字段跳页」的地方统一走这里：同时设 tab（分类）和 asyncState.page。
 export function openSettingsPage(settingsState, page) {
     if (!settingsState) return DEFAULT_SETTINGS_PAGE;
-    const id = isSettingsPage(page) ? String(page).trim() : resolveSettingsPage({ tab: page });
+    const id = isSettingsPage(page) ? canon(page) : resolveSettingsPage({ tab: page });
     settingsState.asyncState = settingsState.asyncState || {};
     settingsState.asyncState.page = id;
     settingsState.tab = categoryOfPage(id);

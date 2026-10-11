@@ -141,6 +141,6 @@ test('gate:status-hud-position:drag-previews-stage-and-reset-state-only', () => 
 test('gate:status-hud-position:settings-search-finds-it', () => {
     const [first] = searchSettings('状态栏位置');
     assert.equal(first.id, 'status-hud-position');
-    assert.deepEqual({ ...first.target, open: [...first.target.open] }, { page: 'ui', open: [] });
+    assert.deepEqual({ ...first.target, open: [...first.target.open] }, { page: 'ui-bg', open: [] });
     assert.ok(searchSettings('挡住').some((entry) => entry.id === 'status-hud-position'));
 });

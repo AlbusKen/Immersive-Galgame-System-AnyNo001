@@ -15,7 +15,7 @@ import { createInpaintTransaction } from '../../generated-images/illustration/in
 import { normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
 import { mergeLegacyNaiSettings } from '../../generated-images/image-backend.js';
 import { getSettingsStyleText } from './settings-style.js';
-import { categoryOfPage, currentSettingsPage, defaultPageOfCategory, isSettingsCategory, isSettingsPage, openSettingsPage, resolveSettingsPage, resolveSettingsTarget } from './settings-pages.js';
+import { categoryOfPage, currentSettingsPage, defaultPageOfCategory, isSettingsCategory, isSettingsPage, normalizeSettingsPage, openSettingsPage, resolveSettingsPage, resolveSettingsTarget } from './settings-pages.js';
 import { recordSettingsRecent, settingsRecentLabel } from './settings-recent.js';
 import { VN_THEME_PRESETS } from './reader-host-constants.js';
 import { cloneData } from './reader-value-utils.js';
@@ -88,7 +88,7 @@ export function createSettingsHost(deps) {
     // 显式指定（阅读器工具按钮、引导跳转）始终优先于上次停留的位置；只给了新分类 id 时，上次停在这一类里就回到那一页。
     function explicitSettingsPage(openOptions, lastPage) {
         const raw = openOptions && typeof openOptions === 'object' ? openOptions : {};
-        if (isSettingsPage(raw.page)) return String(raw.page).trim();
+        if (isSettingsPage(raw.page)) return normalizeSettingsPage(raw.page);
         const tab = String(raw.tab || '').trim();
         if (!tab) return '';
         const page = resolveSettingsPage(raw);
