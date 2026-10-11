@@ -332,7 +332,7 @@ function chatterContext(ctx, live) {
     const scale = state.liveScales.get(live.name);
     const hour = Number.parseInt(String((ctx.status && ctx.status.time) || ''), 10);
     return {
-        sig: `${ctx.pageKey}|${pageText.length}`,
+        sig: `${ctx.pageKey}|${pageText.length}|${settings.live.blockHostile}`,
         pageKey: ctx.pageKey,
         title: text(live.title),
         text: pageText,
@@ -346,6 +346,7 @@ function chatterContext(ctx, live) {
         hour: Number.isFinite(hour) ? hour : undefined,
         ending: LIVE_ENDING_RE.test(pageText),
         emoji: settings.live.emoji,
+        blockHostile: settings.live.blockHostile,
         custom: settings.live.customLines,
         customMap: settings.live.fanMedals,
         tier: scale ? liveTier(scale) : null,
@@ -539,7 +540,10 @@ export function applyDanmakuToDom(root, snapshot, options = {}) {
             pageKey: plan.pageKey,
         });
     } else clearLiveFull(root, root.querySelector('#igs-text'));
-    if (phone && plan.warning && phone.visible && plan.liveVisible) triggerLiveWarning(host, plan.warning);
+    if (phone && plan.warning && phone.visible && plan.liveVisible) {
+        const warning = triggerLiveWarning(host, plan.warning);
+        if (warning === 'ban') recordLiveAction({ kind: 'ban' }, live);
+    }
     if (phone && plan.dms.length) pushLiveMessages(host, plan.dms);
     // 全屏直播里主播的话已经是字幕，不再重复推进评论。
     if (phone && plan.hostSay && settings.live.layout !== 'full') pushLiveMessages(host, [{ user: live.name, text: plan.hostSay, type: 'host', extra: '' }]);

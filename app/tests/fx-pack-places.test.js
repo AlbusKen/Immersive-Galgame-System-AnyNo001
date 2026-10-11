@@ -46,8 +46,10 @@ test('gate:places-pack registry complete, valid and opt-in default off', () => {
         assert.ok(DAILY_FX_LABELS[kind], `${kind} label in settings`);
     }
     const settings = normalizeDailyFxSettings({ enabled: true });
-    for (const kind of KINDS) assert.equal(settings[kind], false, kind);
-    assert.equal(settings.packPlaces, false);
+    // 地点与场景是通用演出包（defaultOn）：总开关与各 kind 默认开，显式写 false 才关。
+    for (const kind of KINDS) assert.equal(settings[kind], true, kind);
+    assert.equal(settings.packPlaces, true);
+    assert.equal(PACK.defaultOn, true);
     assert.equal(PACK.era, null);
     assert.deepEqual(PACK.eraKinds, { elevator: 'modern', concert: 'modern', flashes: 'modern', race: 'modern' });
     const registry = buildPackRegistry([PACK]);

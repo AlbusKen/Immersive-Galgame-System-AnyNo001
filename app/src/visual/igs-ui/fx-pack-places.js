@@ -12,6 +12,7 @@ export const PACK = {
     label: '地点与场景',
     when: '剧情里出现电梯、门缝偷听、演唱会、竞技、冒险等场面时才用（人物摔倒或撞到人时无需本包，可在该页另写 [igs-fx:cam|倾斜] 配合正文）',
     era: null,
+    defaultOn: true,
     eraKinds: { elevator: 'modern', concert: 'modern', flashes: 'modern', race: 'modern' },
     kinds: KINDS,
     labels: {

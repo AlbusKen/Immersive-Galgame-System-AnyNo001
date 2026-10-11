@@ -186,6 +186,42 @@ test('gate: newcomer 提问后有人用当前场合答句接话', () => {
     assert.equal(answered, asked);
 });
 
+test('gate: 玩家弹幕复用原有跟风池，而非只识别 +1', async () => {
+    const { planLiveUserFollowups } = await import('../src/visual/igs-ui/live-chatter.js');
+    const many = (line, options = {}, runs = 300) => {
+        const rng = seeded(241);
+        return flat(Array.from({ length: runs }, () => planLiveUserFollowups(line, { emoji: false, ...options }, rng)));
+    };
+    const ordinary = many('今天真不错');
+    assert.ok(ordinary.some((entry) => entry.src === 'repeat' && entry.text === '今天真不错'));
+    assert.ok(ordinary.some((entry) => entry.src === 'repeat' && entry.text === '+1'));
+    assert.ok(ordinary.some((entry) => entry.src === 'wave:meme'));
+    assert.ok(ordinary.some((entry) => entry.src === 'keeper' || entry.src === 'admin'));
+    assert.ok(many('扣1').some((entry) => entry.src === 'wave:click'));
+    assert.ok(many('+1').some((entry) => entry.src === 'repeat' && entry.text === '+1'));
+    assert.ok(many('典').some((entry) => entry.src === 'wave:bdxj'));
+    assert.ok(many('就这还开播？').some((entry) => entry.src === 'defend'));
+    assert.ok(many('刚来，今天播什么').some((entry) => entry.src === 'answer'));
+    assert.deepEqual(planLiveUserFollowups('   ', {}, seeded(1)), []);
+});
+
+test('gate: 内置攻击性开关只过滤本地类别，不审查 AI 与自定义弹幕', () => {
+    const opts = { pageInLive: 4, count: 16, emoji: false, blockHostile: true };
+    const filtered = flat(runMany(opts, 200, 251));
+    assert.ok(filtered.length > 200);
+    const forbidden = /^(role:(hater|roaster|defender)|trash|bdxj|wave:bdxj|keeperRebut|topic:conflict)$/;
+    assert.equal(filtered.some((entry) => forbidden.test(entry.src)), false, JSON.stringify(filtered.filter((entry) => forbidden.test(entry.src)).slice(0, 4)));
+    assert.equal(filtered.some((entry) => /就这|孝死|急了|答辩|下头|菜就多练/.test(entry.text)), false, JSON.stringify(filtered.filter((entry) => /就这|孝死|急了|答辩|下头|菜就多练/.test(entry.text)).slice(0, 4)));
+    const unfiltered = flat(runMany({ ...opts, blockHostile: false }, 200, 251));
+    assert.ok(unfiltered.some((entry) => entry.src === 'role:hater'));
+    const ai = flat(runMany({ ...opts, aiLines: ['就这还开播？'] }, 200, 252));
+    assert.ok(ai.some((entry) => entry.src === 'repeat' && entry.text === '就这还开播？'));
+    const own = flat(runMany({ ...opts, custom: { hater: ['我自定义的吐槽'] } }, 200, 253));
+    assert.ok(own.some((entry) => entry.src === 'role:hater' && entry.text === '我自定义的吐槽'));
+    assert.ok(flat(runMany({ ...opts, text: '就这？还开播？' }, 200, 254)).some((entry) => entry.src === 'quote'));
+});
+
+
 test('gate: hater 之后有 defender 接话与急典跟风', () => {
     const plans = runMany({ pageInLive: 4, count: 14, emoji: false }, 400);
     const withHater = plans.filter((p) => p.some((e) => e.src === 'role:hater'));

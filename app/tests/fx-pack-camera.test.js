@@ -134,19 +134,26 @@ test('gate:camera-shot-extras-play-and-cancel', () => {
     assert.equal(low.bg.animations[0].frames[0].filter, 'none', 'low drops the blur and keeps the move');
 });
 
-test('gate:camera-pack-default-off', () => {
+test('gate:camera-pack-default-on', () => {
     const settings = normalizeDailyFxSettings({ enabled: true });
-    for (const kind of CAMERA_KINDS) assert.equal(settings[kind], false, kind);
+    // 镜头与空间是通用演出包（defaultOn）：总开关与各 kind 默认开，显式写 false 才关。
+    for (const kind of CAMERA_KINDS) assert.equal(settings[kind], true, kind);
     assert.equal(PACK.packSwitch, 'cameraPackFx.enabled');
-    assert.deepEqual(enabledPackIds({ dailyFx: { enabled: true } }), []);
+    assert.equal(PACK.defaultOn, true);
+    assert.ok(enabledPackIds({ dailyFx: { enabled: true } }).includes('camera'));
+    // 用户显式关掉总开关后整包拨掉。
+    const OFF = { dailyFx: { enabled: true }, cameraPackFx: { enabled: false } };
+    assert.equal(enabledPackIds(OFF).includes('camera'), false);
+    // 只写 true 的极简旧设置（无 cameraPackFx 字段）按默认开处理。
     assert.ok(enabledPackIds(ON).includes('camera'));
     const fx = { daily: [{ type: 'walk', mode: 'forest' }] };
-    const dailyOn = { dailyFx: { enabled: true, walk: true } };
-    assert.equal(planDailyFx(fx, { settings: dailyOn.dailyFx, readerSettings: dailyOn }).length, 0, 'pack switch off strips the tag');
+    const dailyOff = { dailyFx: { enabled: true, walk: true }, cameraPackFx: { enabled: false } };
+    assert.equal(planDailyFx(fx, { settings: dailyOff.dailyFx, readerSettings: dailyOff }).length, 0, 'pack switch off strips the tag');
     assert.equal(planDailyFx(fx, { settings: ON.dailyFx, readerSettings: ON }).length, 1);
     assert.deepEqual(normalizeCameraSettings(undefined), { sound: false, volume: 0.25 });
-    assert.equal(cutStyleOf({ daily: [{ type: 'cut', style: 'iris' }] }, { dailyFx: { enabled: true, cut: true } }), '');
-    assert.equal(impliedCam({ daily: [{ type: 'establish', place: 'x' }] }, { dailyFx: { enabled: true, establish: true } }), null);
+    // 包总开关显式关掉时 cut / establish 被剥掉（camera 包 defaultOn 后必须显式 false 才算关）。
+    assert.equal(cutStyleOf({ daily: [{ type: 'cut', style: 'iris' }] }, { dailyFx: { enabled: true, cut: true }, cameraPackFx: { enabled: false } }), '');
+    assert.equal(impliedCam({ daily: [{ type: 'establish', place: 'x' }] }, { dailyFx: { enabled: true, establish: true }, cameraPackFx: { enabled: false } }), null);
 });
 
 test('gate:camera-pack-six-places', () => {
@@ -320,7 +327,8 @@ test('gate:jcut-lcut-layer-keep', () => {
     assert.ok(queue.some((t) => t.ms === 1300), 'without l-cut the old layer fades at once');
     cancelSceneAudio(root2);
     assert.deepEqual(audioCuesOf({ daily: [{ type: 'jcut', place: '森林' }, { type: 'lcut' }] }, ON), { leadLocation: '森林', lcut: true });
-    assert.deepEqual(audioCuesOf({ daily: [{ type: 'jcut', place: '森林' }] }, { dailyFx: { enabled: true, jcut: true } }), { leadLocation: '', lcut: false });
+    // 包总开关显式关掉时 jcut 被剥掉（camera 包 defaultOn 后必须显式 false 才算关）。
+    assert.deepEqual(audioCuesOf({ daily: [{ type: 'jcut', place: '森林' }] }, { dailyFx: { enabled: true, jcut: true }, cameraPackFx: { enabled: false } }), { leadLocation: '', lcut: false });
 });
 
 test('gate:bg-transition-tag-override', () => {

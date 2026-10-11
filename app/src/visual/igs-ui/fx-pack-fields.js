@@ -9,14 +9,27 @@ import { FX_PACKS_ACTIVE, packRequiresMet, packSwitchOn, packSwitchPath } from '
 const P = 'readerSettings';
 const grid = (body) => `<div class="igs-source-filter-grid">${body}</div>`;
 
-// 镜头空间、立绘变形、直白亲密属于通用演出，不按题材分：分别放进画面、立绘、亲密小节；其余包留在「题材包」小节。
-export const GENERAL_PACK_IDS = Object.freeze(['camera', 'transform', 'nsfw']);
+// 镜头空间、立绘变形、直白亲密、戏剧节拍、地点与场景属于通用演出，不按题材分：分别放进画面、立绘、亲密、剧情、舞台小节；其余包留在「题材包」小节。
+export const GENERAL_PACK_IDS = Object.freeze(['camera', 'transform', 'nsfw', 'beats', 'places']);
+
+// 题材包行的适用世界观标注：按清单的 era / eraKinds / worldviewOff 汇总，纯展示，不影响过滤（过滤仍由 fx-era 链执行）。
+function packScopeNote(pack) {
+    const eras = new Set();
+    for (const kind of pack.kinds) eras.add(Object.hasOwn(pack.eraKinds, kind) ? pack.eraKinds[kind] : pack.era);
+    const off = Object.keys(pack.worldviewOff).length ? `；${Object.keys(pack.worldviewOff).join('、')}部分不可用` : '';
+    if ([...eras].every((era) => era === 'modern')) return `仅现代${off}`;
+    if ([...eras].every((era) => era === 'ancient')) return `仅古代${off}`;
+    if (eras.has('modern') || eras.has('ancient')) return `部分演出按时代过滤${off}`;
+    return off ? `不限时代${off}` : '';
+}
 
 function packRow(pack, src, daily, more) {
     const on = packSwitchOn(pack, src);
     const blocked = pack.requires && !packRequiresMet(pack, src);
     const kinds = grid(pack.kinds.map((kind) => checkbox(`${P}.dailyFx.${kind}`, daily[kind], DAILY_FX_LABELS[kind])).join(''));
-    const note = blocked ? '需先开启亲密演出' : (daily.enabled ? '' : '需先开启日常演出');
+    const gate = blocked ? '需先开启亲密演出' : (daily.enabled ? '' : '需先开启日常演出');
+    const scope = GENERAL_PACK_IDS.includes(pack.id) ? '' : packScopeNote(pack);
+    const note = [gate, scope].filter(Boolean).join('；');
     return perfItem(more, `pack-${pack.id}`, checkbox(`${P}.${packSwitchPath(pack)}`, on, pack.label), { on, hint: note, detail: kinds });
 }
 

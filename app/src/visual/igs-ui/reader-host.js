@@ -602,7 +602,7 @@ export function createIgsReaderHost(options = {}) {
             index: snapshot.content.currentIndex,
             mountMessageId: snapshot.messageId,
             contentMessageId: snapshot.messageId,
-            turnOffset: 0,
+            turnOffset: Math.max(0, Number(firstDefined(openOptions.turnOffset, payload.turnOffset, 0)) || 0),
             streamPhase: 'idle',
             mountBaselineRaw: getMessagePrimaryText(payload.message && (payload.message.raw || payload.message) || payload.raw || ''),
             mountBaselineVisible: String(payload.visibleText || ''),
@@ -1479,6 +1479,9 @@ export function createIgsReaderHost(options = {}) {
         const startPanel = (className) => {
             clearChildren(container);
             container.setAttribute('data-igs-panel', 'item');
+            // 图片、状态栏等同页异步更新会重绘阅读器；目录与动作菜单应继续留在当前页。
+            const snapshot = state.activeReader && state.activeReader.snapshot;
+            container.setAttribute('data-igs-panel-page', `${snapshot && snapshot.chatId || ''}|${snapshot && snapshot.messageId}|${snapshot && snapshot.swipeId || 0}|${snapshot && snapshot.content && snapshot.content.currentIndex}`);
             const panel = doc.createElement('div');
             panel.className = `igs-option-panel ${className}`;
             container.appendChild(panel);
@@ -1565,6 +1568,8 @@ export function createIgsReaderHost(options = {}) {
     }
 
     function handleOptionBubbleBlankClick(current, snapshot) {
+        // 历史楼层只读；末页的点击用于继续阅读下一轮，不打开当前数据库的选项。
+        if (Number(current && current.turnOffset) > 0) return false;
         const cfg = getOptionBubbleConfig();
         if (!cfg.enabled || !isReaderLastPage(snapshot)) return false;
         const overlay = current && current.dom && current.dom.overlay;
@@ -1596,6 +1601,7 @@ export function createIgsReaderHost(options = {}) {
         if (!container) return;
         container.setAttribute('hidden', '');
         container.removeAttribute('data-igs-panel');
+        container.removeAttribute('data-igs-panel-page');
         syncStatusHudOptionSuppression(container, false);
         clearChildren(container);
     }
@@ -1641,6 +1647,7 @@ export function createIgsReaderHost(options = {}) {
             container.appendChild(bubble);
         }
         container.removeAttribute('data-igs-panel');
+        container.removeAttribute('data-igs-panel-page');
         if (quick.length) {
             const row = doc.createElement('div');
             row.className = 'igs-option-row';
@@ -2063,12 +2070,11 @@ export function createIgsReaderHost(options = {}) {
         try {
             result = await options.openViewerFromMessage(target.id, current.mode, embedded
                 ? { startAtEnd: false, message: target, replaceActive: true, skipImageCollection: nextOffset > 0, turnOffset: nextOffset, skipTitle: true }
-                : { startAtEnd: false, message: target, skipTitle: true });
+                : { startAtEnd: false, message: target, turnOffset: nextOffset, skipTitle: true });
         } finally {
             progressRuntime.navigating = false;
         }
         if (result && result.ok !== false) {
-            if (!embedded && state.activeReader) state.activeReader.turnOffset = nextOffset;
             if (state.activeReader) armReadingProgress(state.activeReader);
             writeToast(toast);
             return { ok: true, moved: true, messageId: target.id, reader: result.reader };
@@ -2787,8 +2793,9 @@ export function createIgsReaderHost(options = {}) {
             : current.snapshot && current.snapshot.messageId;
         if (messageId == null) return rescanCurrentImages();
         const keepIndex = isEmbeddedReaderMode(current.mode) && current.turnOffset > 0 ? 0 : current.index;
+        const turnOffset = isEmbeddedReaderMode(current.mode) ? 0 : current.turnOffset;
         sourceCache.invalidate();
-        const result = await options.openViewerFromMessage(messageId, current.mode, { startAtEnd: false });
+        const result = await options.openViewerFromMessage(messageId, current.mode, { startAtEnd: false, turnOffset });
         if (!result || result.ok === false) {
             writeToast('重新加载失败。');
             return result || { ok: false, reason: 'reload-failed' };
@@ -4682,12 +4689,17 @@ export function createIgsReaderHost(options = {}) {
         if (container.style && typeof container.style.setProperty === 'function') {
             container.style.setProperty('--igs-option-font-size', `${cfg.fontSize}px`);
         }
-        // 每次渲染都收起旧气泡；最后一页需由随后一次未被页内演出消费的推进显式打开。
-        hideOptionBubbles(container);
+        // 同页重绘不打断正在挑选的物品；翻页、切楼、换 swipe 或回读旧楼时必须清掉。
+        const panelPage = `${snapshot && snapshot.chatId || ''}|${snapshot && snapshot.messageId}|${snapshot && snapshot.swipeId || 0}|${snapshot && snapshot.content && snapshot.content.currentIndex}`;
+        const keepItemPanel = cfg.enabled && Number(current.turnOffset) === 0 && isReaderLastPage(snapshot)
+            && container.getAttribute('data-igs-panel') === 'item'
+            && !container.hasAttribute('hidden') && container.getAttribute('data-igs-panel-page') === panelPage;
+        if (keepItemPanel) syncStatusHudOptionSuppression(container, true);
+        else hideOptionBubbles(container);
         // 悬浮输入框 + 选项气泡：框先藏着，等选项里点「采取其他行动」才出现；翻离最后一页就收回。
-        if (cfg.enabled) overlay.setAttribute('data-igs-options-on', '1');
+        if (cfg.enabled && !(Number(current.turnOffset) > 0)) overlay.setAttribute('data-igs-options-on', '1');
         else overlay.removeAttribute('data-igs-options-on');
-        if (!isReaderLastPage(snapshot) && overlay.classList) overlay.classList.remove('igs-free-input');
+        if ((!isReaderLastPage(snapshot) || Number(current.turnOffset) > 0) && overlay.classList) overlay.classList.remove('igs-free-input');
         // 把对话框实际高度/宽度写入 CSS 变量，供气泡定位在对话框正上方、宽度跟随对话框。
         const dialog = overlay.querySelector('#igs-dialog');
         if (dialog && typeof dialog.getBoundingClientRect === 'function') {

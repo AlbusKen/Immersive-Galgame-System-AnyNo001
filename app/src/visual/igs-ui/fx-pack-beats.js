@@ -10,6 +10,7 @@ export const PACK = {
     label: '戏剧节拍',
     when: '正文出现揭晓、系统公告、证物、重逢、众人集体反应等戏剧节拍时',
     era: null,
+    defaultOn: true,
     kinds: [...BEATS_KINDS],
     labels: BEATS_LABELS,
     triggers: BEATS_TRIGGERS,

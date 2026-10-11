@@ -100,6 +100,12 @@ const QUOTE_SAFE_TEMPLATES = 2;
 const QUOTE_MAX_CHARS = 6;
 const TOPIC_SHARE = 0.3;
 const QUOTE_SHARE = 0.15;
+// 只用于内置词池；正文摘句、AI 弹幕和用户自定义句不做内容审查。
+const HOSTILE_BUILTIN_RE = /就这|孝子|孝死|急了|答辩|下头|菜就多练|你这吃相|胖了别怪我|你今天吃错药|谁先倒下谁就丢人|骂人要骂到点子上|不喜欢可以走|楼上出去|滚出去|你管得着吗/;
+const HOSTILE_ROLES = new Set(['hater', 'roaster', 'defender']);
+function builtInLines(list, blockHostile) {
+    return blockHostile ? (list || []).filter((line) => !HOSTILE_BUILTIN_RE.test(line)) : list || [];
+}
 // 台词摘词：从本页正文截 2-6 字短语，套模板成一句本地弹幕；截不出时返回空数组。
 export function liveQuoteFragments(text, exclude = []) {
     const skip = new Set(exclude.map(clean).filter(Boolean));
@@ -228,57 +234,58 @@ export function normalizeLiveCustomLines(raw) {
     return out;
 }
 
-function resolvePools(tone, custom) {
+function resolvePools(tone, custom, blockHostile = false) {
     const toneKey = TOLERANT_TONES.includes(tone) ? tone : 'modern';
     const extra = (key) => custom[key] || [];
+    const local = (list) => builtInLines(list, blockHostile);
     if (toneKey === 'modern') {
-        const sceneOf = (scene) => [...(LIVE_SCENE_LINES[scene] || LIVE_SCENE_LINES.chat), ...extra(scene)];
+        const sceneOf = (scene) => [...local(LIVE_SCENE_LINES[scene] || LIVE_SCENE_LINES.chat), ...extra(scene)];
         return {
             tone: toneKey,
             scene: sceneOf,
-            answers: (scene) => (scene === 'shop' ? SHOP_ANSWERS : LIVE_SCENE_ANSWERS[scene] || LIVE_SCENE_ANSWERS.chat),
-            roles: Object.fromEntries(Object.entries(LIVE_ROLE_LINES).map(([role, list]) => [role, [...list, ...extra(role)]])),
-            ambient: [...LIVE_AMBIENT_LINES, ...extra('ambient')],
-            memes: LIVE_MEME_LINES,
-            classic: [...LIVE_CLASSIC_LINES, ...LIVE_CLASSIC_CLICK_LINES],
-            trash: LIVE_TRASH_MEME_LINES,
-            host: [...LIVE_HOST_REPLY_LINES, ...extra('host')],
-            sillyReply: LIVE_SILLY_REPLY_LINES,
-            warn: LIVE_WARN_MEME_LINES,
-            fandom: LIVE_FANDOM_LINES,
-            drama: LIVE_DRAMA_BY_KIND,
-            anime: LIVE_ANIME_BY_KIND,
+            answers: (scene) => local(scene === 'shop' ? SHOP_ANSWERS : LIVE_SCENE_ANSWERS[scene] || LIVE_SCENE_ANSWERS.chat),
+            roles: Object.fromEntries(Object.entries(LIVE_ROLE_LINES).map(([role, list]) => [role, [...(blockHostile && HOSTILE_ROLES.has(role) ? [] : local(list)), ...extra(role)]])),
+            ambient: [...local(LIVE_AMBIENT_LINES), ...extra('ambient')],
+            memes: local(LIVE_MEME_LINES),
+            classic: local([...LIVE_CLASSIC_LINES, ...LIVE_CLASSIC_CLICK_LINES]),
+            trash: blockHostile ? [] : LIVE_TRASH_MEME_LINES,
+            host: [...local(LIVE_HOST_REPLY_LINES), ...extra('host')],
+            sillyReply: local(LIVE_SILLY_REPLY_LINES),
+            warn: local(LIVE_WARN_MEME_LINES),
+            fandom: Object.fromEntries(Object.entries(LIVE_FANDOM_LINES).map(([key, list]) => [key, local(list)])),
+            drama: Object.fromEntries(Object.entries(LIVE_DRAMA_BY_KIND).map(([key, list]) => [key, local(list)])),
+            anime: Object.fromEntries(Object.entries(LIVE_ANIME_BY_KIND).map(([key, list]) => [key, local(list)])),
             newage: [...LIVE_NEWAGE_MEME_LINES, ...extra('newage')],
-            keeperPeace: LIVE_KEEPER_PEACE_LINES,
-            keeperRebut: LIVE_KEEPER_REBUT_LINES,
-            admin: LIVE_ADMIN_LINES,
+            keeperPeace: local(LIVE_KEEPER_PEACE_LINES),
+            keeperRebut: blockHostile ? [] : LIVE_KEEPER_REBUT_LINES,
+            admin: local(LIVE_ADMIN_LINES),
             adminUser: '房管',
-            banReact: LIVE_ADMIN_BAN_REACT_LINES,
+            banReact: local(LIVE_ADMIN_BAN_REACT_LINES),
         };
     }
     const base = LIVE_TONE_POOLS[toneKey];
-    const sceneOf = (scene) => [...(base.scenes[scene] || base.scenes.chat), ...extra(scene)];
+    const sceneOf = (scene) => [...local(base.scenes[scene] || base.scenes.chat), ...extra(scene)];
     return {
         tone: toneKey,
         scene: sceneOf,
-        answers: (scene) => (scene === 'shop' ? SHOP_ANSWERS : base.answers[scene] || base.answers.chat),
-        roles: Object.fromEntries(Object.entries({ ...base.roles, keeper: LIVE_TONE_ORDER[toneKey].keeper }).map(([role, list]) => [role, [...list, ...extra(role)]])),
-        ambient: [...base.ambient, ...extra('ambient')],
-        memes: base.memes,
-        classic: LIVE_TONE_CLASSIC[toneKey],
+        answers: (scene) => local(scene === 'shop' ? SHOP_ANSWERS : base.answers[scene] || base.answers.chat),
+        roles: Object.fromEntries(Object.entries({ ...base.roles, keeper: LIVE_TONE_ORDER[toneKey].keeper }).map(([role, list]) => [role, [...(blockHostile && HOSTILE_ROLES.has(role) ? [] : local(list)), ...extra(role)]])),
+        ambient: [...local(base.ambient), ...extra('ambient')],
+        memes: local(base.memes),
+        classic: local(LIVE_TONE_CLASSIC[toneKey]),
         trash: [],
-        host: [...base.host, ...extra('host')],
-        sillyReply: base.sillyReply,
-        warn: LIVE_TONE_WARN[toneKey],
-        fandom: LIVE_TONE_FANDOM[toneKey],
-        drama: { other: LIVE_TONE_EXTRA[toneKey].drama },
-        anime: { other: LIVE_TONE_EXTRA[toneKey].anime },
+        host: [...local(base.host), ...extra('host')],
+        sillyReply: local(base.sillyReply),
+        warn: local(LIVE_TONE_WARN[toneKey]),
+        fandom: Object.fromEntries(Object.entries(LIVE_TONE_FANDOM[toneKey]).map(([key, list]) => [key, local(list)])),
+        drama: { other: local(LIVE_TONE_EXTRA[toneKey].drama) },
+        anime: { other: local(LIVE_TONE_EXTRA[toneKey].anime) },
         newage: [...LIVE_TONE_EXTRA[toneKey].newage, ...extra('newage')],
-        keeperPeace: LIVE_TONE_ORDER[toneKey].peace,
-        keeperRebut: LIVE_TONE_ORDER[toneKey].rebut,
-        admin: LIVE_TONE_ORDER[toneKey].admin,
+        keeperPeace: local(LIVE_TONE_ORDER[toneKey].peace),
+        keeperRebut: blockHostile ? [] : LIVE_TONE_ORDER[toneKey].rebut,
+        admin: local(LIVE_TONE_ORDER[toneKey].admin),
         adminUser: LIVE_TONE_ORDER[toneKey].user,
-        banReact: LIVE_TONE_ORDER[toneKey].react,
+        banReact: local(LIVE_TONE_ORDER[toneKey].react),
     };
 }
 
@@ -335,29 +342,42 @@ function pickRole(pools, tone, late, rng) {
     return pickWeighted(regular, rng);
 }
 
+// 玩家弹幕上屏后复用直播弹幕规划器的接话、复读和刷屏潮，不另建一套跟风词池。
+export function planLiveUserFollowups(text, opts = {}, rng = Math.random) {
+    const line = clean(text);
+    if (!line) return [];
+    return planLiveChatter({ ...opts, count: 0, aiLines: [line], userLine: line }, rng);
+}
+
 export function planLiveChatter(opts = {}, rng = Math.random) {
     const {
         title, text, pageInLive, ending, hour, mood, aiLines, hostSaid, userName, tone = 'modern', custom, count, hostName, hostGender, tier,
     } = opts;
+    const blockHostile = opts.blockHostile === true;
     const hot = mood === 'love' || Boolean(opts.spicy);
     const emoji = opts.emoji !== false;
     const classified = classifyLiveScene({ title, text, pageInLive, ending, hour });
     const scene = opts.scene || classified.scene;
     const late = opts.late ?? classified.late;
     const customLines = custom && typeof custom === 'object' ? custom : {};
-    const pools = resolvePools(tone, customLines);
+    const pools = resolvePools(tone, customLines, blockHostile);
     const total = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 6;
     const out = [];
     const nameOpts = { tone: pools.tone, tier, emoji, host: hostName, recent: opts.recentNames };
     const used = nameMaker(rng, new Set(), nameOpts, true);
-    const topic = pools.tone === 'modern' ? classifyLiveTopic(text) : null;
+    const matchedTopic = pools.tone === 'modern' ? classifyLiveTopic(text) : null;
+    const topic = blockHostile && matchedTopic?.name === 'conflict' ? null : matchedTopic;
     const quotes = liveQuoteFragments(text, [hostName, userName]);
     const wavesOf = () => nameMaker(rng, new Set(), nameOpts);
     const push = (user, line, delay, src, type = 'text') => out.push({ user, text: line, type, delay: Math.round(delay), src });
-    let askSeen = false;
-    let clickSeen = false;
-    let haterSeen = false;
-    let sillySeen = false;
+    const userLine = clean(opts.userLine);
+    const userClick = CLICK_RE.test(userLine) || /^\+?1{1,3}[!！。.?？\s]*$/.test(userLine);
+    const userBdxj = /^[绷典孝急]{1,6}[!！。.?？\s]*$/.test(userLine);
+    const userEmoji = /^\p{Extended_Pictographic}[\p{Extended_Pictographic}\uFE0F\u200D\s]*$/u.test(userLine);
+    let askSeen = ASK_RE.test(userLine);
+    let clickSeen = userClick;
+    let haterSeen = !blockHostile && HOSTILE_BUILTIN_RE.test(userLine);
+    let sillySeen = LIVE_ROLE_LINES.silly.includes(userLine);
 
     for (let i = 0; i < total; i += 1) {
         const delay = rng() * 2400;
@@ -366,7 +386,7 @@ export function planLiveChatter(opts = {}, rng = Math.random) {
         let src = 'ambient';
         const plot = rng();
         if (topic && plot < TOPIC_SHARE) {
-            line = pick(topic.lines, rng);
+            line = pick(builtInLines(topic.lines, blockHostile), rng);
             src = `topic:${topic.name}`;
         } else if (quotes.length && plot < (topic ? TOPIC_SHARE : 0) + QUOTE_SHARE) {
             line = liveQuoteLine(pick(quotes, rng), pools.tone, rng);
@@ -385,7 +405,7 @@ export function planLiveChatter(opts = {}, rng = Math.random) {
             line = pickBoost(pools.roles[role] || [], customLines[role], rng);
             src = `role:${role}`;
             if (role === 'newcomer' && ASK_RE.test(line)) askSeen = true;
-            if (role === 'hater') haterSeen = true;
+            if (role === 'hater' && !blockHostile) haterSeen = true;
             if (role === 'silly') sillySeen = true;
         } else if (roll < SCENE_SHARE + ROLE_SHARE + MOOD_SHARE) {
             line = pick(AUDIENCE_AMBIENT_LINES[mood] || AUDIENCE_AMBIENT_LINES.generic, rng);
@@ -435,9 +455,11 @@ export function planLiveChatter(opts = {}, rng = Math.random) {
                 src = 'trash';
             } else if (sub < 0.97 || pools.tone !== 'modern') {
                 line = pickBoost(pools.ambient, customLines.ambient, rng);
-            } else {
+            } else if (!blockHostile) {
                 line = pick(LIVE_BDXJ_LINES, rng);
                 src = 'bdxj';
+            } else {
+                line = pickBoost(pools.ambient, customLines.ambient, rng);
             }
         }
         if (!line) continue;
@@ -516,13 +538,13 @@ export function planLiveChatter(opts = {}, rng = Math.random) {
         }
     }
 
-    if (rng() < SPAM_CHANCE) {
+    if ((!blockHostile && userBdxj) || userEmoji || rng() < SPAM_CHANCE) {
         const wave = wavesOf();
         const n = between(3, 6, rng);
         const start = rng() * 1000;
         const kind = rng();
-        const emojiWave = emoji && kind < SPAM_EMOJI;
-        const bdxjWave = !emojiWave && (kind < SPAM_EMOJI + SPAM_BDXJ || (!emoji && kind < SPAM_BDXJ)) && pools.tone === 'modern';
+        const emojiWave = emoji && (userEmoji || (!userBdxj && kind < SPAM_EMOJI));
+        const bdxjWave = !blockHostile && !emojiWave && (userBdxj || (kind < SPAM_EMOJI + SPAM_BDXJ || (!emoji && kind < SPAM_BDXJ))) && pools.tone === 'modern';
         const shortList = [...pools.memes, ...pools.classic].filter((line) => Array.from(line).length <= 6);
         const shortLine = pick(shortList, rng);
         const emojiA = pick(LIVE_EMOJI_SPAM, rng);
@@ -549,7 +571,7 @@ export function planLiveChatter(opts = {}, rng = Math.random) {
                 push(crowd(), pick(pools.roles.keeper, rng), at, 'keeper');
                 at += 500 + rng() * 700;
             }
-            if (rng() < KEEPER_REBUT) push(crowd(), pick(pools.keeperRebut, rng), at + 300 + rng() * 800, 'keeperRebut');
+            if (pools.keeperRebut.length && rng() < KEEPER_REBUT) push(crowd(), pick(pools.keeperRebut, rng), at + 300 + rng() * 800, 'keeperRebut');
         }
         if (rng() < ADMIN_AFTER_WAVE) {
             const target = pick(waveUsers, rng);

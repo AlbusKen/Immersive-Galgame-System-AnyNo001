@@ -1985,9 +1985,9 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
         else if (!floatInput && controls.parentNode !== dialog) dialog.insertBefore(controls, dialog.querySelector('#igs-dialog-bar'));
     }
     if (controls) {
-        // 内嵌模式使用酒馆默认输入框；其它模式的 IGS 输入区只在最后一页显示。
+        // 内嵌模式使用酒馆默认输入框；回读旧楼不提供输入区，其它模式仅在最新楼末页显示。
         const comicSent = isComicModeActive(snapshot.readerSettings) && current.comicInputSent && current.comicInputSent === comicContentKey(snapshot);
-        controls.style.display = snapshot.mode === 'embedded' ? 'none' : (isLastPage ? '' : 'none');
+        controls.style.display = snapshot.mode === 'embedded' || Number(current.turnOffset) > 0 ? 'none' : (isLastPage ? '' : 'none');
         if (comicSent) controls.setAttribute('data-igs-comic-sent', '1');
         else controls.removeAttribute('data-igs-comic-sent');
     }

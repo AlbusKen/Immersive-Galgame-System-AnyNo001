@@ -26,14 +26,16 @@ export const DAILY_FX_LABELS = Object.freeze({
 });
 // 后加的日常类型需显式勾选：旧存档里日常演出已开启的用户不会突然收到新语法。
 const DAILY_FX_OPT_IN = new Set([...CAMPUS_FX_KINDS, ...FX_PACK_KINDS, 'console', 'versus', 'combo', 'snatch', 'say', 'rps', 'gacha', 'game', 'score', 'pat', 'poke', 'fever', 'cheers', 'cook', 'cat', 'eat', 'guqin', 'go', 'poem', 'edict', 'tea', 'bow', 'spell', 'potion', 'owl', 'broom', 'howler', 'blackout', 'knock', 'murmur', 'brake', 'depart', 'arrive', 'ticket', 'steam', 'shower', 'splash', 'hairdry', 'sleep', 'wake', 'dressup', 'drape', 'fitting', 'dive', 'bubble', 'vacuum', 'sing', 'dance', 'fish', 'draw', 'music', 'ride', 'clean', 'shopping', 'stroll', 'yujian', 'liandan', 'biguan', 'dianxue', 'qinggong', 'yungong', 'opendoor', 'shield', 'tend', 'carry', 'candle', 'pass', 'stance']);
+// 清单声明 defaultOn 的通用包（镜头空间、立绘变形、戏剧节拍、地点与场景这类不挑题材的演出）：各 kind 跟着默认开，不占显式勾选。
+const GENERAL_DEFAULT_KINDS = new Set(FX_PACKS_ACTIVE.filter((pack) => pack.defaultOn === true).flatMap((pack) => pack.kinds));
 
 export function normalizeDailyFxSettings(value) {
     const src = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
     // ambience：车窗光影、浴室水汽这类按地点常驻的氛围层，不写提示词，默认跟着日常演出一起开。
     const out = { enabled: src.enabled === true, petals: src.petals !== false, photoAlbum: src.photoAlbum !== false, ambience: src.ambience !== false };
-    for (const kind of DAILY_FX_KINDS) out[kind] = DAILY_FX_OPT_IN.has(kind) ? src[kind] === true : src[kind] !== false;
-    // 题材包的默认总开关（dailyFx.pack<Id>，默认关）；总开关关着时各 kind 由 fx-era 的 applyFxEra 链拨成关，勾选原样留在存档里。
-    for (const pack of FX_PACKS_ACTIVE) if (!pack.packSwitch) out[packSwitchKey(pack.id)] = src[packSwitchKey(pack.id)] === true;
+    for (const kind of DAILY_FX_KINDS) out[kind] = DAILY_FX_OPT_IN.has(kind) && !GENERAL_DEFAULT_KINDS.has(kind) ? src[kind] === true : src[kind] !== false;
+    // 包的默认总开关（dailyFx.pack<Id>，题材包默认关、defaultOn 通用包默认开）；总开关关着时各 kind 由 fx-era 的 applyFxEra 链拨成关，勾选原样留在存档里。
+    for (const pack of FX_PACKS_ACTIVE) if (!pack.packSwitch) out[packSwitchKey(pack.id)] = pack.defaultOn === true ? src[packSwitchKey(pack.id)] !== false : src[packSwitchKey(pack.id)] === true;
     if (FX_PACKS_ACTIVE.length) out.panelSkin = src.panelSkin === true;
     return out;
 }

@@ -2972,7 +2972,7 @@ async function openOptionSourcesReader({ tables = {}, text = '[角色: 艾莉]\n
             typeAndSend: async (value) => { sent.push(value); return { ok: true }; },
         },
     });
-    await vn.openLatestAvailable('pc');
+    const opened = await vn.openLatestAvailable('pc');
     const overlay = document.getElementById('igs-overlay');
     const layer = overlay.querySelector('#igs-option-bubbles');
     const last = { hidden: true, texts: [], entry: false };
@@ -3001,7 +3001,7 @@ async function openOptionSourcesReader({ tables = {}, text = '[角色: 艾莉]\n
         el.removeAttribute = origRemove;
         return el;
     };
-    return { vn, overlay, layer, open, sent, last };
+    return { vn, overlay, layer, open, sent, last, controller: opened.reader.controller };
 }
 
 const ITEM_TABLE = { sheet_items: { uid: 'sheet_items', name: '物品表', orderNo: 2, content: [['row_id', '物品名称', '描述'], ['1', '回复药', '红色的小瓶'], ['2', '手帕', '']] } };
@@ -3021,6 +3021,34 @@ test('gate:simulation:igs-ui-option-sources-item-button-sends-use-text-through-i
     actions[0].click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(sent, ['我使用了【回复药】']);
+    vn.destroy();
+});
+
+test('gate:simulation:igs-ui-item-option-panel-survives-same-page-rerender', async () => {
+    const { vn, open, controller } = await openOptionSourcesReader({
+        text: '艾莉: 先观察。\n艾莉: 再行动。', tables: { ...OPTION_TABLE, ...ITEM_TABLE },
+    });
+    const layer = await open();
+    layer.querySelector('.igs-item-entry-bubble').click();
+    const items = layer.querySelector('.igs-option-items');
+    assert.ok(items);
+    controller.invokeAction('hide');
+    controller.invokeAction('hide');
+    assert.equal(layer.querySelector('.igs-option-items'), items, '同页重绘不清空刚打开的物品目录');
+    layer.querySelector('.igs-option-item').click();
+    const actions = layer.querySelector('.igs-option-actions');
+    controller.invokeAction('hide');
+    controller.invokeAction('hide');
+    assert.equal(layer.querySelector('.igs-option-actions'), actions, '挑选物品后的操作菜单也应保留');
+    assert.equal(layer.hasAttribute('hidden'), false);
+    assert.equal(layer.closest('#igs-overlay').classList.contains('igs-options-visible'), true);
+    controller.invokeAction('prev');
+    assert.equal(layer.hasAttribute('hidden'), true, '翻离最后一页收起物品菜单');
+    assert.equal(layer.getAttribute('data-igs-panel-page'), null);
+    controller.invokeAction('next');
+    const reopened = await controller.invokeAction('next');
+    assert.equal(reopened.reason, 'option-bubbles-toggled');
+    assert.equal(layer.hasAttribute('hidden'), false, '回到最后一页后仍可打开选项');
     vn.destroy();
 });
 
@@ -5173,6 +5201,7 @@ test('gate:simulation:igs-ui-embedded-turn-navigation-keeps-latest-host-and-does
     const vn = bootstrapIGS({
         global: globalObject,
         autoAttachMagicWand: false,
+        config: { optionBubble: { enabled: true } },
         hostAdapter: {
             getCurrentMessage: async () => messages[1],
             getMessageById: async (id) => messages.find((item) => item.id === Number(id)) || null,
@@ -5199,6 +5228,12 @@ test('gate:simulation:igs-ui-embedded-turn-navigation-keeps-latest-host-and-does
     assert.deepEqual(jumped, []);
     assert.equal(overlayAfter.querySelector('#igs-progress').textContent, '');
     assert.equal(overlayAfter.querySelector('#igs-progress').style.display, 'none');
+    assert.equal(overlayAfter.getAttribute('data-igs-options-on'), null, '内嵌历史楼层不提供选项');
+    assert.equal(overlayAfter.querySelector('#igs-option-bubbles').hasAttribute('hidden'), true);
+    const next = await opened.reader.controller.invokeAction('next');
+    assert.equal(next.moved, true, '内嵌历史楼层末页直接进入下一轮');
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.messageId, 61);
+    assert.equal(overlayAfter.getAttribute('data-igs-options-on'), '1', '回到最新楼才恢复选项');
     assert.doesNotMatch(opened.reader.snapshot.source.styleText, /\.igs-mode-embedded \.igs-progress\{display:none;\}/);
 
     vn.destroy();
@@ -5605,6 +5640,54 @@ test('gate:simulation:igs-ui-turn-navigation-switches-message-and_keeps_original
     assert.deepEqual(jumped, []);
     assert.equal(state.igsUi.activeReader.snapshot.messageId, 8);
 
+    vn.destroy();
+});
+
+test('gate:simulation:igs-ui-history-turn-is-read-only-and-next-advances-with-options-enabled', async () => {
+    const document = createFakeDocument();
+    const messages = [7, 8, 9].map(id => ({ id, text: `艾莉: 第${id}楼。` }));
+    const vn = bootstrapIGS({
+        global: {
+            document,
+            AutoCardUpdaterAPI: { exportTableAsJson: () => OPTION_TABLE },
+        },
+        autoAttachMagicWand: false,
+        config: { optionBubble: { enabled: true, clickAction: 'send' } },
+        hostAdapter: {
+            getCurrentMessage: async () => messages[2],
+            getMessageById: async id => messages.find(message => message.id === Number(id)) || null,
+            getAdjacentMessage: async (id, delta) => {
+                const index = messages.findIndex(message => message.id === Number(id));
+                return messages[index + (delta < 0 ? -1 : 1)] || null;
+            },
+            listTurns: async () => messages,
+            typeAndSend: async () => ({ ok: true }),
+        },
+    });
+    const opened = await vn.openLatestAvailable('pc');
+    assert.notEqual(document.getElementById('igs-overlay').querySelector('.igs-controls').style.display, 'none', '最新楼末页仍能输入');
+    await opened.reader.controller.invokeAction('turn-first');
+    const old = document.getElementById('igs-overlay');
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.messageId, 7);
+    assert.equal(old.querySelector('.igs-controls').style.display, 'none', '回读旧楼不显示输入');
+    assert.equal(old.getAttribute('data-igs-options-on'), null);
+    const reload = await opened.reader.controller.invokeAction('rescan');
+    assert.equal(reload.ok, true, '旧楼重新加载成功');
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.messageId, 7);
+    const reloaded = document.getElementById('igs-overlay');
+    assert.equal(reloaded.querySelector('.igs-controls').style.display, 'none', '重新加载后旧楼仍不显示输入');
+    assert.equal(reloaded.getAttribute('data-igs-options-on'), null, '重新加载后旧楼仍不提供选项');
+    const result = await opened.reader.controller.invokeAction('next');
+    assert.equal(result.moved, true, '下一页按钮应直接切下一轮');
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.messageId, 8);
+    const middle = document.getElementById('igs-overlay');
+    assert.equal(middle.querySelector('.igs-controls').style.display, 'none');
+    assert.equal(middle.querySelector('#igs-option-bubbles').hasAttribute('hidden'), true);
+    const dialog = middle.querySelector('#igs-dialog');
+    dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 120 });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.messageId, 9, '对话框右半区应直接进最新楼');
+    assert.notEqual(document.getElementById('igs-overlay').querySelector('.igs-controls').style.display, 'none');
     vn.destroy();
 });
 

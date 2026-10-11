@@ -129,13 +129,13 @@ function buildPerformanceBodies(src, extras, isOpen) {
         bodies: {
             text: [host('playback-speed', extras.playbackSpeed), host('typewriter', extras.typewriter, '逐字显示'), stage.clickWaitMark, stage.textFx, stage.bilingual, host('sentence-paging', extras.sentencePaging)],
             stage: [
-                section('镜头与环境', [stage.transition, stage.cgEntrance, stage.tint, stage.camera, host('weather', extras.weatherFx, '雨雪雾粒子'), fx.crowd, host('stage-shake', extras.stageShake, '冲击时晃屏'), renderPackFields(src, more, { ids: ['camera'] }), host('cinema-bars', extras.cinemaBars, '只盖背景，CG时收起'), fx.comic, renderPanelSkinField(src, more)]),
+                section('镜头与环境', [stage.transition, stage.cgEntrance, stage.tint, stage.camera, host('weather', extras.weatherFx, '雨雪雾粒子'), fx.crowd, host('stage-shake', extras.stageShake, '冲击时晃屏'), renderPackFields(src, more, { ids: ['camera'] }), renderPackFields(src, more, { ids: ['places'] }), host('cinema-bars', extras.cinemaBars, '只盖背景，CG时收起'), fx.comic, renderPanelSkinField(src, more)]),
                 section('立绘', [stage.motion, stage.actions, stage.turn, stage.cast, renderPackFields(src, more, { ids: ['transform'] }), host('narration-filter', extras.narrationFilter)]),
             ],
             story: [
                 section('情绪', [fx.manga, fx.mangaBack, fx.heartbeat]),
                 section('剧情提示', [fx.title, fx.favor, fx.itemFx, fx.resultFx]),
-                section('事件演出', [fx.tags, fx.dlc].filter(Boolean)),
+                section('事件演出', [fx.tags, fx.dlc, renderPackFields(src, more, { ids: ['beats'] })].filter(Boolean)),
             ],
             special: [
                 section('日常与冒险', [stage.daily, fx.battleFx, fx.flash]),

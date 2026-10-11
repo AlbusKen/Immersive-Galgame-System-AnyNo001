@@ -65,7 +65,10 @@ test('gate:fx-packs:pack-switch-survives-close-and-reload', async () => {
     const valueAt = (obj, path) => path.split('.').reduce((node, key) => (node && typeof node === 'object' ? node[key] : undefined), obj);
     let vn = boot();
     let settings = vn.openSettings({ mode: 'pc' }).controller;
-    for (const path of paths) settings.toggle(path);
+    // defaultOn 的通用包（镜头空间、立绘变形、戏剧节拍、地点与场景）出厂就是开，再 toggle 会变关；只把还关着的拨到开。
+    const before = vn.getUnifiedSettings({});
+    const initial = { readerSettings: normalizeReaderSettings(before.readerSettings) };
+    for (const path of paths) if (valueAt(initial, path) !== true) settings.toggle(path);
     assert.equal(settings.close().ok, true);
     vn.destroy();
     vn = boot();
@@ -84,6 +87,44 @@ test('gate:fx-packs:pack-switch-survives-close-and-reload', async () => {
             assert.match(settings.getSnapshot().html, new RegExp(`data-switch="${path.replace(/\./g, '\.')}" aria-pressed="true"`), `${path} 重新打开设置后应显示为开`);
         }
         settings.close();
+    } finally {
+        vn.destroy();
+    }
+});
+
+// 题材包总开关打开时全部细项一起开；关掉时细项原样保留；defaultOn 通用包开关不往草稿里写细项。
+test('gate:fx-packs:pack-switch-on-enables-kinds', async () => {
+    const { bootstrapIGS, createMemoryStorage } = await import('../src/index.js');
+    const { getPack, packSwitchPath } = await import('../src/scene/fx-packs.js');
+    const { normalizeReaderSettings } = await import('../src/visual/igs-ui/settings-host-normalize.js');
+    const storage = createMemoryStorage();
+    const boot = () => bootstrapIGS({ global: { localStorage: storage }, autoAttachMagicWand: false, tavernSettingsSync: false, hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
+    let vn = boot();
+    try {
+        let settings = vn.openSettings({ mode: 'pc' }).controller;
+        const pack = getPack('harem');
+        settings.setValue(`readerSettings.${packSwitchPath(pack)}`, true);
+        assert.equal(settings.close().ok, true);
+        vn.destroy(); vn = boot();
+        const opened = normalizeReaderSettings(vn.getUnifiedSettings({}).readerSettings);
+        for (const kind of pack.kinds) assert.equal(opened.dailyFx[kind], true, `${kind} 开总开关后应为开`);
+        settings = vn.openSettings({ mode: 'pc' }).controller;
+        settings.setValue('readerSettings.dailyFx.hmselect', false);
+        settings.setValue(`readerSettings.${packSwitchPath(pack)}`, false);
+        assert.equal(settings.close().ok, true);
+        vn.destroy(); vn = boot();
+        const closed = normalizeReaderSettings(vn.getUnifiedSettings({}).readerSettings);
+        assert.equal(closed.dailyFx.hmselect, false, '关总开关不动细项勾选');
+        assert.equal(closed.dailyFx.hmprobe, true, '关总开关保留其余勾选');
+        const camera = getPack('camera');
+        assert.equal(camera.defaultOn, true);
+        settings = vn.openSettings({ mode: 'pc' }).controller;
+        settings.setValue(`readerSettings.${packSwitchPath(camera)}`, false);
+        settings.setValue(`readerSettings.${packSwitchPath(camera)}`, true);
+        assert.equal(settings.close().ok, true);
+        vn.destroy(); vn = boot();
+        const after = normalizeReaderSettings(vn.getUnifiedSettings({}).readerSettings);
+        for (const kind of camera.kinds) assert.equal(after.dailyFx[kind], true, `${kind} defaultOn 通用包关过再开仍默认开`);
     } finally {
         vn.destroy();
     }

@@ -18,7 +18,7 @@ import {
     randomItem,
     stableHash,
 } from './danmaku-pools.js';
-import { liveEconomy, liveUserName, medalLevelBias, planLiveChatter, resolveFanMedal } from './live-chatter.js';
+import { liveEconomy, liveUserName, medalLevelBias, planLiveChatter, planLiveUserFollowups, resolveFanMedal } from './live-chatter.js';
 
 // 「掏出手机」看 B 站竖屏直播：舞台压暗、手机从下方抬起停在画面正中，直播结束时收回。整台手机只有一个驱动计时器：每拍吐一条弹幕（AI 弹幕优先，其余由本地词池补），
 // 顺带推人气、走时钟、飘点赞；隐藏、页面不可见、舞台暂停（面板打开等）时空转不写 DOM。文字一律 textContent，图标只用静态 SVG。
@@ -378,7 +378,7 @@ function planChatterBatch(state) {
     const batch = planLiveChatter({
         title: ch.title, text: ch.text, pageInLive: state.pageInLive, ending: ch.ending, hour: ch.hour, mood: ch.mood,
         aiLines: fresh ? ch.aiLines : [], hostSaid: fresh ? ch.hostSaid : '', userName: ch.userName, hostName: ch.hostName, hostGender: ch.hostGender,
-        tone: ch.tone, tier: ch.tier, emoji: ch.emoji, custom: ch.custom, recentNames: state.recentNames,
+        tone: ch.tone, tier: ch.tier, emoji: ch.emoji, blockHostile: ch.blockHostile, custom: ch.custom, recentNames: state.recentNames,
     }, state.rng);
     const gen = state.chatGen;
     for (const entry of batch) {
@@ -446,7 +446,25 @@ function tick(state) {
         const msg = state.queue.length
             ? (state.rng() < 0.55 ? (ambientMessage(state) || state.queue.shift()) : state.queue.shift())
             : ambientMessage(state);
-        if (msg) renderLiveMessage(state, msg);
+        if (msg) {
+            renderLiveMessage(state, msg);
+            // 用户亲自发出的文字真正上屏后，才走与 AI 弹幕共用的复读、扣1、刷屏等跟风规划。
+            if (msg.mine && (msg.type === 'text' || msg.type === 'sc' || msg.type === 'host')) {
+                const ch = state.chatCtx || {};
+                const gen = state.chatGen;
+                const followups = planLiveUserFollowups(msg.text, {
+                    title: ch.title, text: ch.text, pageInLive: state.pageInLive,
+                    ending: ch.ending, hour: ch.hour, mood: ch.mood,
+                    tone: state.tone, tier: state.tier, emoji: state.emoji,
+                    hostName: state.hostName, hostGender: ch.hostGender, userName: ch.userName,
+                    custom: ch.custom, recentNames: state.recentNames,
+                    blockHostile: ch.blockHostile,
+                }, state.rng);
+                for (const entry of followups) later(state, () => {
+                    if (gen === state.chatGen && state.visible && !state.banned && state.doc.hidden !== true && !isStagePaused(state.els.root)) emitChatter(state, entry);
+                }, Math.max(250, entry.delay));
+            }
+        }
         state.beat += 1;
         bump(state, Math.round((state.rng() - 0.35) * 40));
         // 规模变了：人气平滑过渡到新基数。

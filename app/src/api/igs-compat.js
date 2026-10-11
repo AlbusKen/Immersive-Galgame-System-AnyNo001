@@ -84,6 +84,7 @@ export function createIgsCompatApi(app) {
                 render: refreshed.render,
                 scene: refreshed.scene,
                 startAtEnd: resolved.options.startAtEnd === true,
+                ...(resolved.options.turnOffset != null ? { turnOffset: resolved.options.turnOffset } : {}),
                 ...(resolved.options.skipTitle === true ? { skipTitle: true } : {}),
             };
             const payload = resolved.options.skipImageCollection === true

@@ -10,6 +10,7 @@ export const PACK = {
     label: '镜头与空间',
     when: '场景里有移动、追逐、潜行、抵达、目送、赶路、分屏等需要镜头与空间感的场面时才用（坐下、躺下、起身用 cam 的下沉／升起）',
     era: null,
+    defaultOn: true,
     packSwitch: 'cameraPackFx.enabled',
     settings: normalizeCameraSettings,
     kinds: [...CAMERA_KINDS],

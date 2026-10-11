@@ -46,6 +46,8 @@ export function normalizePack(raw) {
         eraKinds: table(pack.eraKinds),
         worldviewOff: table(pack.worldviewOff),
         requires: typeof pack.requires === 'string' ? pack.requires : '',
+        // 通用演出包（不挑题材）声明 defaultOn：总开关与各 kind 默认开，用户显式关掉才关。
+        defaultOn: pack.defaultOn === true,
         packSwitch: typeof pack.packSwitch === 'string' && SWITCH_RE.test(pack.packSwitch) ? pack.packSwitch : '',
         settings: fn(pack.settings, null),
         allowNsfw: pack.allowNsfw === true,
@@ -110,7 +112,11 @@ export function buildPackRegistry(manifests) {
     const promptLines = merge((pack) => pack.promptLines);
     const settingGroups = Object.fromEntries(active.filter((pack) => pack.packSwitch).map((pack) => {
         const normalize = pack.settings || (() => ({}));
-        return [pack.packSwitch.split('.')[0], (value) => ({ ...normalize(value), enabled: Boolean(value && typeof value === 'object' && value.enabled === true) })];
+        return [pack.packSwitch.split('.')[0], (value) => ({
+            ...normalize(value),
+            enabled: pack.defaultOn ? !(value && typeof value === 'object' && value.enabled === false)
+                : Boolean(value && typeof value === 'object' && value.enabled === true),
+        })];
     }));
     const eraTables = { modern: [], ancient: [] };
     const worldviewOff = {};
@@ -226,7 +232,7 @@ export function packEraTables() {
     return REGISTRY.eraTables;
 }
 
-// 默认的包总开关存在 readerSettings.dailyFx.pack<Id>（如 packAbo），和各 kind 的勾选同级，默认关。
+// 默认的包总开关存在 readerSettings.dailyFx.pack<Id>（如 packAbo），和各 kind 的勾选同级；题材包默认关，清单声明 defaultOn 的通用包默认开。
 export function packSwitchKey(id) {
     const s = String(id);
     return `pack${s.charAt(0).toUpperCase()}${s.slice(1)}`;
@@ -240,6 +246,8 @@ export function packSwitchPath(pack) {
 export function packSwitchOn(pack, readerSettings) {
     const [group, key] = packSwitchPath(pack).split('.');
     const src = readerSettings && readerSettings[group];
+    // defaultOn 的通用包：只有显式写 false 才算关；从未设置过按开处理（normalize 层同口径）。
+    if (pack && pack.defaultOn === true) return !(src && typeof src === 'object' && src[key] === false);
     return Boolean(src && typeof src === 'object' && src[key] === true);
 }
 

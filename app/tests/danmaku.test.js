@@ -699,6 +699,60 @@ test('gate:danmaku:live-full-blank-tap-left-half-goes-prev-right-half-next', asy
     assert.equal(isLiveFullLeftTap(null, 300), false);
 });
 
+test('gate:danmaku:manual-message-triggers-existing-followups-after-display', () => {
+    const { root, motion } = makeRoot();
+    const c = clock();
+    const live = { name: '爱丽丝', title: '杂谈', view: 'watch' };
+    const opts = { schedule: c.schedule, clear: c.clear, now: c.now, rng: () => 0.1, reducedMotion: false, userName: '玩家' };
+    try {
+        applyDanmakuToDom(root, snapshot({ fx: { live } }, { liveFx: { enabled: true, interact: true } }), opts);
+        const ctl = motion.querySelector('.igs-live-ctl');
+        const list = motion.querySelector('.igs-live-list');
+        const shown = [];
+        const append = list.appendChild.bind(list);
+        list.appendChild = (node) => {
+            const body = node.querySelector('.igs-live-text');
+            if (body) shown.push(body.textContent);
+            return append(node);
+        };
+        const field = ctl.querySelector('.igs-live-ctl-compose').querySelector('.igs-live-ctl-field');
+        field.value = '今天天气真好';
+        const send = { getAttribute: () => 'send-text' };
+        for (const fn of ctl.listeners.click) fn({ target: { closest: () => send }, stopPropagation() {} });
+        assert.equal(shown.length, 0, '手动弹幕尚未上屏，不应提前刷跟风');
+        c.run(2200);
+        const first = shown.findIndex((text) => text.includes('今天天气真好'));
+        assert.ok(first >= 0, `手动弹幕正常显示：field=${field.value}, queue=${c.queue.length}, shown=${JSON.stringify(shown.slice(0, 12))}`);
+        assert.ok(shown.slice(first + 1).some((text) => text.includes('今天天气真好')), '观众从已有复读池跟随');
+    } finally {
+        cancelDanmaku(root);
+    }
+});
+
+test('gate:danmaku:visible-nsfw-live-ban-is-once-and-enters-next-generation-only', async () => {
+    const { clearMetaDigest, pendingMetaEvents, beginMetaDigestSend, finishMetaDigestSend } = await import('../src/visual/igs-ui/meta-digest.js');
+    const { resolveLiveDigestRule } = await import('../src/visual/igs-ui/danmaku-interact.js');
+    const { root, motion } = makeRoot();
+    const c = clock();
+    const reader = { liveFx: { enabled: true, muteOnNsfw: false, adminWarn: true, interact: false } };
+    const current = snapshot({ sceneNsfw: true, displayText: '平台已封禁该直播间', fx: { live: { name: '爱丽丝', title: '夜聊', view: 'watch' } } }, reader);
+    clearMetaDigest();
+    try {
+        applyDanmakuToDom(root, current, { schedule: c.schedule, clear: c.clear, now: c.now, rng: () => 0.9, reducedMotion: false });
+        assert.equal(motion.querySelector('.igs-live-phone').getAttribute('data-banned'), '1');
+        assert.equal(pendingMetaEvents().filter((e) => e.kind === 'ban').length, 1);
+        assert.match(resolveLiveDigestRule(reader), /下一段正文明确写出「该直播间已被封禁」/);
+        applyDanmakuToDom(root, current, { schedule: c.schedule, clear: c.clear, now: c.now, rng: () => 0.9, reducedMotion: false });
+        assert.equal(pendingMetaEvents().filter((e) => e.kind === 'ban').length, 1, '同页重绘不重复记录');
+        beginMetaDigestSend();
+        finishMetaDigestSend();
+        assert.equal(resolveLiveDigestRule(reader), '', '送出后下一轮不反复写封禁');
+    } finally {
+        cancelDanmaku(root);
+        clearMetaDigest();
+    }
+});
+
 test('gate:danmaku:live-warning-card-cooldown-and-ban-persist-until-new-live', async () => {
     const { syncLivePhone, triggerLiveWarning } = await import('../src/visual/igs-ui/danmaku-live.js');
     const { root, motion, doc } = makeRoot();

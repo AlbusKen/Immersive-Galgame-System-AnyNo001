@@ -21,6 +21,7 @@ import { VN_THEME_PRESETS } from './reader-host-constants.js';
 import { cloneData } from './reader-value-utils.js';
 import { attachSettingsViewportEvents, clearChildren, detachSettingsViewportEvents, ensureStyleTag, getRootDocument, unmountNode } from './reader-dom-utils.js';
 import { getPath, normalizeReaderMode, normalizeSettingsValue, setPath } from './settings-normalize.js';
+import { FX_PACKS_ACTIVE, packSwitchPath } from '../../scene/fx-packs.js';
 import { handleSettingsAction as runSettingsAction, releasedGeneratedImageIds } from './settings-actions.js';
 import { SETTINGS_NOTICE_MS, describeSettingsFailure, markSettingsButtonBusy, remountSettingsNotice, remountSettingsProgress, settingsBusyLabel } from './settings-notice.js';
 import { createSettingsDialogs } from './settings-dialog.js';
@@ -301,6 +302,11 @@ export function createSettingsHost(deps) {
         }
 
         setPath(draft, path, normalizeSettingsValue(path, value));
+        // 题材包总开关打开时，该包全部细项一起开（defaultOn 通用包的细项本来就默认开，不再逐个写脏草稿）；关掉时细项原样保留。
+        if (value === true && path.startsWith('readerSettings.')) {
+            const pack = FX_PACKS_ACTIVE.find((p) => !p.defaultOn && `readerSettings.${packSwitchPath(p)}` === path);
+            if (pack) for (const kind of pack.kinds) setPath(draft, `readerSettings.dailyFx.${kind}`, true);
+        }
         // 台词朗读与角色语气音二选一：打开一个就关掉另一个。
         if (value === true && (path === 'readerSettings.tts.enabled' || path === 'readerSettings.voiceBark.enabled')) {
             setPath(draft, path === 'readerSettings.tts.enabled' ? 'readerSettings.voiceBark.enabled' : 'readerSettings.tts.enabled', false);

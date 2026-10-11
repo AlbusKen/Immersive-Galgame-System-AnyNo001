@@ -53,13 +53,15 @@ test('gate:fx-pack-beats manifest registers every kind with label, trigger words
     assert.deepEqual(Object.keys(PACK.builders).sort(), [...KINDS].sort());
 });
 
-test('gate:fx-pack-beats kinds flow into the central tables and stay opt-in', () => {
+test('gate:fx-pack-beats kinds flow into the central tables and default on', () => {
     for (const kind of KINDS) {
         assert.ok(DAILY_FX_KINDS.includes(kind), `${kind} 应并入日常 kind`);
         assert.equal(DAILY_FX_LABELS[kind], PACK.labels[kind]);
-        assert.equal(normalizeDailyFxSettings({ enabled: true })[kind], false, `${kind} 应默认关`);
-        assert.equal(normalizeDailyFxSettings({ enabled: true, [kind]: true })[kind], true);
+        // 戏剧节拍是通用演出包（defaultOn）：各 kind 默认开，显式写 false 才关。
+        assert.equal(normalizeDailyFxSettings({ enabled: true })[kind], true, `${kind} 应默认开`);
+        assert.equal(normalizeDailyFxSettings({ enabled: true, [kind]: false })[kind], false, `${kind} 显式关仍为关`);
     }
+    assert.equal(PACK.defaultOn, true);
 });
 
 test('gate:fx-pack-beats tags parse leniently and round-trip through the daily pipeline', () => {

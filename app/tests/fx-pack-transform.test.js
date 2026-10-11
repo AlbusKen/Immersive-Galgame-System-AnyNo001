@@ -56,10 +56,12 @@ test('gate:fx-pack-transform registers every kind with label, 2-4 triggers, prom
     }
 });
 
-test('gate:fx-pack-transform kinds are opt-in and the pack is off by default', () => {
+test('gate:fx-pack-transform kinds are default-on like the pack', () => {
     const settings = normalizeDailyFxSettings({ enabled: true });
-    for (const kind of XF_KINDS) assert.equal(settings[kind], false, kind);
+    // 立绘变形是通用演出包（defaultOn）：总开关与各 kind 默认开，显式写 false 才关。
+    for (const kind of XF_KINDS) assert.equal(settings[kind], true, kind);
     assert.equal(PACK.id, 'transform');
+    assert.equal(PACK.defaultOn, true);
 });
 
 test('gate:fx-pack-transform only the mythic four are ancient, the rest are era-free', () => {

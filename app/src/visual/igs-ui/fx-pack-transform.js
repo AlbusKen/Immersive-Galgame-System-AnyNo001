@@ -52,6 +52,7 @@ export const PACK = {
     label: '立绘变形',
     when: '角色形象被镜子、玻璃、屏幕映出或发生变形时才用',
     era: null,
+    defaultOn: true,
     eraKinds: { spirit: 'ancient', shift: 'ancient', tails: 'ancient', truemirror: 'ancient' },
     kinds: [...XF_KINDS],
     labels,

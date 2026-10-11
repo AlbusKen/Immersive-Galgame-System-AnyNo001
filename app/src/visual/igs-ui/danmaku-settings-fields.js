@@ -33,6 +33,7 @@ export function renderDanmakuFields(reader, more = collapsible, { liveBlocked = 
         + field(`${p}.liveFx.fullText`, '全屏台词', segmentedInput(`${p}.liveFx.fullText`, s.live.fullText, [['subtitle', '字幕'], ['dialog', '对话框']], '全屏直播台词'))
         + field(`${p}.liveFx.narrationPos`, '旁白位置', segmentedInput(`${p}.liveFx.narrationPos`, s.live.narrationPos, [['above', '字幕上方'], ['name', '名牌下方'], ['dialog', '对话框']], '全屏直播旁白位置'))
         + checkbox(`${p}.liveFx.faceGuard`, s.live.faceGuard, '弹幕防挡脸')
+        + checkbox(`${p}.liveFx.blockHostile`, s.live.blockHostile, '屏蔽内置攻击性弹幕')
         + checkbox(`${p}.liveFx.adminWarn`, s.live.adminWarn, '超管警告演出')
         + checkbox(`${p}.liveFx.emoji`, s.live.emoji, '路人弹幕带表情')
         + field(`${p}.liveFx.fanMedals`, '粉丝牌名', textareaInput(`${p}.liveFx.fanMedals`, Object.entries(s.live.fanMedals).map(([name, medal]) => `${name}=${medal}`).join('\n'), '一行一个：主播=牌名；留空按剧情或自动取名'))

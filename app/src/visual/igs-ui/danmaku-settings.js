@@ -83,6 +83,8 @@ export function normalizeLiveFxSettings(value) {
         narrationPos: pick(LIVE_NARRATION_POSITIONS, src.narrationPos, 'above'),
         // 弹幕防挡脸：横飞弹幕层在主播脸部挖一个柔边洞（默认开）。
         faceGuard: src.faceGuard !== false,
+        // 仅屏蔽内置路人词池中的攻击性弹幕；AI 与用户自定义弹幕不受影响。
+        blockHostile: src.blockHostile === true,
         // 超管警告演出：直播里出现超管警告 / 封禁时的卡片与关停画面（默认开）。
         adminWarn: src.adminWarn !== false,
         // 路人弹幕带表情（默认开）；自定义路人弹幕按场合 / 身份分组、一行一条；粉丝牌名按主播存（主播=牌名）。
