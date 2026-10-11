@@ -1819,6 +1819,27 @@ test('gate:simulation:stage-cast-shows-recent-speakers', async () => {
     mobile.vn.destroy();
 });
 
+test('gate:simulation:stage-cast-pronoun-departure-keeps-other-sprites', async () => {
+    const characters = {
+        苏念: { 默认: 'https://example.com/su.png' },
+        李伯: { 默认: 'https://example.com/li.png' },
+        司徒言: { 默认: 'https://example.com/si.png' },
+    };
+    const r = await openStageCastReader({ characters, lines: [
+        '[igs-scene:书房|夜晚|晴天]',
+        '[igs-char:苏念|平和|我留在这里。]',
+        '[igs-char:李伯|平和|我也在。]',
+        '[igs-char:司徒言|平和|先走了。]',
+        '门外响起雨声。他转身走了。',
+    ] });
+    try {
+        assert.equal(r.snap.content.textType, 'narration');
+        assert.ok(!r.snap.content.spriteImage, '离场者自己的立绘已收起');
+        assert.deepEqual(r.snap.content.castSprites.map((m) => m.character).sort(), ['李伯', '苏念']);
+        assert.deepEqual(r.castEls.map((el) => el.getAttribute('data-igs-cast-char')).sort(), ['李伯', '苏念']);
+    } finally { r.vn.destroy(); }
+});
+
 test('gate:simulation:sprite-enhance-default-off-and-cast-filters', async () => {
     const style = getOriginalReaderStyleText();
     assert.match(style, /#igs-sprite:not\(\.igs-sprite-editing\)[^}]*var\(--igs-sprite-enhance,\)/);

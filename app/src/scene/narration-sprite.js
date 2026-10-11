@@ -82,7 +82,10 @@ function presenceOf(pages, names, others) {
             for (const event of eventsOf(sentence, marks, prevMixed)) {
                 if (event.type === 'leave') { gone = true; back = -1; } else if (gone) { gone = false; back = index; }
             }
-            prevMixed = marks.some((m) => m.kind === 'other');
+            // 无人称的旁白不改变最近明确提到的人；否则后一句「他走了」会被每位同屏陪衬各自认领。
+            if (marks.some((m) => m.kind === 'own' || m.kind === 'other')) {
+                prevMixed = marks.some((m) => m.kind === 'other');
+            }
         }
     });
     return { gone, back };

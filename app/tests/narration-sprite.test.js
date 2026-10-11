@@ -73,6 +73,18 @@ test('narration-sprite: 同屏陪衬被正文写走', () => {
     assert.equal(narrationCastLeft({ name: '李伯', others: ['苏念'], text: '李伯退下了。过了会儿李伯又回来了。' }), false);
 });
 
+test('gate: narration-sprite: 同屏转身走了仅清最近说话人，空白旁白不重置指代', () => {
+    const narration = '门外响起雨声。他转身走了。';
+    const cara = '[igs-char:司徒言|平和|好。]\n';
+    const bob = '[igs-char:李伯|平和|知道了。]\n';
+    assert.equal(narrationCastLeft({ name: '苏念', others: ['李伯', '司徒言'], text: bob + cara + narration }), false);
+    assert.equal(narrationCastLeft({ name: '李伯', others: ['苏念', '司徒言'], text: cara + narration }), false);
+    assert.equal(narrationCastLeft({ name: '司徒言', others: ['苏念', '李伯'], text: narration }), true);
+    // 明确写名的离场仍然单独生效，回来后又上场。
+    assert.equal(narrationCastLeft({ name: '李伯', others: ['苏念', '司徒言'], text: cara + '李伯转身走了。' }), true);
+    assert.equal(narrationCastLeft({ name: '李伯', others: ['苏念', '司徒言'], text: cara + '李伯转身走了。李伯又回来了。' }), false);
+});
+
 test('narration-sprite: otherNamesOf 排除自己并带别名', () => {
     const names = otherNamesOf({ 苏念: {}, 司徒言: {} }, { 司徒言: ['阿言'] }, '苏念', ['玩家']);
     assert.deepEqual(names.sort(), ['司徒言', '徒言', '玩家', '阿言'].sort());
