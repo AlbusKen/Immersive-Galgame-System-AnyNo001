@@ -1016,6 +1016,26 @@ test('gate:igs-ui:default-narration-adds-five-pixels-in-every-mode', () => {
     assert.match(rendererText, /dialog\.removeAttribute\('data-igs-narration'\)/);
 });
 
+test('gate:igs-ui:reader-style-has-no-unclosed-rule', () => {
+    // 普通规则里再出现「{」说明上一条没闭合，后面整段样式会失效（下课铃图标曾因此铺成满屏黑块）。
+    const css = getOriginalReaderStyleText().replace(/\/\*[\s\S]*?\*\//g, '');
+    const stack = [];
+    let last = 0;
+    for (let i = 0; i < css.length; i += 1) {
+        if (css[i] === '{') {
+            const head = css.slice(last, i).trim();
+            if (stack.length && !stack[stack.length - 1].startsWith('@')) assert.fail(`未闭合的规则：${stack[stack.length - 1].slice(-80)}`);
+            stack.push(head);
+            last = i + 1;
+        } else if (css[i] === '}') {
+            assert.ok(stack.length, `多余的右括号，位置 ${i}`);
+            stack.pop();
+            last = i + 1;
+        } else if (css[i] === ';' && stack.length && stack[stack.length - 1].startsWith('@')) last = i + 1;
+    }
+    assert.equal(stack.length, 0);
+});
+
 test('gate:igs-ui:double-click-hides-chrome-and-keeps-cg-and-fx', () => {
     const source = getOriginalReaderStyleText();
     const rule = source.match(/#igs-overlay\[data-igs-cg-only="1"\] :is\(([^)]+)\)/);

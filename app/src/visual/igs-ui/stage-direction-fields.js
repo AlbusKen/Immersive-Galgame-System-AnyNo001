@@ -56,7 +56,7 @@ function renderStageFields(s, more) {
     const turn = featureRow(more, 'sprite-turn', `${P}.stageCast.castStage`, s.stageCast.castStage, '立绘转身与走位', '单人立绘也能背对、回眸、甩头离开（不必开多角色同屏）', checkbox(`${P}.stageCast.backHint`, s.stageCast.backHint, '背影时对话框旁提示'));
     const cgOn = CG_INTERLUDE_STYLES.some((id) => s.cgEntrance.styles[id]);
     const nsfwOn = s.cgEntrance.nsfw !== 'off';
-    const cgEntrance = perfItem(more, 'cg-interlude', '<span class="igs-perf-item-label">过场CG出场</span>', { hint: cgOn ? '勾选的效果每次随机抽' : '全不勾即关闭', detail: grid(
+    const cgEntrance = perfItem(more, 'cg-interlude', `<button type="button" class="igs-switch${cgOn ? ' is-on' : ''}" data-action="cg-entrance-all:${cgOn ? 'off' : 'on'}" aria-pressed="${cgOn ? 'true' : 'false'}"><i></i><span>过场CG出场</span></button>`, { on: cgOn, hint: cgOn ? '勾选的效果每次随机抽' : '全不勾即关闭', detail: grid(
         CG_INTERLUDE_STYLES.map((id) => checkbox(`${P}.cgEntrance.styles.${id}`, s.cgEntrance.styles[id], CG_INTERLUDE_LABELS[id])).join('')) })
         + perfItem(more, 'cg-nsfw', `<button type="button" class="igs-switch${nsfwOn ? ' is-on' : ''}" data-segment-path="${P}.cgEntrance.nsfw" data-segment-value="${nsfwOn ? 'off' : 'medium'}" aria-pressed="${nsfwOn ? 'true' : 'false'}"><i></i><span>NSFW模糊到清晰</span></button>`,
             { on: nsfwOn, hint: 'CG由糊变清', detail: segmentedInput(`${P}.cgEntrance.nsfw`, s.cgEntrance.nsfw, [['fast', '快'], ['medium', '中'], ['slow', '慢']], 'NSFW模糊速度') });

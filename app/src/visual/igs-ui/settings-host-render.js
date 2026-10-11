@@ -564,10 +564,8 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
                 promptAdvanced: `<details class="igs-settings-sub igs-settings-advanced" data-advanced="prompt-injection"${advancedOpen('prompt-injection')}><summary>高级：全局注入位置</summary>`
                     + field('bridge.sceneAssets.promptPlacement', '注入位置', selectInput('bridge.sceneAssets.promptPlacement', normalizePromptPlacement(sceneAssets.promptPlacement), [['system', '系统说明区'], ['depth0', '聊天末尾']]),
                         '如AI未按标签输出，可改回聊天末尾。每条演出写法可单独指定位置。')
-                    + checkbox('bridge.sceneAssets.promptAdaptive', sceneAssets.promptAdaptive !== false, '按需注入')
-                    + '<div class="igs-source-filter-note">仅在需要时附上完整说明。</div>'
+                    // 按需注入（promptAdaptive）不再公开：配置键与已存值保留，默认仍为开。
                     + '</details>'
-                    + (sceneAssets.promptAdaptive === false ? '<div class="igs-source-filter-note">按需注入已关闭：关键词和位置不生效，正文仍有效。</div>' : '')
                     + renderPromptEntryFields(sceneAssets, { reader: draft.readerSettings, report: getLastPromptReport(), isOpen: isOpenKey }),
                 get wardrobeSection() { return checkbox('bridge.sceneAssets.wardrobeAutoFlow', sceneAssets.wardrobeAutoFlow !== false, '自动流程（新建后自动写提示词、生成参考图）')
                     + (idx ? '' : renderWardrobe(scopedEntries('wardrobe'), { resolveUrl: resolveGenerated, scopeTag, focus: asyncState.wardrobeFocus || '', lead: scopeFilterBar('wardrobe') })); },

@@ -53,3 +53,38 @@ test('every registered pack kind has a builder', () => {
     }
     assert.deepEqual(noBuilder, []);
 });
+
+// 题材包总开关：在设置里打开、关闭设置后重新启动，读回来仍为开（存档与 normalize 都不能把它丢掉或重置）。
+test('gate:fx-packs:pack-switch-survives-close-and-reload', async () => {
+    const { bootstrapIGS, createMemoryStorage } = await import('../src/index.js');
+    const { FX_PACKS_ACTIVE, packSwitchPath } = await import('../src/scene/fx-packs.js');
+    const { normalizeReaderSettings } = await import('../src/visual/igs-ui/settings-host-normalize.js');
+    const storage = createMemoryStorage();
+    const boot = () => bootstrapIGS({ global: { localStorage: storage }, autoAttachMagicWand: false, tavernSettingsSync: false, hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
+    const paths = FX_PACKS_ACTIVE.map((pack) => `readerSettings.${packSwitchPath(pack)}`);
+    const valueAt = (obj, path) => path.split('.').reduce((node, key) => (node && typeof node === 'object' ? node[key] : undefined), obj);
+    let vn = boot();
+    let settings = vn.openSettings({ mode: 'pc' }).controller;
+    for (const path of paths) settings.toggle(path);
+    assert.equal(settings.close().ok, true);
+    vn.destroy();
+    vn = boot();
+    try {
+        const unified = vn.getUnifiedSettings({});
+        const normalized = { readerSettings: normalizeReaderSettings(unified.readerSettings) };
+        for (const path of paths) {
+            assert.equal(valueAt(unified, path), true, `${path} 存档后应为开`);
+            assert.equal(valueAt(normalized, path), true, `${path} normalize 后应为开`);
+        }
+        settings = vn.openSettings({ mode: 'pc' }).controller;
+        settings.goToPath(paths[0]);
+        for (const path of paths) {
+            const html = settings.getSnapshot().html;
+            if (!html.includes(`data-switch="${path}"`)) settings.goToPath(path);
+            assert.match(settings.getSnapshot().html, new RegExp(`data-switch="${path.replace(/\./g, '\.')}" aria-pressed="true"`), `${path} 重新打开设置后应显示为开`);
+        }
+        settings.close();
+    } finally {
+        vn.destroy();
+    }
+});

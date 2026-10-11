@@ -97,10 +97,11 @@ const CLOCK_TICKS = Array.from({ length: 12 }, (_, i) => {
     const r1 = i % 3 === 0 ? 34 : 37;
     return `<line x1="${(50 + Math.sin(a) * r1).toFixed(1)}" y1="${(50 - Math.cos(a) * r1).toFixed(1)}" x2="${(50 + Math.sin(a) * 41).toFixed(1)}" y2="${(50 - Math.cos(a) * 41).toFixed(1)}"/>`;
 }).join('');
-const CLOCK_SVG = `<svg viewBox="0 0 100 100" aria-hidden="true"><circle class="igs-dfx-clock-face" cx="50" cy="50" r="45"/><g class="igs-dfx-clock-ticks">${CLOCK_TICKS}</g><line class="igs-dfx-clock-h" x1="50" y1="50" x2="50" y2="29"/><line class="igs-dfx-clock-m" x1="50" y1="50" x2="50" y2="15"/><circle class="igs-dfx-clock-pin" cx="50" cy="50" r="3"/></svg>`;
-const BELL_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a1.4 1.4 0 0 1 1.4 1.4v.5A6 6 0 0 1 18 10.8v3.6l1.6 2.3a.8.8 0 0 1-.7 1.3H5.1a.8.8 0 0 1-.7-1.3L6 14.4v-3.6a6 6 0 0 1 4.6-5.9v-.5A1.4 1.4 0 0 1 12 3Z"/><path d="M9.8 19.2a2.2 2.2 0 0 0 4.4 0Z"/></svg>';
-const SPEAKER_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path class="igs-dfx-spk-body" d="M3 9.5h3.6L11 5.6v12.8l-4.4-3.9H3z"/><path class="igs-dfx-spk-w1" d="M14.2 9.2a4 4 0 0 1 0 5.6"/><path class="igs-dfx-spk-w2" d="M16.8 6.8a7.4 7.4 0 0 1 0 10.4"/></svg>';
-const HEART_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3 4.6 13a4.7 4.7 0 0 1 6.6-6.7l.8.8.8-.8A4.7 4.7 0 0 1 19.4 13Z"/></svg>';
+// 内联图标自带 24px 兜底尺寸：样式表万一失效也只是一枚小图标，不会按 100% 铺满画面。
+const CLOCK_SVG = `<svg viewBox="0 0 100 100" width="24" height="24" aria-hidden="true"><circle class="igs-dfx-clock-face" cx="50" cy="50" r="45"/><g class="igs-dfx-clock-ticks">${CLOCK_TICKS}</g><line class="igs-dfx-clock-h" x1="50" y1="50" x2="50" y2="29"/><line class="igs-dfx-clock-m" x1="50" y1="50" x2="50" y2="15"/><circle class="igs-dfx-clock-pin" cx="50" cy="50" r="3"/></svg>`;
+const BELL_SVG = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 3a1.4 1.4 0 0 1 1.4 1.4v.5A6 6 0 0 1 18 10.8v3.6l1.6 2.3a.8.8 0 0 1-.7 1.3H5.1a.8.8 0 0 1-.7-1.3L6 14.4v-3.6a6 6 0 0 1 4.6-5.9v-.5A1.4 1.4 0 0 1 12 3Z"/><path d="M9.8 19.2a2.2 2.2 0 0 0 4.4 0Z"/></svg>';
+const SPEAKER_SVG = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path class="igs-dfx-spk-body" d="M3 9.5h3.6L11 5.6v12.8l-4.4-3.9H3z"/><path class="igs-dfx-spk-w1" d="M14.2 9.2a4 4 0 0 1 0 5.6"/><path class="igs-dfx-spk-w2" d="M16.8 6.8a7.4 7.4 0 0 1 0 10.4"/></svg>';
+const HEART_SVG = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M12 20.3 4.6 13a4.7 4.7 0 0 1 6.6-6.7l.8.8.8-.8A4.7 4.7 0 0 1 19.4 13Z"/></svg>';
 
 function omikujiTone(result) {
     if (result === '大吉') return 'great';
@@ -238,7 +239,7 @@ function ticketLabel(item, vehicle) {
 const HOURGLASS_HTML = '<div class="igs-dfx-hourglass"><i class="igs-dfx-hg-cap"></i><div class="igs-dfx-hg-glass"><i class="igs-dfx-hg-sand is-top"></i><i class="igs-dfx-hg-stream"></i><i class="igs-dfx-hg-sand is-bottom"></i></div><i class="igs-dfx-hg-cap"></i></div>';
 const OWL_SVG = '<svg class="igs-dfx-owl-bird" viewBox="0 0 64 48" aria-hidden="true"><path class="igs-dfx-owl-wing is-left" d="M28 22C18 8 6 9 0 17c10 1 17 7 26 13Z"/><path class="igs-dfx-owl-wing is-right" d="M36 22C46 8 58 9 64 17c-10 1-17 7-26 13Z"/><path d="M24 20l2-8 4 5h4l4-5 2 8c2 10-2 20-8 22-6-2-10-12-8-22Z"/><circle cx="29" cy="21" r="2.2" fill="#ffd46a"/><circle cx="35" cy="21" r="2.2" fill="#ffd46a"/></svg>';
 const BROOM_SVG = '<svg class="igs-dfx-broom-stick" viewBox="0 0 120 30" aria-hidden="true"><path d="M4 13 82 15" stroke="#6b4423" stroke-width="3.5" stroke-linecap="round"/><path d="M80 10 118 2l-4 13 4 13-38-8Z" fill="#c9a25a"/><path d="M80 9v12" stroke="#4a2e14" stroke-width="3"/></svg>';
-const HAND_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V6.5a1.5 1.5 0 0 1 3 0V10h.5V4.5a1.5 1.5 0 0 1 3 0V10h.5V5.5a1.5 1.5 0 0 1 3 0V11h.5V8.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1.5A6.5 6.5 0 0 1 7 14.5Z"/></svg>';
+const HAND_SVG = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M7 11V6.5a1.5 1.5 0 0 1 3 0V10h.5V4.5a1.5 1.5 0 0 1 3 0V10h.5V5.5a1.5 1.5 0 0 1 3 0V11h.5V8.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1.5A6.5 6.5 0 0 1 7 14.5Z"/></svg>';
 
 // 每个构建器返回 { node, life, layer: 'front' | 'stage', sounds: [...] }。
 // env.ancient 为古代背景：时间跳跃换成一炷香 + 更鼓，便签换成对折字条，信件换成竖排信笺 + 落款小印，

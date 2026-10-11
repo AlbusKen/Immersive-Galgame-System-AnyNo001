@@ -7,7 +7,7 @@ import { VARIETY_GRAMMAR_LINES, VARIETY_KINDS, VARIETY_LABELS, VARIETY_PROMPT_LI
 
 export const PACK = {
     id: 'variety',
-    label: '恋综',
+    label: '恋爱综艺',
     when: '恋爱综艺的录制场面（小屋、观察室、采访间、告白之夜）出现时才用',
     era: 'modern',
     kinds: VARIETY_KINDS,

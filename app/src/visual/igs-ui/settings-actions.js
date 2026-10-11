@@ -3,6 +3,7 @@ import { DEFAULT_VIRTUAL_REGEX } from '../../scene/message-source.js';
 import { pendingExpressionCaptions } from './settings-outfit-fields.js';
 import { cloneData } from './reader-value-utils.js';
 import { normalizeDialogBarButtons } from './settings-normalize.js';
+import { CG_INTERLUDE_STYLES } from './stage-direction-settings.js';
 import { DEFAULT_SCENE_PROMPT_RULE, normalizeScenePromptRule, TOOLBAR_ACTIONS } from './reader-host-constants.js';
 import { buildTagGrammar } from './tag-grammar.js';
 import { firstMoodWord, resolvePromptRuleContent, scenePromptRuleEnabled } from '../../scene/prompt-rule-content.js';
@@ -3819,6 +3820,16 @@ export async function handleSettingsAction(action, ctx) {
         const key = `char-dna:${decodeSeg(normalizedAction.slice('scene-toggle-dna:'.length))}`;
         const open = settingsState.asyncState.advancedOpen || {};
         settingsState.asyncState.advancedOpen = { ...open, [key]: !open[key] };
+        return rerenderSettings();
+    }
+
+    // 过场CG出场总开关：把全部出场效果一起勾上或取消（配置仍是各效果的勾选，全不勾即关闭）。
+    if (normalizedAction.startsWith('cg-entrance-all:')) {
+        const on = normalizedAction.slice('cg-entrance-all:'.length) === 'on';
+        const entrance = settingsState.draft.readerSettings.cgEntrance || {};
+        settingsState.draft.readerSettings.cgEntrance = { ...entrance, styles: Object.fromEntries(CG_INTERLUDE_STYLES.map((id) => [id, on])) };
+        const persisted = persistSettingsDraft();
+        if (persisted.ok === false) return persisted;
         return rerenderSettings();
     }
 

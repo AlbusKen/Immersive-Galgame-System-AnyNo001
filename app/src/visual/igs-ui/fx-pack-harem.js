@@ -11,7 +11,7 @@ const KINDS = Object.freeze(['hmrank', 'hmfavor', 'hmboard', 'hmflip', 'hmselect
 
 export const PACK = {
     id: 'harem',
-    label: '后宫妃子',
+    label: '宫廷',
     when: '宫廷后宫里发生晋封、侍寝、请安、赏罚、验毒等场面时才用；宫宴献艺不另立标签，直接用 dance / guqin',
     era: 'ancient',
     kinds: KINDS,

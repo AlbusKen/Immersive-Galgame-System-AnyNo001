@@ -1,4 +1,4 @@
-import { normalizePromptEntries, parsePromptKeywords, PROMPT_ENTRY_DEPTH_MAX, PROMPT_ENTRY_KEYS, PROMPT_ENTRY_LABELS, PROMPT_POSITION_LABELS } from '../../scene/prompt-entries.js';
+import { normalizePromptEntries, PROMPT_ENTRY_DEPTH_MAX, PROMPT_ENTRY_KEYS, PROMPT_ENTRY_LABELS, PROMPT_POSITION_LABELS } from '../../scene/prompt-entries.js';
 import { defaultPromptKeywords, describePromptTrigger } from '../../scene/prompt-triggers.js';
 import { esc } from './reader-value-utils.js';
 import { FX_PROMPT_KEYS, normalizeFxPromptsSettings } from './fx-settings.js';
@@ -26,15 +26,43 @@ function globalLabel(sceneAssets) {
     return sceneAssets && sceneAssets.promptPlacement === 'depth0' ? PROMPT_POSITION_LABELS.depth0 : PROMPT_POSITION_LABELS.system;
 }
 
-function positionLabel(entry, fallback) {
-    if (!entry.position) return fallback;
-    return entry.position === 'depth' ? `${PROMPT_POSITION_LABELS.depth} @D${entry.depth}` : PROMPT_POSITION_LABELS[entry.position];
-}
+// 每条规则下方的小字：用几个关键词点明用途。关键词、位置等仍在展开后的编辑区里查看与修改。
+const ENTRY_PURPOSES = Object.freeze({
+    chat: '消息 · 群聊 · 语音',
+    daily: '做饭 · 拍照 · 散步',
+    wardrobe: '换装 · 登场',
+    play: '猜拳 · 抽卡 · 对局',
+    courtesy: '礼让 · 递物',
+    campus: '课堂 · 社团 · 考试',
+    battle: '攻击 · 受击 · 技能',
+    romance: '暧昧 · 心动 · 氛围',
+    live: '直播 · 弹幕 · 礼物',
+    feed: '帖子 · 评论 · 舆论',
+    camera: '推近 · 拉远 · 倾斜',
+    fx: '来电 · 闪回 · 梦境',
+    item: '获得 · 使用 · 展示',
+    bgm: '情绪配乐',
+    cast: '同屏站位',
+    audience: '旁观反应',
+    text: '强调 · 颤抖 · 渐隐',
+    bilingual: '原文 · 译文',
+    dlc: '扩展提供',
+    packtransform: '镜像 · 变形',
+    packbeats: '揭晓 · 公告 · 重逢',
+    packfestival: '婚礼 · 生日 · 节庆',
+    packvariety: '小屋 · 观察室 · 告白',
+    packharem: '晋封 · 侍寝 · 请安',
+    packabo: '信息素 · 标记 · 发情期',
+    packmyth: '封神 · 志怪 · 降妖',
+    packnsfw: '亲密阶段',
+    packcoc: '检定 · 副本 · 推理',
+    packplaces: '电梯 · 演唱会 · 竞技场',
+    packidol: '打歌 · 应援 · 选秀',
+    packcamera: '移动 · 追逐 · 潜行',
+});
 
-function triggerSummary(key, entry) {
-    if (entry.mode === 'always') return '常驻';
-    const words = parsePromptKeywords(entry.keys || defaultPromptKeywords(key));
-    return words.length ? `关键词 ${words.slice(0, 2).join('、')}${words.length > 2 ? '…' : ''}` : '关键词';
+function entryPurpose(key, name) {
+    return ENTRY_PURPOSES[key] || (name || '');
 }
 
 function lastLine(item) {
@@ -67,9 +95,8 @@ function entryRow(key, entry, ctx) {
     const available = Boolean(text);
     // 功能没开、又没改过设置的条目不列出，免得列表里全是用不到的行。
     if (!available && entry.mode === 'auto' && !entry.keys && !entry.position && !entry.text) return '';
-    const hint = entry.mode === 'off' ? '已关闭'
-        : !available ? '功能未开启'
-            : `${triggerSummary(key, entry)} · ${positionLabel(entry, fallbackPos)}`;
+    const purpose = entryPurpose(key, PROMPT_ENTRY_LABELS[key]);
+    const hint = entry.mode === 'off' ? `已关闭 · ${purpose}` : !available ? `功能未开启 · ${purpose}` : purpose;
     let body = '';
     if (open) {
         const off = entry.mode === 'off';
@@ -90,7 +117,7 @@ function fixedRow(key, ctx) {
     const { builtin, fx, open } = ctx;
     const text = fx[key] || builtin[key] || '';
     if (!text) return '';
-    return rowShell(key, FX_PROMPT_LABELS[key], '随功能开关发送', open, open ? bodyField(key, FX_PROMPT_LABELS[key], text, false, builtin[key]) : '');
+    return rowShell(key, FX_PROMPT_LABELS[key], entryPurpose(key, FX_PROMPT_LABELS[key]), open, open ? bodyField(key, FX_PROMPT_LABELS[key], text, false, builtin[key]) : '');
 }
 
 // reader 为当前设置里的 readerSettings（取内置写法与总开关）；report 为最近一次注入的情况；isOpen(key) 判断某行是否展开。
@@ -104,7 +131,7 @@ export function renderPromptEntryFields(sceneAssets, { reader = {}, report = nul
     const rows = PROMPT_ENTRY_KEYS.map((key) => entryRow(key, entries[key], { ...ctx, open: open(key) })).join('');
     const fixed = FIXED_KEYS.map((key) => fixedRow(key, { ...ctx, open: open(key) })).join('');
     // 两个开关并排一行，写法（详细 / 精简）放在开关下面，不把两个开关隔开。
-    const head = `<div class="igs-settings-row igs-switch-stack">${checkbox(`${FX}.inject`, fx.inject, '把演出写法发给AI')}${checkbox(`${FX}.resident`, fx.resident, '全量常驻（更耗费用，默认关）')}</div>`
+    const head = `<div class="igs-settings-row igs-switch-stack">${checkbox(`${FX}.inject`, fx.inject, '使用内置演出规则')}${checkbox(`${FX}.resident`, fx.resident, '全量常驻（更耗费用，默认关）')}</div>`
         + field(`${FX}.style`, '写法', segmentedInput(`${FX}.style`, fx.style, [['detailed', '详细'], ['compact', '精简']], '写法'))
         + '<div class="igs-settings-row"><button type="button" class="igs-settings-action" data-action="fx-prompts-copy-all">复制全部</button></div>';
     return '<div class="igs-source-filter-title">演出写法</div>'

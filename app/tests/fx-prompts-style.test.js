@@ -108,7 +108,9 @@ test('gate:fx-prompts:rules-page-rows-follow-feature-switches', () => {
     assert.doesNotMatch(html, /promptEntries\.battle\.depth"/);
     const deep = renderPromptEntryFields({ promptEntries: { battle: { position: 'depth', depth: 6 } } }, { reader: EVERYTHING, isOpen: open });
     assert.match(deep, /promptEntries\.battle\.depth"/);
-    assert.match(deep, /指定深度 @D6/);
+    // 行下小字是规则用途，不再列关键词与注入位置（这些在展开的编辑区里改）。
+    assert.match(deep, /igs-perf-item-hint">攻击 · 受击 · 技能/);
+    assert.doesNotMatch(deep, /@D6|关键词 /);
     // 固定写法随功能开关增减；改过的框关掉功能也留着，方便清空。
     const fewer = renderPromptEntryFields({}, { reader: { ...EVERYTHING, itemFx: { enabled: false } }, isOpen: open });
     assert.doesNotMatch(fewer, /data-path="readerSettings\.fxPrompts\.item"/);

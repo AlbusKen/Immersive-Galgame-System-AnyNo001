@@ -1,7 +1,7 @@
 import { esc } from './reader-value-utils.js';
 import { collapsible, perfItem, renderFxFeatureFields } from './fx-settings-fields.js';
 import { renderStageDirectionFields } from './stage-direction-fields.js';
-import { renderPackFields } from './fx-pack-fields.js';
+import { renderPackFields, renderPackSoundField, renderPanelSkinField } from './fx-pack-fields.js';
 import { renderRomanceFxFields } from './romance-fields.js';
 import { renderDanmakuFields } from './danmaku-settings-fields.js';
 import { renderMyPhoneFields } from './my-phone-fields.js';
@@ -12,7 +12,7 @@ import { PROFILE_PATH, hasPerformanceProfile, profileDiff } from './performance-
 import { renderQualityRow } from './render-quality-fields.js';
 import { FX_SETTINGS_NORMALIZERS } from './fx-settings.js';
 
-// 六张卡：组内用小标题分段，不再一类一张卡。节奏与 Meta 互动合成最后一张，单独渲染。
+// 六张卡：组内用小标题分段，不再一类一张卡。节奏单独渲染为最后一张。
 export const PERFORMANCE_GROUPS = Object.freeze([
     Object.freeze(['text', '文字']),
     Object.freeze(['stage', '画面']),
@@ -74,7 +74,7 @@ const GROUP_BRIEFS = Object.freeze({
     text: '打字机 · 字效 · 双语',
     stage: '镜头 · 天气 · 立绘',
     story: '情绪 · 提示 · 事件',
-    special: '日常 · 直播 · 社区 · 亲密',
+    special: '日常 · 直播 · 社区 · 亲密 · Meta',
     sound: '音效 · 语气 · 配乐',
 });
 
@@ -98,6 +98,10 @@ export function performanceGroupCounts(reader, extras = {}) {
     const extra = extraSwitches(src, extras);
     return Object.fromEntries(PERFORMANCE_GROUPS.map(([id]) => [id, groupCounts(src, id, allOff, extra[id])]));
 }
+
+// 题材包小节顶部的说明；没有可列的包时整节不出现。
+const packSection = (rows) => (rows ? `<div class="igs-source-filter-note">${esc(PACK_SECTION_NOTE)}</div>${rows}` : '');
+const PACK_SECTION_NOTE = '按作品题材启用专属演出。';
 
 const section = (title, parts) => {
     const body = parts.filter(Boolean).join('');
@@ -123,10 +127,10 @@ function buildPerformanceBodies(src, extras, isOpen) {
         more,
         fx,
         bodies: {
-            text: [fx.comic, host('playback-speed', extras.playbackSpeed), host('typewriter', extras.typewriter, '逐字显示'), stage.clickWaitMark, stage.textFx, stage.bilingual, host('sentence-paging', extras.sentencePaging)],
+            text: [host('playback-speed', extras.playbackSpeed), host('typewriter', extras.typewriter, '逐字显示'), stage.clickWaitMark, stage.textFx, stage.bilingual, host('sentence-paging', extras.sentencePaging)],
             stage: [
-                section('镜头与环境', [stage.transition, stage.cgEntrance, stage.tint, stage.camera, host('weather', extras.weatherFx, '雨雪雾粒子'), fx.crowd, host('stage-shake', extras.stageShake, '冲击时晃屏'), host('cinema-bars', extras.cinemaBars, '只盖背景，CG时收起')]),
-                section('立绘', [stage.motion, stage.actions, stage.turn, stage.cast, host('narration-filter', extras.narrationFilter)]),
+                section('镜头与环境', [stage.transition, stage.cgEntrance, stage.tint, stage.camera, host('weather', extras.weatherFx, '雨雪雾粒子'), fx.crowd, host('stage-shake', extras.stageShake, '冲击时晃屏'), renderPackFields(src, more, { ids: ['camera'] }), host('cinema-bars', extras.cinemaBars, '只盖背景，CG时收起'), fx.comic, renderPanelSkinField(src, more)]),
+                section('立绘', [stage.motion, stage.actions, stage.turn, stage.cast, renderPackFields(src, more, { ids: ['transform'] }), host('narration-filter', extras.narrationFilter)]),
             ],
             story: [
                 section('情绪', [fx.manga, fx.mangaBack, fx.heartbeat]),
@@ -135,12 +139,13 @@ function buildPerformanceBodies(src, extras, isOpen) {
             ],
             special: [
                 section('日常与冒险', [stage.daily, fx.battleFx, fx.flash]),
-                section('题材包', [renderPackFields(src, more)]),
+                section('题材包', [packSection(renderPackFields(src, more))]),
+                section('Meta互动', [renderMetaFxFields(src, more)]),
                 section('线上与直播', [renderMyPhoneFields(src, more), host('chat-show', extras.chatShow, '聊天页演出'), danmaku.live, renderFeedFields(src, more), danmaku.audience, danmaku.inner, fx.notifyCenter]),
-                section('亲密', [renderRomanceFxFields(src, more), host('nsfw-sprite', extras.nsfwSprite), host('nsfw-veil', extras.nsfwVeil), host('nsfw-cg-portrait', extras.nsfwCgPortrait)]),
+                section('亲密', [renderRomanceFxFields(src, more), renderPackFields(src, more, { ids: ['nsfw'] }), host('nsfw-sprite', extras.nsfwSprite), host('nsfw-veil', extras.nsfwVeil), host('nsfw-cg-portrait', extras.nsfwCgPortrait)]),
             ],
-            sound: [stage.master, fx.sound, host('tts', extras.tts, '朗读台词与旁白'), host('voice-bark', extras.voiceBark, '台词开头的语气声'), stage.ambient, stage.ui, stage.bgm],
-            rhythm: [section('节奏', [fx.style, host('cg-hold', extras.cgHold)]), section('Meta互动', [renderMetaFxFields(src, more)])],
+            sound: [stage.master, fx.sound, host('tts', extras.tts, '朗读台词与旁白'), host('voice-bark', extras.voiceBark, '台词开头的语气声'), stage.ambient, renderPackSoundField(src, more), stage.ui, stage.bgm],
+            rhythm: [section('节奏', [fx.style, host('cg-hold', extras.cgHold)])],
         },
     };
 }
@@ -151,7 +156,7 @@ export function renderPerformanceSettings(reader, extras = {}, isOpen = () => fa
     const current = detectPerformancePreset(src);
     const extra = extraSwitches(src, extras);
     const groups = PERFORMANCE_GROUPS.map(([id, title]) => groupCard(id, title, groupSummary(src, id, current === 'off', extra[id]), bodies[id].filter(Boolean).join(''), isOpen(`perf-group-${id}`)));
-    const rhythm = groupCard('rhythm', '节奏与互动', '<span class="igs-perf-brief">风格 · Meta · CG停留时长</span>',
+    const rhythm = groupCard('rhythm', '节奏', '<span class="igs-perf-brief">风格 · CG停留时长</span>',
         bodies.rhythm.join(''), isOpen('perf-group-rhythm'));
     return renderPerformancePresetBar(src, { canUndo: extras.canUndo === true, extraRows: (extras.worldview || '') + renderQualityRow(src) }) + groups.join('') + rhythm;
 }

@@ -57,7 +57,7 @@ test('gate:performance-layout:groups-collapsed-with-summary-and-word-lists-hidde
     // 战斗、直播、手机社区、线上交流、亲密这类只在特定剧情用的，收进「题材专属」，由用户自己勾；演出页不再有剧情题材胶囊。
     assert.match(html, /<b>题材专属<\/b><span class="igs-perf-count">0\/9<\/span>/);
     assert.doesNotMatch(html, /剧情题材|perf-type:/);
-    assert.match(html, /<details data-advanced="perf-group-rhythm"><summary><b>节奏与互动<\/b>/);
+    assert.match(html, /<details data-advanced="perf-group-rhythm"><summary><b>节奏<\/b>/);
     assert.equal(PERFORMANCE_GROUPS.length, 5);
     // 每项一行：开着且有细项时只露 › 按钮，细项默认收起，不再有「自定义触发情绪」之类的二级折叠。
     assert.match(html, /data-action="ui-toggle-open:perf-manga-words" aria-expanded="false"/);

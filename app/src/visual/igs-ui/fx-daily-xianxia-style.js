@@ -7,7 +7,6 @@ export const XIANXIA_FX_STYLE_TEXT = `
 #igs-overlay .igs-dfx-yujian-sword{position:absolute;left:calc(var(--igs-x) * 1% - 15%);top:92%;width:30%;margin-top:-2.5%;top:calc(var(--igs-fx-vis) - 2%);animation:igs-dfx-yj-sword calc(var(--igs-dfx-life) * .16) cubic-bezier(.2,.9,.3,1) both;}
 #igs-overlay .igs-dfx-yujian-sword svg{display:block;width:100%;height:auto;transform:rotate(-6deg);overflow:visible;}
 #igs-overlay .igs-dfx-yj-blade{fill:rgba(230,243,244,.12);stroke:#d0ebee;stroke-width:.6;filter:drop-shadow(0 0 4px rgba(190,230,240,.7));}
-#igs-overlay .igs-dfx-yj-fuller{
 #igs-overlay .igs-dfx-yj-guard{fill:none;stroke:#d4bb72;stroke-width:.7;stroke-linecap:round;}
 #igs-overlay .igs-dfx-yj-pommel{fill:none;stroke:#d4bb72;stroke-width:.7;}
 #igs-overlay .igs-dfx-yj-grip{fill:none;stroke:#8a9e9a;stroke-width:.6;}

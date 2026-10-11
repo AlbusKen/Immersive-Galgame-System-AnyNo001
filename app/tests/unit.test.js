@@ -2980,6 +2980,32 @@ test('gate:api:public api attaches stable global aliases', async () => {
     assert.equal(api.ensureMagicWandEntry().reason, 'magic-wand-entry-not-mounted');
 });
 
+test('gate:host:adjacent-message-reads-chat-once-per-task-on-long-chat', async () => {
+    // 千楼聊天：同一轮里连续往前回看 60 次，只应重读整份聊天一次；下一个宏任务后重新读取。
+    const messages = Array.from({ length: 1000 }, (_, id) => ({ id, text: `第${id}楼`, role: 'assistant' }));
+    let reads = 0;
+    const adapter = createTavernHelperAdapter({
+        TavernHelper: {
+            getLastMessageId: () => 999,
+            getChatMessages: () => { reads += 1; return messages; },
+        },
+        document: { querySelectorAll: () => [] },
+        setTimeout,
+    });
+    let cursor = 999;
+    for (let step = 0; step < 60; step += 1) {
+        const previous = await adapter.getAdjacentMessage(cursor, -1);
+        assert.equal(previous.id, cursor - 1);
+        cursor = previous.id;
+    }
+    const firstRound = reads;
+    assert.ok(firstRound <= 2, `同一轮读了 ${firstRound} 次整份聊天`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    messages.push({ id: 1000, text: '新楼', role: 'assistant' });
+    assert.equal((await adapter.getAdjacentMessage(999, 1)).id, 1000);
+    assert.ok(reads > firstRound);
+});
+
 test('gate:host:tavern-helper-adapter-detects-user-messages-from-role-flags-and-dom', async () => {
     const domUserMessage = {
         getAttribute(name) {

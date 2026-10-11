@@ -31,7 +31,7 @@ export const ONBOARDING_STEPS = Object.freeze([
         body: '不确定就选「推荐」；手机发热，把画质切到「省电模式」。',
     }),
     Object.freeze({
-        id: 'perf', page: 'perf-text', target: ['.igs-perf-page .igs-perf-item', '.igs-perf-page'],
+        id: 'perf', page: 'perf-text', target: ['.igs-perf-item:has([data-switch="readerSettings.typewriter.enabled"])', '.igs-perf-page .igs-perf-item', '.igs-perf-page'],
         title: '演出细项',
         body: '每项一个开关，点›看细项。',
     }),
@@ -41,7 +41,7 @@ export const ONBOARDING_STEPS = Object.freeze([
         body: '在这里换对话框风格；字号、字体在「文字」。',
     }),
     Object.freeze({
-        id: 'mode', page: 'ui-reader', target: ['[data-segment-path="bridge.openMode"]'],
+        id: 'mode', page: 'ui-reader', target: ['.igs-key-block:has([data-segment-path="bridge.openMode"])', '[data-segment-path="bridge.openMode"]'],
         title: '打开方式',
         body: '可选电脑、窄屏模式、网页全屏、全屏、楼层内嵌，建议「楼层内嵌」。',
     }),
