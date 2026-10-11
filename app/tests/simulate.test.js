@@ -767,6 +767,111 @@ test('gate:assets:reader-manual-generation-feedback', async () => {
     } finally { host.destroy(); }
 });
 
+test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用事务', async (t) => {
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
+    const { createIndexedDbGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
+    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { normalizeBridgeConfig, normalizeReaderSettings } = await import('../src/visual/igs-ui/settings-host-normalize.js');
+    for (const mode of ['success', 'edit', 'active', 'status-failed', 'save-failed', 'missing', 'scope', 'dna', 'borrowed']) {
+        await t.test(mode, async () => {
+            const document = createFakeDocument({ innerWidth: 390, innerHeight: 844 });
+            const indexedDB = createTransactionalIdb();
+            const store = createIndexedDbGeneratedAssetStore({ indexedDB });
+            const record = { ...await spriteAdoptionFixture(), key: 'temp/sp', chatId: 'chat-1',
+                floorKey: 'chat-1|39|0', status: 'review', updatedAt: 7 };
+            await store.putImage(record);
+            await store.putAsset(record);
+            const library = () => ({ characters: { Alice: { 默认: 'old.png' } },
+                characterAliases: { Alice: ['小爱'] }, characterDna: {}, characterOutfits: {}, wardrobe: {} });
+            const assets = { enabled: true, ...library(), cards: { 'card:current': library() } };
+            if (mode === 'borrowed') {
+                assets.characters = {}; assets.characterAliases = {};
+                assets.cards = { 'card:current': {}, 'card:source': library() };
+            }
+            let settings = { bridge: normalizeBridgeConfig({ sceneAssets: assets }),
+                readerSettings: normalizeReaderSettings({}), readerMode: 'default' };
+            let card = 'current', reads = 0, saves = 0;
+            const original = structuredClone(settings.bridge.sceneAssets);
+            const raw = '[igs-char:Alice|平静|你好。]';
+            const service = createAssetGenerationService({ store, nai: {}, llm: {},
+                messageHost: { getChatId: () => 'chat-1' }, getSettings: () => settings.bridge });
+            for (let i = 0; i < 30 && !service.listReview(record.floorKey).length; i++)
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            assert.equal(service.listReview(record.floorKey).length, 1);
+            const host = createIgsReaderHost({
+                global: { document, SillyTavern: { getContext: () => ({ name2: card }) } },
+                getUnifiedSettings: () => settings,
+                getIllustrationSource: () => ({ chatId: 'chat-1', messageId: 39, swipeId: 0,
+                    isAi: true, isLatest: true,text: raw }),
+                saveUnifiedSettings(next) {
+                    saves++;
+                    if (mode === 'save-failed' && saves === 1) return { ok: false, reason: 'fixture-save' };
+                    settings = structuredClone(next);
+                    if (mode === 'status-failed' && saves === 1) indexedDB.failNextPut(new Error('fixture-status'));
+                    return { ok: true };
+                },
+                generatedAssets: { ...service,
+                    async readStoredImage(id) {
+                        reads++;
+                        assert.deepEqual(settings.bridge.sceneAssets, original, '回读前不写入身份');
+                        if (mode === 'scope') card = 'other';
+                        if (mode === 'dna') settings.bridge.sceneAssets.cards['card:current'].characterDna.Alice = { identity: '手工更新' };
+                        return mode === 'missing' ? null : service.readStoredImage(id);
+                    },
+                },
+            });
+            try {
+                const opened = host.openReader({ messageId: 39, message: { id: 39, text: raw }, raw }, { mode: 'mobile' });
+                assert.equal(opened.ok, true);
+                if (mode === 'active') assert.equal(host.openSettings({ tab: 'scene', mode: 'mobile' }).ok, true);
+                const panel = document.getElementById('igs-asset-review');
+                assert.ok(panel, '真实阅读器审核面板已挂载');
+                panel.querySelector('input').value = '小爱';
+                const button = panel.querySelector(`[data-asset-review-act="${mode === 'edit' ? 'library-dna' : 'library'}"]`);
+                assert.ok(button);
+                await button.dispatchEvent({ type: 'click', target: button });
+                // 浏览器点击不返回业务 Promise；fixture 等待实际存储状态或失败通知。
+                for (let i = 0; i < 60; i++) {
+                    const edited = mode !== 'edit' || host.getState().activeSettings?.snapshot?.html
+                        ?.includes('data-dna-field="views.half_body.subject"');
+                    if ((service.getRecord(record.key).status === 'library' && edited)
+                        || String(document.getElementById('igs-toast')?.textContent || '').includes('未完成')) break;
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+                const savedRecord = (await createIndexedDbGeneratedAssetStore({ indexedDB }).getAssetsByChat('chat-1'))[0];
+                if (['success', 'edit', 'active'].includes(mode)) {
+                    assert.equal(savedRecord.status, 'library');
+                    assert.equal(reads, 1);
+                    const adopted = settings.bridge.sceneAssets.cards['card:current'];
+                    assert.equal(adopted.characters.Alice.默认, `igs-gen:${record.imageId}`);
+                    assert.deepEqual(adopted.characterDna.Alice.views, record.dnaCandidates.characters[0].views);
+                    assert.equal(adopted.characterDna.Alice.identitySource, record.imageId);
+                    assert.equal(adopted.wardrobe['Alice·日常'].prompt, 'A red hoodie.');
+                    assert.deepEqual(settings.bridge.sceneAssets.characterDna, original.characterDna);
+                    if (mode === 'edit') {
+                        const active = host.getState().activeSettings;
+                        assert.ok(active);
+                        assert.equal(active.tab, 'scene');
+                        assert.ok(active.snapshot.html.includes('data-dna-field="views.half_body.subject"'));
+                        assert.ok(active.snapshot.html.includes(record.dnaCandidates.characters[0].views.half_body.subject));
+                        assert.ok(!active.snapshot.html.includes('scene-accept-dna-candidate'), '不从旧 tags 猜身份');
+                    }
+                } else {
+                    assert.equal(savedRecord.status, 'review');
+                    assert.equal(service.getRecord(record.key).status, 'review');
+                    assert.equal(settings.bridge.sceneAssets.cards['card:current'].characters?.Alice?.默认,
+                        original.cards['card:current'].characters?.Alice?.默认);
+                    if (mode === 'dna') assert.deepEqual(settings.bridge.sceneAssets.cards['card:current'].characterDna.Alice, { identity: '手工更新' });
+                    else assert.deepEqual(settings.bridge.sceneAssets, original);
+                    if (mode === 'borrowed') assert.equal(reads, 0);
+                    if (['status-failed', 'save-failed'].includes(mode)) assert.equal(saves, 2, '保存失败后恢复提交');
+                }
+            } finally { host.destroy(); }
+        });
+    }
+});
+
 test('gate:assets:reader-manual-retries-settled-floor', async () => {
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
@@ -7517,6 +7622,9 @@ function createFakeElement(tagName, ownerDocument) {
             element.children.push(child);
             return child;
         },
+        append(...children) {
+            for (const child of children) element.appendChild(child);
+        },
         insertBefore(child, referenceNode) {
             if (!referenceNode) return element.appendChild(child);
             if (child.parentNode && child.parentNode !== element && typeof child.remove === 'function') child.remove();
@@ -10039,4 +10147,70 @@ test('gate:simulation:toolbar-split-moves-nav-buttons-under-dialog', async () =>
     assert.equal(overlay().querySelector('#igs-btn-quick-save').style.display, 'none', '只用顶栏时快速存读档不挤进顶栏');
     assert.equal(overlay().querySelector('#igs-dialog-bar').hasAttribute('hidden'), true);
     vn.destroy();
+});
+
+
+for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`gate:cg-consistency:reader-phone-${decision}`, async () => {
+    const document = createFakeDocument({ innerWidth: 390, innerHeight: 844 });
+    const raw = '当前 CG 的正文。\n[igs-img:7]';
+    const calls = [];
+    let displayed = 'data:image/png;base64,b2xk';
+    let started, finish;
+    const ready = new Promise((resolve) => { started = resolve; });
+    const host = createIgsReaderHost({
+        global: { document },
+        getUnifiedSettings: () => ({ bridge: { sceneAssets: { enabled: true, characters: {} } }, readerSettings: { titleScreen: false } }),
+        getIllustrationSource: (messageId) => ({ chatId: 'fixture-reader', messageId, swipeId: 0, text: raw }),
+        getIllustrationUrl: () => displayed,
+        illustrations: {
+            describeConsistency: () => ({ ok: true }),
+            async redrawConsistency(query, options) {
+                calls.push(['run', query]);
+                options.onProgress({ phase: 'consistency', done: 0, total: 2, characterKey: 'A' });
+                started();
+                if (['stop', 'close', 'switch'].includes(decision)) await new Promise((resolve) => {
+                    finish = resolve;
+                    options.signal.addEventListener('abort', resolve, { once: true });
+                });
+                return options.signal.aborted ? { ok: false, reason: 'cancelled' }
+                    : { ok: true, candidateId: 'fixture-candidate', dataUrl: 'data:image/png;base64,bmV3' };
+            },
+            async acceptConsistency(id) { calls.push(['accept', id]); displayed = 'data:image/png;base64,bmV3'; return { ok: true, reason: 'accepted' }; },
+            cancelConsistency(id) { calls.push(['cancel', id]); },
+        },
+    });
+    const clickModal = (role) => document.querySelector('.igs-page-modal').dispatchEvent({ type: 'click', target: { closest: () => ({ getAttribute: () => role }) } });
+    try {
+        const opened = host.openReader({ messageId: 5, message: { id: 5, text: raw }, raw }, { mode: 'phone' });
+        assert.equal(opened.ok, true);
+        const button = document.getElementById('igs-btn-consistency-cg');
+        assert.ok(button);
+        assert.equal(button.disabled, false);
+        assert.match(button.getAttribute('aria-label'), /角色一致性重绘/);
+        const pending = opened.controller.invokeAction('consistency-cg');
+        assert.ok(document.querySelector('.igs-page-modal'));
+        clickModal('ok');
+        await ready;
+        assert.equal((await opened.controller.invokeAction('consistency-cg')).reason, 'consistency-busy');
+        assert.equal(calls.filter(([name]) => name === 'run').length, 1);
+        assert.deepEqual(calls[0][1], { chatId: 'fixture-reader', messageId: 5, swipeId: 0, slot: 7 });
+        if (decision === 'stop') clickModal('cancel');
+        else if (decision === 'close') host.closeReader();
+        else if (decision === 'switch') {
+            host.replaceReader({ messageId: 6, message: { id: 6, text: raw }, raw });
+        } else {
+            for (let i = 0; i < 40 && !document.querySelector('.igs-page-modal-preview'); i++) await new Promise((resolve) => setTimeout(resolve, 0));
+            const preview = document.querySelector('.igs-page-modal-preview');
+            assert.ok(preview);
+            assert.equal(preview.src, 'data:image/png;base64,bmV3');
+            assert.equal(displayed, 'data:image/png;base64,b2xk', '预览不改正式展示');
+            clickModal(decision === 'accept' ? 'ok' : 'cancel');
+        }
+        const result = await pending;
+        assert.equal(result.reason, decision === 'accept' ? 'accepted' : 'cancelled');
+        assert.equal(calls.filter(([name]) => name === 'accept').length, decision === 'accept' ? 1 : 0);
+        assert.equal(document.querySelector('.igs-page-modal'), null);
+        if (decision === 'accept') assert.equal(host.getState().activeReader.snapshot.content.illustrationUrl, displayed);
+        else assert.equal(displayed, 'data:image/png;base64,b2xk');
+    } finally { finish?.(); host.destroy(); }
 });

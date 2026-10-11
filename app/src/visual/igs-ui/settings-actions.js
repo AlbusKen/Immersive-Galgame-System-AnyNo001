@@ -6,7 +6,8 @@ import { DEFAULT_SCENE_PROMPT_RULE, normalizeScenePromptRule, TOOLBAR_ACTIONS } 
 import { buildTagGrammar } from './tag-grammar.js';
 import { firstMoodWord, resolvePromptRuleContent, scenePromptRuleEnabled } from '../../scene/prompt-rule-content.js';
 import { findDbgenApi } from '../../generated-images/image-backend.js';
-import { formatEditablePrompt, formatStoredPrompt, normalizeStoredPrompt, parseEditablePrompt } from '../../generated-images/generation-prompt.js';
+import { formatEditablePrompt, formatStoredPrompt, normalizeStoredPrompt, parseEditablePrompt, promptProvenance } from '../../generated-images/generation-prompt.js';
+import { characterPromptRecovery } from '../../generated-images/illustration/character-prompt-task.js';
 import { getNextSettingsTheme, normalizeSettingsTheme } from './settings-theme.js';
 import { DEFAULT_MOOD_GROUPS, MOOD_PRESET, moodPresetEntry, moodTierLabels, normalizeMoodGroups, resolvePresetGroup } from '../../scene/mood-groups.js';
 import { collectAssetZipEntries } from '../../scene/asset-zip.js';
@@ -45,6 +46,7 @@ import { normalizeSpriteHeads } from './fx-anchor.js';
 import { formatImageJobLogText } from '../../generated-images/image-job-log.js';
 import { addGeneratedAssetToLibrary, bindGeneratedBackground, bindGeneratedSprite, collectGeneratedImageIds, generatedAssetIdOf, isGeneratedAssetUrl, normalizeGeneratedLibrary, removeGeneratedLibraryEntry, renameGeneratedLibraryEntry, setGeneratedExpressionNote } from '../../scene/asset-match.js';
 import { resolveCharacterDna } from '../../scene/character-dna.js';
+import { prepareSpriteIdentityAdoption } from '../../scene/character-identity.js';
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
 import { normalizeCharacterDna, normalizeCharacterDnaMap, removeCharacterDna, renameCharacterDna } from '../../scene/character-dna.js';
 import { normalizeCharacterHouses } from './magic-house.js';
@@ -98,6 +100,43 @@ function assetFolderScope(settingsState, options) {
 }
 
 const CHARACTER_FIELDS = ['characters', 'characterOutfits', 'characterDna', 'characterAliases', 'statusAvatars'];
+
+// 采用目标只读解析：别名归一后判断归属，借用资料不能自动写回来源卡。
+function spriteAdoptionTarget(settingsState, requested) {
+    const root = settingsState.draft.bridge?.sceneAssets || {};
+    const scope = String(settingsState.asyncState?.assetScopeKey || '');
+    const effective = effectiveSceneAssets(root, scope);
+    const known = { ...effective.characterDna, ...effective.characterOutfits, ...effective.characters };
+    const name = resolveCharacterKey(known, effective.characterAliases || {}, requested) || requested;
+    const owner = assetOwnerKey(root, scope, CHARACTER_FIELDS, name);
+    return { name, scope, owner, borrowed: Boolean(owner && owner !== scope),
+        library: owner ? root.cards?.[owner] : root };
+}
+
+function hasSpriteAdoptionEvidence(record) {
+    return Boolean(record?.promptRecipe || record?.dnaCandidates !== undefined
+        || record?.promptTask?.mode === 'dna_template');
+}
+
+async function readSpriteAdoptionRecord(service, imageId, record) {
+    if (!hasSpriteAdoptionEvidence(record)) return { ok: true, record };
+    try {
+        const stored = await service.readStoredImage?.(imageId);
+        if (!stored?.dataUrl || stored.id !== imageId || stored.type !== 'sprite'
+            || !stored.promptRecipe || !stored.sentPrompt
+            || (record.dnaCandidates !== undefined && stored.dnaCandidates === undefined)) {
+            return { ok: false, reason: 'DNA_ADOPTION_INVALID', error: '候选图片或身份资料无法权威回读，原资料保持不变' };
+        }
+        // 内存结果不能补齐权威存储已丢失的旁路，否则删除候选后仍可能建档。
+        return { ok: true, record: { ...stored, imageId,
+            ...(record.ok !== undefined && { ok: record.ok }),
+            ...(record.name !== undefined && { name: record.name }),
+            ...(record.status !== undefined && { status: record.status }) } };
+    } catch {
+        return { ok: false, reason: 'DNA_ADOPTION_INVALID', error: '候选图片资料回读失败，原资料保持不变' };
+    }
+}
+
 const SCENE_ACTION = /^scene-(?:(?:add|remove|rename|set|toggle|pick)-(?:bg|bg-word|bg-url|time|time-url|weather|weather-url)|variant-(?:set|retry))$/;
 const CHARACTER_ACTION = /^(?:scene-(?:add|remove|rename|set|toggle|pick)-(?:char|char-alias|mood|mood-url|dna-char|outfit-mood)|status-avatar-(?:pick|clear|set-url|generate)|char-generate-sprite|outfit-generate-nude|char-expression-(?:prompt|set|retry|resume)|outfit-expression-(?:prompt|set|retry|resume))$/;
 
@@ -243,6 +282,7 @@ function applyCharacterExpression(sceneAssets, name, item) {
             negative: item && item.prompt ? item.prompt.negative : '',
             error: (item && item.error) || '出图失败',
             caption: item && item.caption,
+            ...promptProvenance(item.prompt || item), ...characterPromptRecovery(item),
         });
         if (noted.ok) library = noted.library;
     }
@@ -360,6 +400,7 @@ function applyOutfitExpression(sceneAssets, name, outfitName, item) {
             negative: item && item.prompt ? item.prompt.negative : '',
             error: (item && item.error) || '出图失败',
             caption: item && item.caption,
+            ...promptProvenance(item.prompt || item), ...characterPromptRecovery(item),
         });
         if (noted.ok) library = noted.library;
     }
@@ -1082,8 +1123,10 @@ export async function handleSettingsAction(action, ctx) {
         if (!service || typeof service.getRecord !== 'function' || typeof service.setStatus !== 'function') {
             return { ok: false, reason: 'generated-assets-unavailable' };
         }
-        const record = service.getRecord(key);
+        let record = service.getRecord(key);
         if (!record || !record.imageId) return rerenderSettings();
+        record = cloneData(record);
+        const sourceScope = String(settingsState.asyncState?.assetScopeKey || '');
         const globalObj = options.global || globalThis;
         const suggestedName = String(record.name || '').trim();
         const requestedName = ctx.dialogs || typeof globalObj.prompt === 'function'
@@ -1091,12 +1134,44 @@ export async function handleSettingsAction(action, ctx) {
             : suggestedName;
         const name = String(requestedName == null ? '' : requestedName).trim();
         if (!name) return rerenderSettings();
+        const target = record.type === 'sprite' ? spriteAdoptionTarget(settingsState, name) : null;
+        if (target?.borrowed) return generatedOperationFailure(dialogs, globalObj,
+            '角色资料来自其他角色卡，请先复制到当前卡后再采用。', 'DNA_ADOPTION_SCOPE');
+        const sourceLibrary = target?.library;
+        const sourceDna = target && JSON.stringify(normalizeCharacterDna(sourceLibrary?.characterDna?.[target.name]));
+        const sourceDefault = target && String(sourceLibrary?.characters?.[target.name]?.['默认'] || '');
+        const receipt = { imageId: record.imageId, status: record.status,
+            ...(record.updatedAt !== undefined && { updatedAt: record.updatedAt }) };
+        const recordUnchanged = () => {
+            const live = service.getRecord(key);
+            return live?.imageId === receipt.imageId && live?.status === receipt.status
+                && live?.updatedAt === record.updatedAt;
+        };
+        const targetUnchanged = () => {
+            if (String(settingsState.asyncState?.assetScopeKey || '') !== sourceScope) return false;
+            if (!target) return true;
+            const live = spriteAdoptionTarget(settingsState, name);
+            return live.name === target.name && live.owner === target.owner && live.library === sourceLibrary
+                && !live.borrowed
+                && JSON.stringify(normalizeCharacterDna(live.library?.characterDna?.[live.name])) === sourceDna
+                && String(live.library?.characters?.[live.name]?.['默认'] || '') === sourceDefault;
+        };
+        if (!recordUnchanged() || !targetUnchanged()) return generatedOperationFailure(dialogs, globalObj,
+            '候选图片或资料作用域已变化，请重新打开。', 'DNA_ADOPTION_CONFLICT');
+        if (record.type === 'sprite') {
+            const authoritative = await readSpriteAdoptionRecord(service, record.imageId, record);
+            if (!authoritative.ok) return generatedOperationFailure(dialogs, globalObj, authoritative.error, authoritative.reason);
+            if (!recordUnchanged() || !targetUnchanged()) return generatedOperationFailure(dialogs, globalObj,
+                '候选回读期间图片或角色资料已变化，请重新打开。', 'DNA_ADOPTION_CONFLICT');
+            record = authoritative.record;
+        }
         const bridge = settingsState.draft.bridge = settingsState.draft.bridge || {};
-        const sceneAssets = draftAssetLibrary(settingsState, editTarget);
+        let sceneAssets = target ? sourceLibrary || {} : draftAssetLibrary(settingsState, editTarget);
         let previousLibrary = null;
         let previousScenes = null;
         let previousCharacters = null;
         let previousAliases = null;
+        let previousIdentity = null;
         if (record.type === 'background') {
             previousScenes = cloneData(sceneAssets.scenes || {});
             const bound = bindGeneratedBackground(sceneAssets, record, name);
@@ -1114,14 +1189,27 @@ export async function handleSettingsAction(action, ctx) {
         } else {
             previousCharacters = cloneData(sceneAssets.characters || {});
             previousAliases = cloneData(sceneAssets.characterAliases || {});
-            const bound = bindGeneratedSprite(sceneAssets, name, `igs-gen:${record.imageId}`, { replace: true });
+            const bound = bindGeneratedSprite(sceneAssets, target?.name || name, `igs-gen:${record.imageId}`, { replace: true });
             if (!bound.ok) return rerenderSettings();
+            previousIdentity = { characterDna: sceneAssets.characterDna, characterOutfits: sceneAssets.characterOutfits, wardrobe: sceneAssets.wardrobe };
+            const sourceName = record.identityContext?.[0]?.characterKey || record.name;
+            if (hasSpriteAdoptionEvidence(record)) {
+                const sourceTarget = spriteAdoptionTarget(settingsState, sourceName);
+                if (sourceTarget.name !== bound.name || sourceTarget.owner !== target.owner)
+                    return generatedOperationFailure(dialogs, globalObj, '候选身份与目标角色不匹配，原资料保持不变。', 'DNA_TEMPLATE_BINDING');
+            }
+            const adoption = prepareSpriteIdentityAdoption(sceneAssets, bound.name, record.imageId, record,
+                { sourceName, hadDefault: Boolean(previousCharacters[bound.name]?.['默认']) });
+            if (!adoption.ok) return generatedOperationFailure(dialogs, globalObj, adoption.error, adoption.reason);
+            if (target && !sourceLibrary) sceneAssets = ensureCardLibrary(bridge.sceneAssets, target.owner);
             sceneAssets.characters = bound.characters;
             sceneAssets.characterAliases = bound.characterAliases;
+            Object.assign(sceneAssets, adoption.patch);
             const persisted = persistGeneratedLibrary(persistSettingsDraft);
             if (operationFailed(persisted)) {
                 sceneAssets.characters = previousCharacters;
                 sceneAssets.characterAliases = previousAliases;
+                Object.assign(sceneAssets, previousIdentity);
                 const rolled = persistGeneratedLibrary(persistSettingsDraft);
                 if (operationFailed(rolled)) {
                     return generatedOperationFailure(dialogs, globalObj, '角色立绘入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
@@ -1131,7 +1219,7 @@ export async function handleSettingsAction(action, ctx) {
         }
         let status;
         try {
-            status = await service.setStatus(key, 'library');
+            status = await service.setStatus(key, 'library', receipt);
         } catch (error) {
             status = { ok: false, reason: 'generated-asset-status-failed' };
         }
@@ -1145,6 +1233,7 @@ export async function handleSettingsAction(action, ctx) {
             } else if (previousCharacters) {
                 sceneAssets.characters = previousCharacters;
                 sceneAssets.characterAliases = previousAliases;
+                Object.assign(sceneAssets, previousIdentity);
                 const rolled = persistGeneratedLibrary(persistSettingsDraft);
                 if (operationFailed(rolled)) {
                     return generatedOperationFailure(dialogs, options.global || globalThis, '角色立绘入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
@@ -1261,13 +1350,14 @@ export async function handleSettingsAction(action, ctx) {
         if (!next) return generatedOperationFailure(dialogs, globalObj, '提示词是空的。', 'expression-prompt-empty');
         if (imageId && service && typeof service.saveImagePrompt === 'function') {
             let saved;
-            try { saved = await service.saveImagePrompt(imageId, next); }
+            try { saved = await service.saveImagePrompt(imageId, next, prompt.revision); }
             catch (error) { saved = { ok: false, error: '提示词没存上。' }; }
             if (!saved || !saved.ok) {
                 return generatedOperationFailure(dialogs, globalObj, (saved && saved.error) || '提示词没存上。', 'expression-prompt-save-failed');
             }
         } else {
             const noted = setGeneratedExpressionNote(library, expressionNoteKey(name, outfitName), mood, {
+                ...prompt, captionMode: 'final', edited: true,
                 positive: next.positive,
                 negative: next.negative,
                 error: (note && note.error) || '',
@@ -1378,12 +1468,17 @@ export async function handleSettingsAction(action, ctx) {
     }
 
     if (normalizedAction.startsWith('char-generate-sprite:')) {
-        const name = decodeSeg(normalizedAction.slice('char-generate-sprite:'.length));
+        const target = spriteAdoptionTarget(settingsState, decodeSeg(normalizedAction.slice('char-generate-sprite:'.length)));
+        const name = target.name;
         const globalObj = options.global || globalThis;
         const service = options.generatedAssets;
-        const sceneAssets = draftAssetLibrary(settingsState, editTarget);
+        if (target.borrowed) return generatedOperationFailure(dialogs, globalObj,
+            '角色资料来自其他角色卡，请先复制到当前卡后再生成采用。', 'DNA_ADOPTION_SCOPE');
+        const sceneAssets = target.library || {};
         const character = (sceneAssets.characters || {})[name];
         const dna = characterExpressionDna(sceneAssets, name);
+        const sourceDna = normalizeCharacterDna(dna);
+        const sourceScope = String(settingsState.asyncState?.assetScopeKey || '');
         if (!name || (!character && !dna)) return rerenderSettings();
         if (!service || typeof service.generateCharacterSprite !== 'function') {
             return generationFailure(globalObj, dialogs, '立绘生成当前不可用。', 'sprite-generate-unavailable');
@@ -1393,6 +1488,8 @@ export async function handleSettingsAction(action, ctx) {
         // 格子里已有生成图时「重新生成」不写词：读这张图存下的提示词，换种子重画；读不到才走写词。
         let redrawCaption = null;
         let redrawExact = false;
+        let redrawMeta;
+        let redrawHistory;
         const currentId = generatedAssetIdOf(current);
         if (currentId && typeof service.getImagePrompt === 'function') {
             try {
@@ -1406,6 +1503,8 @@ export async function handleSettingsAction(action, ctx) {
                     redrawCaption = (parsed && parsed.caption) || null;
                 }
                 redrawExact = Boolean(redrawCaption && saved && saved.edited === true);
+                redrawMeta = saved?.characterMeta;
+                redrawHistory = saved;
             } catch (error) { redrawCaption = null; }
         }
         let spriteNote = savedSpriteNotes[name] || '';
@@ -1424,23 +1523,50 @@ export async function handleSettingsAction(action, ctx) {
             return generationFailure(globalObj, dialogs, `「${name}」的默认立绘未能生成：${errorText(error, '未返回原因')}${current ? '\n原有图片保持不变。' : ''}`, 'sprite-generate-failed');
         };
         try {
-            result = await service.generateCharacterSprite({ name, dna, note: spriteNote, caption: redrawCaption, exact: redrawExact, onProgress: progress.onProgress });
+            result = await service.generateCharacterSprite({ name, dna, note: spriteNote, caption: redrawCaption,
+                characterMeta: redrawMeta, exact: redrawExact, onProgress: progress.onProgress,
+                ...(redrawHistory && { history: redrawHistory, ...(redrawHistory.promptRecipe && { promptRecipe: redrawHistory.promptRecipe }) }) });
         } catch (error) {
             return failed(error);
         }
         if (!result || !result.ok || !result.imageId) return failed(result && result.error);
-        const liveAssets = draftAssetLibrary(settingsState, editTarget);
+        const targetUnchanged = () => {
+            const live = spriteAdoptionTarget(settingsState, name);
+            return live.library === sceneAssets && live.scope === sourceScope && live.owner === target.owner
+                && !live.borrowed
+                && JSON.stringify(normalizeCharacterDna(characterExpressionDna(sceneAssets, name))) === JSON.stringify(sourceDna)
+                && String(sceneAssets.characters?.[name]?.['默认'] || '').trim() === current;
+        };
+        if (!targetUnchanged()) {
+            return failed('角色身份、默认图片或资料作用域已变化，请重新生成；原图保持不变');
+        }
+        const authoritative = await readSpriteAdoptionRecord(service, result.imageId, result);
+        if (!authoritative.ok) return failed(authoritative.error);
+        if (!targetUnchanged()) return failed('候选回读期间角色资料或作用域已变化，请重新生成；原图保持不变');
+        result = authoritative.record;
+        const liveAssets = sceneAssets;
+        const previousAdoption = { characters: liveAssets.characters, characterAliases: liveAssets.characterAliases,
+            characterDna: liveAssets.characterDna, characterOutfits: liveAssets.characterOutfits, wardrobe: liveAssets.wardrobe,
+            characterSpriteNotes: cloneData(liveAssets.characterSpriteNotes || {}) };
+        const adoption = prepareSpriteIdentityAdoption(liveAssets, name, result.imageId, result,
+            { hadDefault: Boolean(current) });
+        if (!adoption.ok) return failed(adoption.error);
         const characters = { ...(liveAssets.characters || {}) };
         characters[name] = { ...(characters[name] || {}), '默认': `igs-gen:${result.imageId}` };
         liveAssets.characters = characters;
+        Object.assign(liveAssets, adoption.patch);
         const spriteNotes = liveAssets.characterSpriteNotes && typeof liveAssets.characterSpriteNotes === 'object'
             ? liveAssets.characterSpriteNotes : (liveAssets.characterSpriteNotes = {});
         if (String(spriteNote || '').trim()) spriteNotes[name] = String(spriteNote).trim();
         else delete spriteNotes[name];
-        ensureCharacterAliases(settingsState, editTarget);
+        liveAssets.characterAliases = { ...(liveAssets.characterAliases || {}), [name]: [...(liveAssets.characterAliases?.[name] || [])] };
         const persisted = persistGeneratedLibrary(persistSettingsDraft);
         if (operationFailed(persisted)) {
+            Object.assign(liveAssets, previousAdoption);
+            const rolled = persistGeneratedLibrary(persistSettingsDraft);
             progress.end();
+            if (operationFailed(rolled)) return generatedOperationFailure(dialogs, globalObj,
+                '默认立绘采用失败，且原设置无法重新保存。', 'generated-asset-accept-rollback-failed');
             return persisted;
         }
         const rendered = await rerenderSettings();
@@ -1583,6 +1709,7 @@ export async function handleSettingsAction(action, ctx) {
         // 没图时才用待出图的草稿；之前那次失败留下的草稿不能盖掉用户后来改的词。
         let savedCaption = null;
         let savedExact = false;
+        let savedHistory;
         if (retry) {
             const slotUrl = outfitMode ? String((outfitEntry.moods || {})[mood] || '') : String((character || {})[mood] || '');
             const slotId = generatedAssetIdOf(slotUrl);
@@ -1598,9 +1725,13 @@ export async function handleSettingsAction(action, ctx) {
                         savedCaption = parsed && parsed.caption;
                     }
                     savedExact = Boolean(savedCaption && saved && saved.edited === true);
+                    savedHistory = saved;
                 } catch (error) { savedCaption = null; }
             }
-            if (!savedCaption && note && note.caption) savedCaption = note.caption;
+            if (!savedCaption && note && note.caption) {
+                savedCaption = note.caption; savedHistory = note;
+                savedExact = note.edited === true;
+            }
         }
         const dna = characterExpressionDna(sceneAssets, name);
         const nude = outfitMode && isBuiltinNudeOutfit(outfitEntry.wardrobe);
@@ -1620,8 +1751,8 @@ export async function handleSettingsAction(action, ctx) {
         }
         const filledLabels = labels.filter((label) => String(slots[label] || '').trim());
         const missingLabels = labels.filter((label) => !String(slots[label] || '').trim());
-        const captionByMood = new Map(pendingExpressionCaptions(library.expressionNotes[noteKey], slots).map((item) => [item.mood, item.caption]));
-        const paintItems = missingLabels.filter((label) => captionByMood.has(label)).map((label) => ({ mood: label, caption: captionByMood.get(label) }));
+        const captionByMood = new Map(pendingExpressionCaptions(library.expressionNotes[noteKey], slots).map((item) => [item.mood, item]));
+        const paintItems = missingLabels.filter((label) => captionByMood.has(label)).map((label) => captionByMood.get(label));
         const writeLabels = missingLabels.filter((label) => !captionByMood.has(label));
         const resumeItems = resume ? pendingExpressionCaptions(library.expressionNotes[noteKey], slots) : paintItems;
         if (resume && !resumeItems.length) {
@@ -1682,7 +1813,9 @@ export async function handleSettingsAction(action, ctx) {
             result = resume || paintOnly
                 ? await service.paintExpressionCaptions({ name, items: resumeItems, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
                 : retry && savedCaption && typeof service.generateExpressionImage === 'function'
-                ? await service.generateExpressionImage({ name, mood, caption: savedCaption, exact: savedExact, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
+                ? await service.generateExpressionImage({ name, mood, caption: savedCaption, exact: savedExact,
+                    ...characterPromptRecovery(savedHistory), ...(savedHistory && { history: savedHistory }),
+                    basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
                 : retry
                     ? await service.generateExpressionImage({ name, mood, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
                     : await paintThenWriteExpressions({

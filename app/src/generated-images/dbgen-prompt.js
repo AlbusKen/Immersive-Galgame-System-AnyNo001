@@ -1,5 +1,6 @@
 import { moodPresetAct, moodPresetTags, moodPresetUse } from '../scene/mood-groups.js';
 import { BUILTIN_PROMPTS } from './prompt-registry.js';
+import { hasSpriteDna, isSpriteExpressionTag } from './sprite-prompt-composition.js';
 
 // 楼内补立绘一次最多写 8 份，超过则平分 2 批。
 export const EXPRESSION_WRITE_BATCH_MAX = 8;
@@ -93,10 +94,25 @@ export function splitExpressionWriteBatches(items) {
 
 // note 是用户这次临时补的要求（性格、某个情绪的特别表现），只影响写词这一步；
 // nsfw 为 true 时「动情」改用它在 NSFW 下的动作说明。
-export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit, { note = '', nsfw = false, transparent = true } = {}) {
+export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit, { note = '', nsfw = false, transparent = true, template = false } = {}) {
     const moods = (Array.isArray(labels) ? labels : []).map((item) => String(item || '').trim()).filter(Boolean);
+    if (template) return [
+        `为角色「${name || ''}」写 ${moods.length} 份独立表情动态模板，按本次 slots 映射输出。`,
+        '只引用已保存的 half_body 身份，不生成候选、不重复固定外貌。',
+        outfit?.nude ? '本次不穿衣服；保留基础身份和标志性特征。'
+            : outfit?.name ? `当次服装：${outfit.name}。服装名、词池和具体穿着说明以本次角色资料为准。`
+            : '当次衣装沿用角色资料中的默认穿着，不复制旧立绘的固定外貌。',
+        '按角色性格分别设计表情、眼神、嘴型、手势、肩线与重心；禁止仅替换面部或套统一动作。',
+        '镜头、底色、质量、UC 和用户模板约束在本次写词完成，不等待发送层补词。',
+        note ? `本次额外要求：\n${note}` : '',
+        ...moods.map((mood, index) => {
+            const act = moodPresetAct(mood, { nsfw });
+            const use = moodPresetUse(mood);
+            return `${index + 1}. ${mood}${act ? `：${act}` : ''}${use ? `；用在${use}` : ''}`;
+        }),
+    ].filter(Boolean).join('\n');
     const stored = prompt && typeof prompt === 'object' ? prompt : {};
-    const caption = formatReturnedCaption(stored.caption);
+    const caption = hasSpriteDna(dna) ? '' : formatReturnedCaption(stored.caption);
     const clothes = outfit && typeof outfit === 'object' ? outfit : null;
     const outfitName = clothes ? String(clothes.name || '').trim() : '';
     const words = clothes && Array.isArray(clothes.words)
@@ -111,7 +127,9 @@ export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit
     const clothesLine = nude
         ? '这一套是裸体。不要画任何衣服、内衣和配饰，按这个角色的长相画裸体立绘。不要沿用原装的衣服，也不要另附服装提示词。'
         : !outfitName
-        ? (caption ? '服装也按上面这份画。' : '外貌、服装和构图与已有立绘保持一致。')
+        ? (hasSpriteDna(dna)
+            ? '角色词由下面的 DNA 字段组合，服装沿用默认外观，不另引用已有立绘的整份外貌词。'
+            : (caption ? '服装也按上面这份画。' : '外貌、服装和构图与已有立绘保持一致。'))
         : clothesPrompt
             ? (clothes.ownImage
                 ? `这一套就是服装「${outfitName}」。${wear}不要画成别的衣服。`
@@ -136,7 +154,7 @@ export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit
         String(note || '').trim() ? `这次额外的要求：\n${String(note).trim()}` : '',
         caption ? '上面那份立绘的表情和动作不要沿用，每份的表情、嘴型、眼神和手势都按各自的情绪重写。' : '',
         spriteGroundLine(transparent),
-        ...characterDnaLines(name, dna),
+        ...characterDnaLines(name, expressionPaintDna(dna, outfit)),
         ...moods.map((mood, index) => {
             const act = moodPresetAct(mood, { nsfw });
             if (!act) return '';
@@ -221,6 +239,13 @@ function spriteGroundLine(transparent) {
 export function buildCharacterSpriteDescription(name, dna, options) {
     const nude = Boolean(options && options.nude);
     const note = String(options && options.note || '').trim();
+    if (options?.template) return [
+        `为角色「${name || ''}」写一份默认立绘动态模板，slotid 为 1。`,
+        '固定身份只引用本次任务 token；仅缺景别时同次输出独立景别 DNA 候选，衣装不进入 DNA。',
+        nude ? '当次不穿衣服；保留基础身份及标志性特征，不删改 DNA。' : '衣装按当次角色资料；未指定时按角色设定设计日常穿着。',
+        SPRITE_DAILY_POSE_LINE, note ? `本次额外要求：\n${note}` : '',
+        '镜头、底色、质量、UC 和用户模板约束以本次 writingRequirements 为准，写成自然语言正文。',
+    ].filter(Boolean).join('\n');
     return [
         nude ? `画角色「${name || ''}」的裸体立绘。` : `画角色「${name || ''}」的立绘。`,
         nude
@@ -236,7 +261,14 @@ export function buildCharacterSpriteDescription(name, dna, options) {
 }
 
 // 状态栏头像：Q 版圆脸，只画一颗头。长相按角色设定写。
-export function buildCharacterAvatarDescription(name, dna) {
+export function buildCharacterAvatarDescription(name, dna, options) {
+    if (options?.template) return [
+        `为角色「${name || ''}」写一份 Q 版头像动态模板，slotid 为 1，使用 portrait 身份。`,
+        '仅引用已保存 DNA，不建立或补写身份候选。',
+        '头像裁成圆形，只画头、脖子与肩膀；脸在正中占画面大半，圆脸、大眼、正面带一点笑。',
+        '不画肩膀以下身体或手，纯色浅底，不要背景或文字。衣领沿用当次衣装。',
+        '固定身份只放自身 token；质量、UC 和用户约束在当次写词中完成。',
+    ].join('\n');
     return [
         `画角色「${name || ''}」的 Q 版头像（chibi）。`,
         '头像会裁成圆形：只画头、脖子和肩膀，脸放在画面正中，占画面的大半。脸圆、眼睛大，正面看向画面，带一点笑。',
@@ -273,6 +305,15 @@ export function buildWardrobeClothingDescription(_character, outfitName, { nsfwB
 
 // 本楼还缺的立绘一次写完。名单里只有尚未生成的，已有的不进来。
 export function buildDbgenSpriteBatchDescription(needs = [], options = {}) {
+    if (options.template) return [
+        `按本次 slots 映射写 ${needs.length} 份独立立绘动态模板，slotid 从 1 到 ${needs.length}。`,
+        ...needs.map((need, index) => `${index + 1}. ${need.name}`),
+        '每份只画该 slot 指定的角色，固定身份使用自身 token。',
+        '仅缺景别的角色同次输出独立景别 DNA 候选；已有景别逐字保留，服装独立。',
+        SPRITE_DAILY_POSE_LINE,
+        '镜头、底色、质量、UC 和自定义模板约束按本次 writingRequirements 写入正文，不等发送层补词。',
+        '不重新选择生成点，不从正文摘挂载句。',
+    ].join('\n');
     const items = Array.isArray(needs) ? needs : [];
     const list = items.map((need, index) => `${index + 1}. ${need && need.name ? need.name : ''}`);
     const count = list.length;
@@ -361,19 +402,14 @@ export function applyUserPromptsToCaption(caption, prompts = {}) {
     };
 }
 
-// 写词模型仍可能不照 DNA 写（世界书、角色库按名字联想）。出图前把 DNA 里的英文标签硬合进角色 caption：
-// 触发词、身份、默认外观进正面，「不要出现」进负面；写词结果里和 DNA 冲突的发色、瞳色去掉。中文描述 NAI 读不懂，不合入。
-const COLOR_FEATURE_RE = /^(?:(?:light|dark|pale|deep)\s+)?(?:platinum\s+)?(?:blonde|blond|black|brown|red|blue|green|pink|purple|violet|white|silver|grey|gray|orange|aqua|yellow|golden|gold)\s+(hair|eyes)$/;
+// 独立服装词只用于当次换装，不与旧立绘的整份外貌词合并。
 
 function dnaEnglishTags(text) {
     return splitTags(text).filter((tag) => /[a-z]/i.test(tag) && !/[\u3040-\u30ff\u3400-\u9fff]/.test(tag));
 }
 
-// DNA 只管长相和衣服。表情、嘴型、眼神、手势硬合进去会把每张差分都盖成同一张脸。
-const EXPRESSION_POSE_RE = /^(?:expressionless|emotionless|blank stare|straight face|serious|calm|happy|sad|angry|annoyed|smug|shy|embarrassed|surprised|nervous|worried|crying|tears|blush|laughing|smiling|grin|smirk|frown|pout|open mouth|closed mouth|parted lips|closed eyes|half-closed eyes|wide-eyed|narrowed eyes|looking (?:at viewer|away|down|up|to the side)|head tilt|standing|arms at sides|arms behind back|hands behind back|crossed arms|arms crossed|hands? on (?:own )?(?:hips?|chest|chin|cheek)|.*\b(?:smile|expression)|:\)|:d|\^_\^)$/;
-
 function isExpressionPoseTag(tag) {
-    return EXPRESSION_POSE_RE.test(tagKey(tag));
+    return isSpriteExpressionTag(tag);
 }
 
 // 默认立绘被写成无表情时，差分照抄会带上这些词。
@@ -387,8 +423,8 @@ export function applyMoodToCaption(caption, mood, { nsfw = false } = {}) {
     return prependCharTags(caption, tags, (tag) => !NEUTRAL_FACE_TAGS.has(tagKey(tag)));
 }
 
-// 衣服跟着同一份来源走，不靠写词插件每份重写：换装有服装词就用服装词；
-// 原装或这套有自己的立绘时，用那张立绘的提示词去掉表情、姿势后剩下的长相和衣服。
+// 有 DNA 时不从旧立绘复制外貌；换装只读取独立服装词。
+// 没有 DNA 的存量角色才沿用旧图词，作为读取兼容路径。
 const LOOK_SKIP_TAGS = new Set(['solo', 'cowboy shot', 'facing viewer', 'straight-on', 'centered', 'transparent background', 'simple background', 'grey background', 'light grey background', 'flat color background', 'no background'].map(tagKey));
 
 function storedCharTags(prompt) {
@@ -401,9 +437,11 @@ function storedCharTags(prompt) {
     return String(stored.positive || '');
 }
 
-export function expressionLookTags(basePrompt, outfit) {
+export function expressionLookTags(basePrompt, outfit, dna) {
     const clothes = outfit && typeof outfit === 'object' ? outfit : null;
     const clothesPrompt = clothes ? String(clothes.prompt || '').trim() : '';
+    if (clothes?.nude) return 'nude';
+    if (hasSpriteDna(dna)) return clothesPrompt;
     if (clothesPrompt) return dnaEnglishTags(clothesPrompt).join(', ');
     if (clothes && !clothes.ownImage) return '';
     return splitTags(storedCharTags(basePrompt))
@@ -449,49 +487,6 @@ function prependCharTags(caption, tags, keep = () => true) {
                     ? { ...(item && typeof item === 'object' ? item : {}), char_caption: merge(item && item.char_caption) }
                     : item)),
             },
-        },
-    };
-}
-
-export function applyCharacterDnaToCaption(caption, dna) {
-    const pos = caption && caption.v4_prompt && caption.v4_prompt.caption;
-    const neg = caption && caption.v4_negative_prompt && caption.v4_negative_prompt.caption;
-    if (!pos || !neg || !dna || typeof dna !== 'object') return caption;
-    const positive = dnaEnglishTags([dna.triggerWords, dna.identity, dna.defaultAppearance].join(',')).filter((tag) => !isExpressionPoseTag(tag));
-    const negative = dnaEnglishTags(dna.negative).filter((tag) => !isExpressionPoseTag(tag));
-    if (!positive.length && !negative.length) return caption;
-    const fixed = new Set();
-    for (const tag of positive) {
-        const hit = tagKey(tag).match(COLOR_FEATURE_RE);
-        if (hit) fixed.add(hit[1]);
-    }
-    const blocked = new Set(negative.map(tagKey));
-    const keep = (text) => splitTags(text).filter((tag) => {
-        const key = tagKey(tag);
-        if (blocked.has(key)) return false;
-        const hit = key.match(COLOR_FEATURE_RE);
-        return !(hit && fixed.has(hit[1]) && !positive.some((p) => tagKey(p) === key));
-    }).join(', ');
-    const chars = Array.isArray(pos.char_captions) ? pos.char_captions : [];
-    const ucs = Array.isArray(neg.char_captions) ? neg.char_captions : [];
-    const dnaPositive = positive.join(', ');
-    const dnaNegative = negative.join(', ');
-    return {
-        ...caption,
-        v4_prompt: {
-            ...caption.v4_prompt,
-            caption: {
-                ...pos,
-                base_caption: chars.length ? keep(pos.base_caption) : mergeTags(dnaPositive, keep(pos.base_caption)),
-                char_captions: chars.map((item, index) => ({
-                    ...(item && typeof item === 'object' ? item : {}),
-                    char_caption: index === 0 ? mergeTags(dnaPositive, keep(item && item.char_caption)) : (item && item.char_caption),
-                })),
-            },
-        },
-        v4_negative_prompt: {
-            ...caption.v4_negative_prompt,
-            caption: { ...neg, base_caption: mergeTags(neg.base_caption, dnaNegative), char_captions: ucs },
         },
     };
 }

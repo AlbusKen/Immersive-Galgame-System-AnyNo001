@@ -2100,6 +2100,101 @@ test('gate:settings:generated-asset-actions-rollback-on-persist-and-service-fail
     }
 });
 
+test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失败保持原资料', async () => {
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    const makeLibrary = () => ({ characters: { Alice: { 默认: 'old.png' } },
+        characterAliases: { Alice: ['小爱'] }, characterDna: {}, characterOutfits: {}, wardrobe: {} });
+    for (const mode of ['card', 'global', 'missing', 'missing-candidate', 'wrong-image', 'wrong-character',
+        'record-image', 'record-status', 'record-revision', 'dna', 'scope', 'borrowed',
+        'persist-failed', 'status-failed', 'status-throw', 'rollback-failed']) {
+        const record = await spriteAdoptionFixture();
+        record.updatedAt = 7;
+        let liveRecord = structuredClone(record);
+        const root = makeLibrary();
+        root.cards = { 'card:current': mode === 'global' ? {} : makeLibrary() };
+        if (mode === 'borrowed') {
+            root.characters = {}; root.characterAliases = {};
+            root.cards = { 'card:current': {}, 'card:source': makeLibrary() };
+        }
+        const original = structuredClone(root), saves = [], events = [];
+        const state = { draft: { bridge: { sceneAssets: root }, readerSettings: {} },
+            asyncState: { assetScopeKey: 'card:current' } };
+        let afterRead;
+        const ctx = {
+            state: { activeSettings: state },
+            options: { global: { alert() {}, SillyTavern: { getContext: () => ({ name2: 'current' }) } },
+                generatedAssets: {
+                getRecord: () => liveRecord,
+                async readStoredImage(id) {
+                    events.push('read'); assert.equal(id, record.imageId); assert.deepEqual(root, original);
+                    const stored = structuredClone(record);
+                    if (mode === 'record-image') liveRecord.imageId = 'replacement';
+                    if (mode === 'record-status') liveRecord.status = 'discarded';
+                    if (mode === 'record-revision') liveRecord.updatedAt++;
+                    if (mode === 'dna') root.cards['card:current'].characterDna.Alice = { identity: '手工更新' };
+                    if (mode === 'scope') state.asyncState.assetScopeKey = 'card:other';
+                    afterRead = structuredClone(root);
+                    if (mode === 'missing') return null;
+                    if (mode === 'missing-candidate') delete stored.dnaCandidates;
+                    if (mode === 'wrong-image') stored.id = 'other-image';
+                    if (mode === 'wrong-character') stored.identityContext[0].characterKey = 'Bob';
+                    return stored;
+                },
+                async setStatus(key, status, receipt) {
+                    events.push('status'); assert.equal(key, 'temp'); assert.equal(status, 'library');
+                    assert.deepEqual(receipt, { imageId: record.imageId, status: 'temp', updatedAt: 7 });
+                    if (mode === 'status-throw') throw new Error('fixture-status');
+                    if (['status-failed', 'rollback-failed'].includes(mode)) return { ok: false, reason: 'status-failed' };
+                    liveRecord.status = status; return { ok: true };
+                },
+            } },
+            dialogs: { prompt: async () => '小爱', alert() {} },
+            persistSettingsDraft() {
+                events.push('save'); saves.push(structuredClone(root));
+                if (mode === 'persist-failed' && saves.length === 1) return { ok: false, reason: 'persist-failed' };
+                if (mode === 'rollback-failed' && saves.length === 2) return { ok: false, reason: 'rollback-failed' };
+                return { ok: true };
+            }, rerenderSettings: () => ({ ok: true }),
+        };
+        const result = await handleSettingsAction('gen-temp-accept:temp', ctx);
+        if (['card', 'global'].includes(mode)) {
+            assert.equal(result.ok, true, mode);
+            const library = mode === 'global' ? root : root.cards['card:current'];
+            assert.equal(library.characters.Alice.默认, `igs-gen:${record.imageId}`);
+            assert.deepEqual(library.characterDna.Alice.views, record.dnaCandidates.characters[0].views);
+            assert.equal(library.characterDna.Alice.identitySource, record.imageId);
+            assert.equal(library.wardrobe['Alice·日常'].prompt, 'A red hoodie.');
+            assert.equal(library.characters['小爱'], undefined);
+            assert.deepEqual(events, ['read', 'save', 'status']);
+            if (mode === 'card') for (const field of Object.keys(makeLibrary())) assert.deepEqual(root[field], original[field]);
+            else assert.deepEqual(root.cards, original.cards);
+        } else {
+            assert.equal(result.ok, false, mode);
+            assert.deepEqual(root, mode === 'dna' ? afterRead : original, mode);
+            assert.equal(liveRecord.status, mode === 'record-status' ? 'discarded' : 'temp', mode);
+            if (['persist-failed', 'status-failed', 'status-throw', 'rollback-failed'].includes(mode)) {
+                assert.equal(saves.length, 2, mode); assert.deepEqual(saves[1], original, mode);
+            } else assert.equal(saves.length, 0, mode);
+            if (mode === 'borrowed') { assert.equal(result.reason, 'DNA_ADOPTION_SCOPE'); assert.deepEqual(events, []); }
+            if (mode === 'rollback-failed') assert.equal(result.reason, 'generated-asset-accept-rollback-failed');
+        }
+    }
+});
+
+test('gate:dna-adoption-ui:无模板旧立绘采用保留独立兼容路径', async () => {
+    const assets = { characters: {}, characterDna: {}, characterAliases: {} };
+    const result = await handleSettingsAction('gen-temp-accept:old', {
+        state: { activeSettings: { draft: { bridge: { sceneAssets: assets } }, asyncState: {} } },
+        options: { global: { alert() {} }, generatedAssets: {
+            getRecord: () => ({ type: 'sprite', name: 'Alice', imageId: 'legacy', characterMeta: {
+                version: 1, characters: [{ characterKey: 'Alice', identityAnchor: 'Silver hair.' }] } }),
+            readStoredImage: async () => { throw new Error('旧记录不得假装新模板'); }, setStatus: async () => ({ ok: true }),
+        } }, persistSettingsDraft: () => ({ ok: true }), rerenderSettings: () => ({ ok: true }),
+    });
+    assert.equal(result.ok, true); assert.equal(assets.characterDna.Alice.identity, 'Silver hair.');
+    assert.equal(assets.characterDna.Alice.views, undefined);
+});
+
 test('gate:settings:generated-asset-download-button-and-action', async () => {
     const { renderGeneratedAssetPane } = await import('../src/visual/igs-ui/settings-fields.js');
     const { sanitizeDownloadName } = await import('../src/visual/igs-ui/settings-actions.js');
@@ -4344,6 +4439,50 @@ test('character dna: prompt tags keep weight groups, dedupe case-insensitively a
     assert.deepEqual(buildCharacterDnaPromptParts({}), { positive: '', negative: '' });
 });
 
+test('character dna: empty edited views remain storable but cannot expand', async () => {
+    const { readCharacterDnaView, checkDnaViews } = await import('../src/scene/character-dna.js');
+    const dna = { version: 2, identity: '银发', identityInitialized: true, views: {
+        portrait: { subject: 'Alice, with silver hair,' }, partial: { subject: '', negative: 'glasses' } } };
+    assert.equal(checkDnaViews(dna.views, { allowEmpty: true }).ok, true);
+    assert.equal(readCharacterDnaView(dna, 'portrait').ok, true);
+    assert.equal(readCharacterDnaView(dna, 'partial').reason, 'DNA_VIEW_MISSING');
+    assert.equal(readCharacterDnaView({ defaultAppearance: 'coat', negative: 'glasses' }, 'portrait').reason, 'DNA_MISSING');
+    assert.equal(readCharacterDnaView({ ...dna, views: { portrait: { subject: '<<dna:bad>>' } } }, 'portrait').reason, 'DNA_VIEW_INVALID');
+});
+
+
+test('character dna: versioned views preserve identity and select exact framing', async () => {
+    const { normalizeCharacterDna, readCharacterDnaView, checkDnaViews, editCharacterDnaField, isCharacterDnaEmpty } = await import('../src/scene/character-dna.js');
+    const old = { identity: '银发', triggerWords: '1.2::alice::' };
+    assert.equal(normalizeCharacterDna(old).version, undefined);
+    assert.equal(readCharacterDnaView(old, 'portrait').reason, 'DNA_VIEW_MISSING');
+    assert.equal(readCharacterDnaView({}, 'portrait').reason, 'DNA_MISSING');
+    const views = { portrait: { subject: 'Alice, with 1.2::silver hair::,' } };
+    const dna = normalizeCharacterDna({ ...old, version: 2, views });
+    assert.equal(dna.identity, '银发');
+    assert.equal(readCharacterDnaView(dna, 'portrait').value.subject, views.portrait.subject);
+    assert.equal(readCharacterDnaView(dna, 'full_body').reason, 'DNA_VIEW_MISSING');
+    assert.equal(isCharacterDnaEmpty({ version: 2, views }), false);
+    assert.equal(checkDnaViews(views, { complete: true }).ok, false);
+    assert.equal(checkDnaViews({ portrait: { subject: '<<dna:evil>>' } }).ok, false);
+    const edited = editCharacterDnaField(dna, 'views.portrait.subject', 'Alice, with black hair,');
+    assert.equal(edited.views.portrait.subject, 'Alice, with black hair,');
+    assert.equal(dna.views.portrait.subject, views.portrait.subject);
+    assert.deepEqual(editCharacterDnaField(dna, 'identity', '').views, dna.views);
+    assert.equal(editCharacterDnaField(dna, 'identity', '').identityInitialized, true);
+    const negativeOnly = editCharacterDnaField({}, 'views.portrait.negative', 'glasses');
+    assert.equal(negativeOnly.identityInitialized, undefined);
+    assert.equal(editCharacterDnaField({}, 'views.portrait.subject', '').identityInitialized, true);
+    assert.equal(readCharacterDnaView(negativeOnly, 'portrait').reason, 'DNA_MISSING');
+    assert.equal(readCharacterDnaView(dna, 'unknown').reason, 'DNA_VIEW_INVALID');
+    assert.equal(checkDnaViews({ portrait: { subject: 'Alice', negative: '<<dna_uc:evil>>' } }).ok, false);
+    assert.equal(checkDnaViews({ unknown: { subject: 'Alice' } }).ok, false);
+    assert.equal(checkDnaViews({ portrait: { subject: 'Alice', negative: 123 } }).ok, false);
+    assert.equal(edited.identityInitialized, true);
+    assert.equal(editCharacterDnaField(dna, 'views.__proto__.subject', 'x'), null);
+});
+
+
 
 test('gate:scene:character-dna-lifecycle', async () => {
     const storage = createMemoryStorage();
@@ -4398,7 +4537,11 @@ test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async (
     const { renderCharacterAssetList, renderCharacterDnaEditor } = await import('../src/visual/igs-ui/settings-fields.js');
     const empty = renderCharacterDnaEditor('白墨', null);
     assert.ok(empty.includes('角色DNA（未填写）'));
-    assert.equal((empty.match(/data-dna-field="/g) || []).length, 4);
+    assert.deepEqual([...empty.matchAll(/data-dna-field="([^"]+)"/g)].map((match) => match[1]), [
+        'identity', 'defaultAppearance', 'negative', 'triggerWords',
+        ...['full_body', 'half_body', 'portrait', 'partial']
+            .flatMap((view) => [`views.${view}.subject`, `views.${view}.negative`]),
+    ]);
     // DNA 在角色那一行的 ⋯ 里（「角色设定」），点开才出编辑区。
     const closed = renderCharacterAssetList({ 'A.<b>': { '默认': '' } }, {
         characterDna: { 'A.<b>': { identity: 'silver hair', triggerWords: 'alice_v2' } },
@@ -4490,7 +4633,7 @@ test('gate:scene:dna-only-character-add-rename-remove-and-list', async () => {
 });
 
 
-test('gate:generated-images:sprite-slot-merges-character-dna-in-fixed-order', async () => {
+test('gate:generated-images:sprite-slot-composes-character-dna-as-single-source', async () => {
     const { buildAssetSlot, buildAssetPlannerUserPrompt } = await import('../src/generated-images/illustration/asset-prompt.js');
     const { attachCharacterDna } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const templates = { sprite: '{tags}, {matte}', spriteNegative: 'NEG_TPL' };
@@ -4503,7 +4646,7 @@ test('gate:generated-images:sprite-slot-merges-character-dna-in-fixed-order', as
 
     const dna = { triggerWords: 'alice_v2', identity: 'silver hair, blue eyes', defaultAppearance: 'school uniform', negative: 'zz_no_glasses' };
     const withDna = buildAssetSlot({ ...base, need: { ...base.need, dna } }, { templates });
-    assert.equal(withDna.scene.startsWith('alice_v2, silver hair, blue eyes, school uniform, 1girl, smile, '), true);
+    assert.equal(withDna.scene.startsWith('alice_v2, silver hair, blue eyes, smile, school uniform, '), true);
     assert.equal((withDna.scene.match(/blue eyes/gi) || []).length, 1);
     assert.equal(withDna.sceneUc.startsWith('NEG_TPL, zz_no_glasses, '), true);
     assert.equal(withDna.sceneUc.replace(', zz_no_glasses', ''), plain.sceneUc);
@@ -5080,7 +5223,7 @@ test('gate:generated-images:image-edit-capability-never-falls-back-to-generate',
 
     const backend = createImageBackend({ nai: naiWithEdit, getBridge: () => bridge('nai') });
     assert.equal(backend.describeEdit(bridge('extension')).reason, 'image-edit-unsupported');
-    assert.equal(backend.describeEdit(bridge('dbgen')).reason, 'image-edit-unsupported');
+    assert.equal(backend.describeEdit(bridge('dbgen')).reason, 'dbgen-upgrade-required');
     assert.equal(backend.describeEdit(bridge('nai', '')).reason, 'backend-unavailable');
     assert.equal(backend.describeEdit(bridge('nai')).supported, true);
     assert.equal(createImageBackend({ nai: naiNoEdit, getBridge: () => bridge('nai') }).describeEdit().reason, 'image-edit-unsupported');
@@ -5088,7 +5231,7 @@ test('gate:generated-images:image-edit-capability-never-falls-back-to-generate',
     const unsupported = await createImageBackend({ nai: naiNoEdit, getBridge: () => bridge('nai') }).edit({ sourceDataUrl: 's', maskDataUrl: 'm' });
     assert.equal(unsupported.ok, false);
     assert.equal(unsupported.reason, 'image-edit-unsupported');
-    assert.equal((await backend.edit({ sourceDataUrl: 's', maskDataUrl: 'm' }, bridge('dbgen'))).reason, 'image-edit-unsupported');
+    assert.equal((await backend.edit({ sourceDataUrl: 's', maskDataUrl: 'm' }, bridge('dbgen'))).reason, 'dbgen-upgrade-required');
     assert.equal((await backend.edit({ sourceDataUrl: 's' })).reason, 'invalid-edit-request');
 
     const ok = await backend.edit({ sourceDataUrl: 's', maskDataUrl: 'm', prompt: 'silver hair' });

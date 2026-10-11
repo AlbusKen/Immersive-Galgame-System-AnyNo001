@@ -1,4 +1,21 @@
 import { FICTION_FRAME, CG_COMPOSITION_GUIDE, TAG_WRITING_RULES, SOFT_MODE_NOTE } from './prompt-kit.js';
+import { DNA_TEMPLATE_WRITER_SYSTEM } from '../prompt-registry.js';
+
+// CG 在原有一次规划调用中选生成点；人物身份只引用保存资料。
+export const CG_TEMPLATE_PLANNER_SYSTEM = [
+    DNA_TEMPLATE_WRITER_SYSTEM,
+    '本次是普通 CG 规划：在输入的编号正文中选择生成点，不续写剧情。每份额外写 at: 正文段落编号。',
+    'slotid 沿用输入允许的编号；at 必须在正文范围内，各图生成点不重复。每图按实际出镜选择角色池子集和四种景别。',
+    '具名角色必须保留身份绑定，即使资料缺失也不能改成 generic 或删人；该图由宿主暂停。无名路人、背景群体和物品直接描述。',
+    ...CG_COMPOSITION_GUIDE,
+].join('\n');
+
+// 两条 CG 写词链消费同一份约束；发送端不再追加这些语义正文。
+export function cgWritingRequirements(settings, size, kind) {
+    return { size, transparent: false, quality: 'High quality illustration.',
+        undesiredContent: settings.nai.negativePrompt,
+        ...(kind === 'nsfw' && { sceneRequirements: settings.assets.templates.nsfwExtra }) };
+}
 
 const PLANNER_OUTPUT_FORMAT = [
     '【输出格式】不要输出 JSON、不要代码块、不要解释。每张图按以下字段一行一个输出，多张图依次排列：',

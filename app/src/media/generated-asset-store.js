@@ -1,5 +1,7 @@
 // 生成素材存储：images 存图片本体（素材库与临时素材共用，按 id 引用），
 // assets 存本聊天的临时素材记录（按 chatId / floorKey 查询），floors 记录楼层是否已处理过。
+import { editedStoredPrompt } from '../generated-images/generation-prompt.js';
+
 const DB_NAME = 'igs-generated-assets';
 const DB_VERSION = 1;
 
@@ -55,6 +57,32 @@ export function applyGeneratedImageUpdate(current, expectedRevision, patch = {},
     return { ok: true, record: next };
 }
 
+// 提示词编辑与像素修复共用 revision，但 legacy 图片无需原图也可以改词。
+export function applyGeneratedPromptUpdate(current, expectedRevision, prompt, updatedAt = '') {
+    const record = normalizeGeneratedImageRecord(current);
+    if (!record) return { ok: false, reason: 'not-found' };
+    if (record.revision !== expectedRevision) return { ok: false, reason: 'stale-revision' };
+    let stored;
+    try { stored = editedStoredPrompt(prompt, { ...record.prompt, ...record }); }
+    catch { return { ok: false, reason: 'PROMPT_PROVENANCE_INVALID' }; }
+    if (!stored) return { ok: false, reason: 'empty-prompt' };
+    return { ok: true, record: { ...record, prompt: stored, promptEdited: true, captionMode: 'final',
+        revision: record.revision + 1, updatedAt: updatedAt || new Date().toISOString() } };
+}
+
+// 搬家只变图片存放位置，不改变语义 revision；比较与提交必须在同一事务。
+function relocatedImage(current, expected, relocated) {
+    if (!current) return { ok: false, reason: 'not-found' };
+    const keys = new Set([...Object.keys(current), ...Object.keys(expected)]);
+    if ([...keys].some((key) => JSON.stringify(current[key]) !== JSON.stringify(expected[key])))
+        return { ok: false, reason: 'stale-record' };
+    const record = { ...current };
+    for (const key of ['dataUrl', 'originalDataUrl', 'workingDataUrl', 'alphaMaskDataUrl']) {
+        if (typeof relocated[key] === 'string') record[key] = relocated[key];
+    }
+    return { ok: true, record };
+}
+
 export function createMemoryGeneratedAssetStore() {
     const images = new Map();
     const assets = new Map();
@@ -67,6 +95,16 @@ export function createMemoryGeneratedAssetStore() {
             const result = applyGeneratedImageUpdate(images.get(id), expectedRevision, patch, updatedAt);
             if (result.ok) images.set(id, clone(result.record));
             return result.ok ? { ok: true, record: clone(result.record) } : result;
+        },
+        async updateImagePrompt(id, expectedRevision, prompt, updatedAt) {
+            const result = applyGeneratedPromptUpdate(images.get(id), expectedRevision, prompt, updatedAt);
+            if (result.ok) images.set(id, clone(result.record));
+            return clone(result);
+        },
+        async relocateImage(expected, relocated) {
+            const result = relocatedImage(images.get(expected.id), expected, relocated);
+            if (result.ok) images.set(expected.id, clone(result.record));
+            return clone(result);
         },
         async getAssetsByChat(chatId) { return Array.from(assets.values()).filter((a) => a.chatId === chatId).map(clone); },
         async getAssetsByFloor(floorKey) { return Array.from(assets.values()).filter((a) => a.floorKey === floorKey).map(clone); },
@@ -107,6 +145,25 @@ export function createIndexedDbGeneratedAssetStore(globalObject = globalThis) {
             const req = fn(tx.objectStore(storeName));
             tx.oncomplete = () => resolve(req ? req.result : undefined);
             tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    };
+    const update = async (id, apply) => {
+        const db = await open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('images', 'readwrite');
+            const objectStore = tx.objectStore('images');
+            let outcome;
+            const req = objectStore.get(id);
+            req.onsuccess = () => {
+                try {
+                    outcome = apply(req.result);
+                    if (outcome.ok) objectStore.put(outcome.record);
+                } catch { outcome = { ok: false, reason: 'update-failed' }; }
+            };
+            tx.oncomplete = () => resolve(outcome);
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
         });
     };
     return {
@@ -129,6 +186,12 @@ export function createIndexedDbGeneratedAssetStore(globalObject = globalThis) {
                 tx.onerror = () => reject(tx.error);
                 tx.onabort = () => reject(tx.error);
             });
+        },
+        async updateImagePrompt(id, expectedRevision, prompt, updatedAt) {
+            return update(id, (current) => applyGeneratedPromptUpdate(current, expectedRevision, prompt, updatedAt));
+        },
+        async relocateImage(expected, relocated) {
+            return update(expected.id, (current) => relocatedImage(current, expected, relocated));
         },
         async getAssetsByChat(chatId) { return (await run('assets', 'readonly', (s) => s.index('chatId').getAll(chatId))) || []; },
         async getAssetsByFloor(floorKey) { return (await run('assets', 'readonly', (s) => s.index('floorKey').getAll(floorKey))) || []; },

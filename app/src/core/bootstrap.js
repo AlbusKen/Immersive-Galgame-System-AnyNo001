@@ -54,6 +54,8 @@ import { createAutoIllustrationService, ILLUSTRATION_PROGRESS_EVENT, ILLUSTRATIO
 import { createAssetGenerationService, GENERATED_ASSET_UPDATED_EVENT } from '../generated-images/illustration/asset-generation-service.js';
 import { createItemAndCgServices } from './item-cg-services.js';
 import { createIndexedDbGeneratedAssetStore } from '../media/generated-asset-store.js';
+import { createCanvasImageCodec } from '../media/canvas-image-codec.js';
+import { isGeneratedAssetUrl, generatedAssetIdOf } from '../scene/asset-match.js';
 import { createAlphaMatte } from '../media/alpha-matte.js';
 import { firstMoodWord, resolvePromptRuleContent, scenePromptRuleEnabled } from '../scene/prompt-rule-content.js';
 import { buildTagGrammar, DEPTH0_REMINDER, normalizePromptPlacement } from '../visual/igs-ui/tag-grammar.js';
@@ -162,6 +164,13 @@ export function bootstrapIGS(options = {}) {
         getReaderMode: readerModeNow,
         getViewport: () => readCgViewport(globalObject, readerModeNow()),
         getSceneAssets: () => sceneAssetsNow(readImageBridge().sceneAssets),
+        imageCodec: options.imageCodec || createCanvasImageCodec(globalObject),
+        resolveCgReference: async (characterKey, assets) => {
+            const url = assets.characters?.[characterKey]?.['默认'] || assets.generated?.characters?.[characterKey]?.['默认'] || '';
+            if (!isGeneratedAssetUrl(url)) return url;
+            const image = await generatedAssetStore.getImage(generatedAssetIdOf(url));
+            return image?.dataUrl || '';
+        },
         getSourceFilter: () => readImageBridge().sourceFilter,
         events,
         random: options.random,

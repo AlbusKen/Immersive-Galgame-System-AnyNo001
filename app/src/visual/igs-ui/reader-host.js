@@ -8,6 +8,7 @@ import {
 } from '../../scene/message-source.js';
 import { canonicalName, noteFormGender, setActiveFormGenders } from './voice-bark.js';
 import { createSettingsHost } from './settings-host.js';
+import { handleSettingsAction } from './settings-actions.js';
 import { normalizeBridgeConfig, normalizeReaderSettings } from './settings-host-normalize.js';
 import { extractSceneDirectives, resolveSceneAtSourceOffset, resolveIllustrationForPage, resolveHeldSourceOffsets, locateNarrativeOffset, stripIllustrationMarkers } from '../../scene/scene-directives.js';
 import { classifySceneKey, resolveCharacterKey } from '../../scene/scene-directives.js';
@@ -49,7 +50,7 @@ import { isTtsSpeaking, replayTts, setTtsErrorHandler, stopTts } from './tts.js'
 import { playUiSfx } from './ui-sfx.js';
 import { findLastDreadLevel } from '../../scene/horror.js';
 import { parseHtmlCardMarker } from '../../scene/html-cards.js';
-import { resolveBackgroundAsset, resolveSpriteAsset, resolveNudeSpriteAsset, isGeneratedAssetUrl, bindGeneratedBackground, bindGeneratedSprite, isNonSpriteSpeaker } from '../../scene/asset-match.js';
+import { resolveBackgroundAsset, resolveSpriteAsset, resolveNudeSpriteAsset, isGeneratedAssetUrl, bindGeneratedBackground, isNonSpriteSpeaker } from '../../scene/asset-match.js';
 import { STAGE_CAST_MAX_SEATS, STAGE_CAST_SCAN_LIMIT, pickCastMembers, resolveCastOffset, resolveStageCast } from '../../scene/stage-cast.js';
 import { normalizeStageCastSettings } from './stage-direction-settings.js';
 import { resolveRomanceRivalTarget } from './romance-settings.js';
@@ -217,6 +218,7 @@ import { createShujukuClient } from '../../data/shujuku/client.js';
 import { buildStatusHudModel, normalizeStatusHudSettings, resolveStatusAvatar } from '../../data/shujuku/status-hud-model.js';
 import { readOptionItems } from '../../choices/option-table.js';
 import { createIgsModal } from './igs-modal.js';
+import { runCgConsistencyAction } from './cg-consistency-action.js';
 import { createOnboardingController } from './onboarding-guide-controller.js';
 import { applyPerformanceProfile, applyProfileDetails } from './performance-profile.js';
 import { applyFxWorldview } from '../../scene/fx-era.js';
@@ -906,6 +908,8 @@ export function createIgsReaderHost(options = {}) {
             }
         }
         if (turnIndexPanel) turnIndexPanel.close();
+        current.consistencyTask?.controller.abort();
+        if (current.consistencyTask) pageModal.cancel();
         // 真正关闭（不是切轮重开）时把阅读进度同步进聊天元数据，换设备也能续读。
         if (closeOptions.keepFullscreen !== true) pushProgressToMetadata();
         teardownStatusHudSubscription();
@@ -1684,6 +1688,9 @@ export function createIgsReaderHost(options = {}) {
         if (normalizedAction === 'reroll-cg') {
             return rerollCurrentIllustration();
         }
+        if (normalizedAction === 'consistency-cg') {
+            return redrawCurrentConsistency();
+        }
         if (normalizedAction === 'cg-gallery') {
             return openCgGallery();
         }
@@ -2302,6 +2309,51 @@ export function createIgsReaderHost(options = {}) {
             if (state.activeReader === current) imageNotice('error', `重画异常：${(error && error.message) || error || '未知错误'}`);
             return { ok: false, reason: 'error' };
         } finally {
+            current.illustrationPending = false;
+        }
+    }
+
+    async function redrawCurrentConsistency() {
+        const current = state.activeReader;
+        if (!current) return { ok: false, reason: 'reader-not-open' };
+        const content = current.snapshot?.content || {};
+        const service = options.illustrations;
+        if (!content.illustrationSlot || !content.illustrationActive || !content.illustrationUrl)
+            return { ok: false, reason: 'no-current-cg', error: '当前页没有已保存的 IGS CG' };
+        if (!service?.redrawConsistency || !service?.acceptConsistency || !service?.cancelConsistency) {
+            imageNotice('warn', '当前未接入角色一致性重绘。');
+            return { ok: false, reason: 'consistency-unavailable' };
+        }
+        if (current.illustrationPending) return { ok: false, reason: 'consistency-busy' };
+        const identity = current.illustrationIdentity || {};
+        const query = { chatId: identity.chatId,
+            messageId: current.contentMessageId ?? current.payload.messageId,
+            swipeId: identity.swipeId, slot: content.illustrationSlot };
+        const controller = new AbortController();
+        const stillCurrent = () => state.activeReader === current
+            && String(current.illustrationIdentity?.chatId) === String(query.chatId)
+            && Number(current.illustrationIdentity?.swipeId) === Number(query.swipeId)
+            && Number(current.contentMessageId ?? current.payload.messageId) === Number(query.messageId)
+            && Number(current.snapshot?.content?.illustrationSlot) === Number(query.slot);
+        const task = { controller, stillCurrent };
+        current.consistencyTask = task;
+        current.illustrationPending = true;
+        try {
+            const result = await runCgConsistencyAction({ service, query, modal: pageModal,
+                signal: controller.signal, stillCurrent, onProgress: { stop: () => controller.abort() } });
+            if (state.activeReader === current && !controller.signal.aborted) {
+                if (result?.ok && result.reason === 'accepted') {
+                    rerenderActiveReader();
+                    imageNotice(result.warning ? 'warn' : 'success', result.warning
+                        ? 'CG 已保存，目录或显示同步需刷新重试。' : '角色一致性候选已接受。');
+                } else if (result?.reason !== 'cancelled') {
+                    imageNotice('warn', result?.error || `一致性重绘未保存：${result?.reason || '未知原因'}`);
+                }
+            }
+            return result;
+        } finally {
+            controller.abort();
+            if (current.consistencyTask === task) current.consistencyTask = null;
             current.illustrationPending = false;
         }
     }
@@ -4024,6 +4076,7 @@ export function createIgsReaderHost(options = {}) {
     function updateMountedReader(snapshot) {
         const current = state.activeReader;
         if (!current) return;
+        if (current.consistencyTask && !current.consistencyTask.stillCurrent()) current.consistencyTask.controller.abort();
         warmActiveFloorImages(snapshot);
         current.autoPlayer?.setSpeed(snapshot.readerSettings?.typewriter?.speed);
         noteReadingProgress(current, snapshot);
@@ -4265,7 +4318,10 @@ export function createIgsReaderHost(options = {}) {
             ...item,
             previewUrl: typeof service.resolveUrl === 'function' ? service.resolveUrl(item.url) : item.url,
         })), {
-            onResolve: (item, status, name) => { void resolveGeneratedReview(item, status, name); },
+            onResolve: (item, status, name) => resolveGeneratedReview(item, status, name).catch(() => {
+                writeToastSafe('素材审核提交失败，请重新打开审核；未确认的结果不算入库成功。');
+                return { ok: false, reason: 'generated-asset-status-failed' };
+            }),
             outfitAsks,
             onOutfit: (ask, picked) => resolveOutfitAsk(ask, picked),
         });
@@ -4340,10 +4396,64 @@ export function createIgsReaderHost(options = {}) {
     async function resolveGeneratedReview(item, status, name) {
         const service = options.generatedAssets;
         if (!service || !item) return;
-        // 「加入素材库并编辑 DNA」= 先按普通入库处理，成功后再打开 DNA 候选确认；候选不自动写入。
         const withDna = status === 'library-dna' && item.type === 'sprite';
         if (status === 'library-dna') status = 'library';
-        let addedName = '';
+        if (status === 'library' && item.type === 'sprite') {
+            const activeSettings = state.activeSettings;
+            const scope = () => resolveAssetScope(getSillyTavernContext(options.global || globalThis)).key;
+            const sourceScope = scope();
+            const snapshot = resolveBridgeConfigSnapshot({ mode: 'default' });
+            const settingsState = activeSettings || { draft: cloneData(snapshot), asyncState: {} };
+            let committedAssets = JSON.stringify(snapshot.bridge.sceneAssets);
+            const save = () => {
+                if (state.activeSettings !== activeSettings || scope() !== sourceScope)
+                    return { ok: false, reason: 'DNA_ADOPTION_CONFLICT' };
+                if (activeSettings) return persistSettingsDraft();
+                const current = resolveBridgeConfigSnapshot({ mode: 'default' });
+                if (JSON.stringify(current.bridge.sceneAssets) !== committedAssets)
+                    return { ok: false, reason: 'DNA_ADOPTION_CONFLICT' };
+                if (typeof options.saveUnifiedSettings !== 'function') return { ok: false, reason: 'missing-save-handler' };
+                let saved;
+                try { saved = options.saveUnifiedSettings({ bridge: { ...current.bridge,
+                    sceneAssets: settingsState.draft.bridge.sceneAssets }, readerMode: 'default', readerSettings: current.readerSettings }); }
+                catch { return { ok: false, reason: 'save-failed' }; }
+                if (!saved || saved.ok === false) return saved || { ok: false, reason: 'save-failed' };
+                committedAssets = JSON.stringify(resolveBridgeConfigSnapshot({ mode: 'default' }).bridge.sceneAssets);
+                return saved;
+            };
+            const result = await handleSettingsAction(`gen-temp-accept:${encodeURIComponent(item.key)}`, {
+                state: { activeSettings: settingsState },
+                options: { ...options, generatedAssets: { ...service,
+                    getRecord(key) {
+                        const current = service.getRecord?.(key);
+                        return current?.imageId === item.imageId && current.status === item.status
+                            && current.updatedAt === item.updatedAt ? current : null;
+                    } } },
+                dialogs: { prompt: async () => String(name || item.name || '').trim(),
+                    alert: (message) => writeToastSafe(message) },
+                persistSettingsDraft: save, rerenderSettings: () => ({ ok: true }),
+            });
+            if (!result?.ok || service.getRecord?.(item.key)?.status !== 'library') {
+                writeToastSafe('角色立绘采用未完成，原资料或候选保持不变，请重新打开审核。');
+                return result;
+            }
+            if (activeSettings) rerenderSettings();
+            if (state.activeReader) rerenderActiveReader();
+            const assets = sceneAssetsForContext(settingsState.draft.bridge.sceneAssets,
+                getSillyTavernContext(options.global || globalThis));
+            const known = { ...assets.characterDna, ...assets.characters };
+            const addedName = resolveCharacterKey(known, assets.characterAliases, name || item.name) || name || item.name;
+            writeToastSafe(`已放入角色立绘「${addedName}」`);
+            if (withDna) {
+                if (!state.activeSettings) openSettings({ tab: 'scene', mode: state.activeReader?.mode || 'pc' });
+                await state.activeSettings?.controller?.invoke('open-character-dna');
+                const settings = state.activeSettings;
+                if (!settings?.asyncState?.advancedOpen?.[`char-dna:${addedName}`]) {
+                    await settings?.controller?.invoke(`scene-toggle-dna:${encodeURIComponent(addedName)}`);
+                }
+            }
+            return result;
+        }
         if (status === 'library' && item.type === 'background') {
             const added = mutateSceneLibrary((assets) => {
                 const bound = bindGeneratedBackground(assets, item, name || item.name);
@@ -4355,36 +4465,10 @@ export function createIgsReaderHost(options = {}) {
                 writeToastSafe('加入场景素材失败：名称不能为空');
                 return;
             }
-            addedName = added.name;
             writeToastSafe(`已放入场景素材「${added.name}」`);
-        } else if (status === 'library') {
-            const added = mutateSceneLibrary((assets) => {
-                const bound = bindGeneratedSprite(assets, name || item.name, item.imageId ? `igs-gen:${item.imageId}` : '', { replace: true });
-                if (!bound.ok) return bound;
-                assets.characters = bound.characters;
-                assets.characterAliases = bound.characterAliases;
-                return bound;
-            }, { character: name || item.name });
-            if (!added || added.ok === false) {
-                writeToastSafe('放入角色立绘失败：名称不能为空');
-                return;
-            }
-            addedName = added.name;
-            writeToastSafe(`已放入角色立绘「${added.name}」`);
         }
         if (typeof service.setStatus === 'function') await service.setStatus(item.key, status);
         if (state.activeReader) rerenderActiveReader();
-        if (withDna && addedName) openDnaCandidate(addedName, item.tags);
-    }
-
-    function openDnaCandidate(characterName, tags) {
-        if (!state.activeSettings) openSettings({ tab: 'scene', mode: state.activeReader ? state.activeReader.mode : 'pc' });
-        if (!state.activeSettings) return { ok: false, reason: 'settings-not-open' };
-        state.activeSettings.tab = 'scene';
-        state.activeSettings.tab = 'scene';
-        state.activeSettings.asyncState.sceneSubTab = 'characters';
-        state.activeSettings.asyncState.dnaCandidate = { name: String(characterName || ''), tags: String(tags || '') };
-        return rerenderSettings();
     }
 
     function syncOptionBubblesAfterRender(current, snapshot) {

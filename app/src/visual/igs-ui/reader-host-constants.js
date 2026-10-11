@@ -322,6 +322,7 @@ export const TOOLBAR_ACTIONS = Object.freeze([
     ['quick-load', '快速读档'],
     ['regen', '绘制 CG'],
     ['reroll-cg', '重画这张'],
+    ['consistency-cg', '角色一致性重绘'],
     ['clear-cg', '清扫当前 CG'],
     ['clear-floor-cg', '清扫本楼'],
     ['generate-assets', '补全立绘与背景'],

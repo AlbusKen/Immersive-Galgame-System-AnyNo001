@@ -146,3 +146,18 @@ test('改借来的角色写回原来那张卡，不在本卡另起一份', () =>
     assert.equal(root.cards['card:A'].characters.五条悟.开心, 'smile');
     assert.equal(root.cards['card:B'], undefined);
 });
+
+test('角色首次采用标记随卡保存、借用和移动，主动清空后仍不被生成覆盖', async () => {
+    const { adoptSpriteIdentity } = await import('../src/scene/character-identity.js');
+    const dna = { identity: '', defaultAppearance: 'legacy coat', negative: '', triggerWords: '', identityInitialized: true, identitySource: 'sprite-a' };
+    const root = { cards: { 'card:A': { characters: { Alice: { 默认: 'sprite-a' } }, characterDna: { Alice: dna } } } };
+    const saved = JSON.parse(JSON.stringify(root));
+    normalizeAssetCards(saved);
+    assert.deepEqual(saved.cards['card:A'].characterDna.Alice, dna);
+    assert.deepEqual(effectiveSceneAssets(saved, 'card:B').characterDna.Alice, dna);
+    assert.equal(moveLibraryEntry(saved, 'card:A', 'card:C', 'characters', 'Alice').ok, true);
+    const assets = effectiveSceneAssets(saved, 'card:C');
+    assert.deepEqual(assets.characterDna.Alice, dna);
+    const adopted = adoptSpriteIdentity(assets, 'Alice', 'sprite-new', { characters: [{ characterKey: 'Alice', identityAnchor: 'New identity.' }] });
+    assert.deepEqual(adopted.characterDna.Alice, dna);
+});

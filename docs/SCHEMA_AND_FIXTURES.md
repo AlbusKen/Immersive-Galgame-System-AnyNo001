@@ -48,6 +48,12 @@ fixtures 文件应短小、可读、可复用。需要大资源时只放 manifes
 - `S9 registry`：新增 `app/fixtures/presets/text-presets-import-bundle.json` 与 `bad-current-overwrite-bundle.json`，覆盖文本预设导入、坏预设拒收和 current 守卫。
 - `S10 api`：文本预设公开分组继续覆盖 `register/unregister/get/list`，并补充 `setCurrent/getCurrent/export/exportAll` 契约。
 
+## DNA 模板离线夹具
+
+- `app/tests/unit.test.js` 的 `character dna` 与生命周期用例覆盖四景别、旧中文原文和权重、手工清空、精确景别选择；旧自由文本不自动拆分。
+- `app/tests/image-source-adapters.test.js` 的 `gate:dna-template` 使用合成角色，覆盖 DBGen 工作台扁平回复交接、自身身份展开、相似名与跨角色提及、缺身份／景别、冲突模式、取消和其他来源隔离。真实 DBGen service/gateway 配合假 transport 捕获最终 wire；内置 NAI 普通生成及 infill 采用同样捕获方式。
+- DBGen `tests/domain/flat-imagegen.test.js`、`tests/application/generate-slots.test.js`、`tests/domain/nai.test.js`、`tests/domain/img2img.test.js`、`tests/adapters/gateway.test.js` 覆盖旧 API、两条写词入口、新旁路与定稿 generate/img2img/infill。离线 fixture 不证明真实模型身份一致性、服务端开关行为、业务采用或全部存储回读。
+
 ## 命令约定
 
 后续接入真实构建后，优先使用：

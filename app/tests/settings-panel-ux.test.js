@@ -1179,3 +1179,166 @@ test('gate:character-sprite:one-click-user-protagonist-from-tavern-persona', asy
     assert.equal(seen.length, 2);
     assert.match(alerts[0], /没读到酒馆的用户名/);
 });
+
+test('gate:identity:default-sprite-adoption-rolls-back-on-save-failure', async () => {
+    const assets = { characters: { Alice: { 默认: '' } }, characterSpriteNotes: { Alice: 'old note' },
+        characterDna: {}, characterOutfits: {}, wardrobe: {} };
+    const original = structuredClone(assets);
+    const draft = { bridge: { sceneAssets: assets }, readerSettings: {} };
+    const ctx = {
+        state: { activeSettings: { draft, asyncState: {} } },
+        options: { global: { alert() {}, document: { getElementById() { return null; } } },
+            generatedAssets: { async generateCharacterSprite() { return { ok: true, imageId: 'sprite-1',
+                characterMeta: { version: 1, characters: [{ characterKey: 'Alice', identityAnchor: 'Silver hair.',
+                    signatureDetails: 'A small mole.', outfit: { name: 'Coat', description: 'Blue coat.' } }] } }; } } },
+        dialogs: { confirm: async () => true, edit: async () => 'new note' },
+        persistSettingsDraft: () => ({ ok: false, reason: 'save-failed' }),
+        rerenderSettings: () => ({ ok: true }),
+    };
+    const failed = await handleSettingsAction('char-generate-sprite:Alice', ctx);
+    assert.equal(failed.ok, false);
+    for (const key of Object.keys(original)) assert.deepEqual(assets[key], original[key], key);
+    ctx.persistSettingsDraft = () => ({ ok: true });
+    assert.equal((await handleSettingsAction('char-generate-sprite:Alice', ctx)).ok, true);
+    assert.equal(assets.characterDna.Alice.identity, 'Silver hair. A small mole.');
+    assets.characterDna.Alice.identity = '';
+    assert.equal((await handleSettingsAction('char-generate-sprite:Alice', ctx)).ok, true);
+    assert.equal(assets.characterDna.Alice.identity, '');
+});
+
+test('gate:dna-expression-ui:重画和续画保留模板绑定，手改只传定稿标记', async () => {
+    const { characterViewsFixture, characterWriteFixture } = await import('./helpers/prompt-provenance.js');
+    const { characterPromptTask } = await import('../src/generated-images/illustration/character-prompt-task.js');
+    const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+    const { promptFromCaption } = await import('../src/generated-images/generation-prompt.js');
+    const dna = { version: 2, views: characterViewsFixture() };
+    const task = characterPromptTask([{ characterKey: '冬月', dna }], 'derived', 'half_body', [['冬月']]);
+    const entry = characterWriteFixture(task).captions[0];
+    const prepared = prepareCharacterCaption({ ...entry, ...task });
+    assert.equal(prepared.ok, true, prepared.error);
+    let saved = { ...promptFromCaption(prepared.caption), ...prepared, characterMeta: entry.characterMeta };
+    const retries = [], resumes = [];
+    const draft = { bridge: { sceneAssets: { characters: { 冬月: { 默认: 'igs-gen:def', 喜悦: 'igs-gen:joy' } },
+        characterDna: { 冬月: dna }, generated: { expressionNotes: {} } } }, readerSettings: {} };
+    const ctx = {
+        state: { activeSettings: { draft, asyncState: {} } },
+        options: { global: { alert() {} }, generatedAssets: {
+            getImagePrompt: async () => saved,
+            generateExpressionImage: async (input) => { retries.push(input); return { ok: true, items: [] }; },
+            paintExpressionCaptions: async (input) => { resumes.push(input); return { ok: true, items: [] }; },
+            generateExpressionSet: async () => { throw new Error('已有模板不得重写'); },
+        } },
+        persistSettingsDraft: () => ({ ok: true }), rerenderSettings: () => ({ ok: true }),
+        dialogs: { confirm: async () => true },
+    };
+    assert.equal((await handleSettingsAction('char-expression-retry:%E5%86%AC%E6%9C%88:%E5%96%9C%E6%82%A6', ctx)).ok, true);
+    assert.deepEqual(retries[0].promptRecipe, saved.promptRecipe);
+    assert.deepEqual(retries[0].characterMeta, saved.characterMeta);
+    assert.equal(retries[0].exact, false);
+    assert.deepEqual(retries[0].history, saved);
+    const note = { ...entry, promptTask: task.promptTask, error: '已停止' };
+    draft.bridge.sceneAssets.generated = { expressionNotes: { 冬月: { 愤怒: note } } };
+    assert.equal((await handleSettingsAction('char-expression-resume:%E5%86%AC%E6%9C%88', ctx)).ok, true);
+    assert.deepEqual(resumes[0].items[0].promptRecipe, note.promptRecipe);
+    assert.deepEqual(resumes[0].items[0].characterMeta, note.characterMeta);
+    assert.deepEqual(resumes[0].items[0].promptTask, task.promptTask);
+    assert.equal(resumes[0].items[0].slotId, 1);
+    saved = { ...saved, edited: true };
+    assert.equal((await handleSettingsAction('char-expression-retry:%E5%86%AC%E6%9C%88:%E5%96%9C%E6%82%A6', ctx)).ok, true);
+    assert.equal(retries[1].exact, true);
+    assert.deepEqual(retries[1].history.promptRecipe, saved.promptRecipe);
+});
+
+test('gate:dna-adoption-ui:默认采用回读候选后保存 DNA，保存失败恢复', async () => {
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    const record = await spriteAdoptionFixture();
+    for (const mode of ['success', 'save-failed', 'rollback-failed', 'missing', 'missing-candidate']) {
+        const assets = { characters: { Alice: { 默认: 'old.png' } }, characterAliases: {},
+            characterDna: {}, characterOutfits: {}, wardrobe: {}, characterSpriteNotes: { Alice: 'old' } };
+        const original = structuredClone(assets), saves = [], events = [];
+        const ctx = {
+            state: { activeSettings: { draft: { bridge: { sceneAssets: assets }, readerSettings: {} }, asyncState: {} } },
+            options: { global: { alert() {} }, generatedAssets: {
+                async generateCharacterSprite() { events.push('generate'); assert.deepEqual(assets, original); return { ...record }; },
+                async readStoredImage(id) {
+                    events.push('read'); assert.equal(id, record.imageId); assert.deepEqual(assets, original);
+                    if (mode === 'missing') return null;
+                    const stored = structuredClone(record);
+                    if (mode === 'missing-candidate') delete stored.dnaCandidates;
+                    return stored;
+                },
+            } },
+            dialogs: { confirm: async () => true, edit: async () => 'new', alert() {} },
+            persistSettingsDraft() {
+                events.push('save'); saves.push(structuredClone(assets));
+                return mode === 'rollback-failed' || (mode === 'save-failed' && saves.length === 1)
+                    ? { ok: false, reason: 'save-failed' } : { ok: true };
+            },
+            rerenderSettings: () => ({ ok: true }),
+        };
+        const result = await handleSettingsAction('char-generate-sprite:Alice', ctx);
+        if (mode === 'success') {
+            assert.equal(result.ok, true);
+            assert.deepEqual(events, ['generate', 'read', 'save']);
+            assert.deepEqual(saves[0].characterDna.Alice.views, record.dnaCandidates.characters[0].views);
+            assert.equal(assets.characterDna.Alice.identitySource, record.imageId);
+            assert.equal(assets.characters.Alice.默认, `igs-gen:${record.imageId}`);
+            assert.equal(assets.wardrobe['Alice·日常'].prompt, 'A red hoodie.');
+        } else {
+            assert.equal(result.ok, false, mode);
+            assert.deepEqual(assets, original, mode);
+            assert.equal(saves.length, mode.includes('failed') ? 2 : 0);
+            if (saves.length) assert.deepEqual(saves[1], original);
+            if (mode === 'rollback-failed') assert.equal(result.reason, 'generated-asset-accept-rollback-failed');
+        }
+    }
+});
+
+test('gate:dna-adoption-ui:迟到生成不能覆盖变化的 DNA、默认图或作用域', async () => {
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    for (const change of ['dna', 'image', 'scope']) {
+        const record = await spriteAdoptionFixture();
+        const assets = { characters: { Alice: { 默认: 'old.png' } }, characterDna: {},
+            characterOutfits: {}, wardrobe: {}, characterAliases: {} };
+        const state = { draft: { bridge: { sceneAssets: assets }, readerSettings: {} }, asyncState: {} };
+        let expected, saves = 0;
+        const result = await handleSettingsAction('char-generate-sprite:Alice', {
+            state: { activeSettings: state },
+            options: { global: { alert() {} }, generatedAssets: {
+                async generateCharacterSprite() {
+                    if (change === 'dna') assets.characterDna.Alice = { identity: '手工定稿', identityInitialized: true };
+                    if (change === 'image') assets.characters.Alice.默认 = 'new.png';
+                    if (change === 'scope') state.asyncState.assetScopeKey = 'card:other';
+                    expected = structuredClone(assets);
+                    return record;
+                }, readStoredImage: async () => record,
+            } },
+            dialogs: { confirm: async () => true, edit: async () => '', alert() {} },
+            persistSettingsDraft: () => { saves++; return { ok: true }; }, rerenderSettings: () => ({ ok: true }),
+        });
+        assert.equal(result.ok, false, change);
+        assert.equal(saves, 0);
+        // 作用域检查不能为了拒绝迟到结果而新建另一张卡的资料库。
+        assert.deepEqual(assets, expected, change);
+    }
+});
+
+test('gate:dna-adoption-ui:默认采用回读期间的身份变化同样拒绝', async () => {
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    const record = await spriteAdoptionFixture();
+    const assets = { characters: { Alice: { 默认: 'old.png' } }, characterDna: {} };
+    let saves = 0;
+    const result = await handleSettingsAction('char-generate-sprite:Alice', {
+        state: { activeSettings: { draft: { bridge: { sceneAssets: assets } }, asyncState: {} } },
+        options: { global: { alert() {} }, generatedAssets: {
+            generateCharacterSprite: async () => record,
+            async readStoredImage() { assets.characterDna.Alice = { identity: '手工更新' }; return record; },
+        } },
+        dialogs: { confirm: async () => true, edit: async () => '', alert() {} },
+        persistSettingsDraft: () => { saves++; return { ok: true }; }, rerenderSettings: () => ({ ok: true }),
+    });
+    assert.equal(result.ok, false);
+    assert.equal(saves, 0);
+    assert.equal(assets.characters.Alice.默认, 'old.png');
+    assert.deepEqual(assets.characterDna.Alice, { identity: '手工更新' });
+});

@@ -1,4 +1,6 @@
-// 出图时实际交给模型的正负提示词。只存文本，不存密钥和整份请求体。
+// prompt.caption 是自动画师拼接前正文；sentPrompt 是实际发送的白名单快照。
+import { checkPromptRecipe } from '../schemas/prompt-recipe.js';
+import { normalizeCharacterDna } from '../scene/character-dna.js';
 
 function sideText(node) {
     const cap = node && node.caption && typeof node.caption === 'object' ? node.caption : {};
@@ -101,7 +103,79 @@ export function normalizeStoredPrompt(value) {
     const negative = String(value.negative || '').trim();
     const caption = normalizeCaption(value.caption);
     if (!positive && !negative && !caption) return null;
-    return caption ? { positive, negative, caption } : { positive, negative };
+    return { positive, negative, ...(caption && { caption }), ...promptProvenance(value) };
+}
+
+// 只保留协议白名单，供图片、CG、导入导出及嵌套旧 prompt 共用；显式坏版本不能降级为旧词。
+export function promptProvenance(value = {}) {
+    const out = {};
+    const invalid = () => { throw new TypeError('PROMPT_PROVENANCE_INVALID'); };
+    if (value.captionMode !== undefined) {
+        if (value.captionMode !== 'final') invalid();
+        out.captionMode = 'final';
+    }
+    if (value.promptRecipe !== undefined) {
+        const raw = value.promptRecipe;
+        const caption = normalizeCaption(raw?.caption);
+        const checked = checkPromptRecipe(raw, caption);
+        if (!caption || !checked.ok) invalid();
+        out.promptRecipe = checked.value;
+    }
+    if (value.dnaSnapshot !== undefined) {
+        const raw = value.dnaSnapshot;
+        if (raw?.version !== 1 || !Array.isArray(raw.characters) || raw.characters.length > 16) invalid();
+        out.dnaSnapshot = { version: 1, characters: raw.characters.map((c) => {
+            if (!c || !['saved', 'candidate', 'scene'].includes(c.source)
+                || c.dnaVersion !== (c.source === 'scene' ? 0 : 2) || (c.source === 'scene' && c.kind !== 'named')
+                || typeof c.subject !== 'string' || typeof c.negative !== 'string'
+                || !['named', 'reference'].includes(c.kind) || typeof c.characterKey !== 'string'
+                || !Number.isInteger(c.captionIndex) || c.captionIndex < 0
+                || typeof c.token !== 'string' || !['full_body', 'half_body', 'portrait', 'partial'].includes(c.framing)) invalid();
+            return { kind: c.kind, characterKey: c.characterKey, captionIndex: c.captionIndex,
+                token: c.token, framing: c.framing, source: c.source, dnaVersion: c.dnaVersion,
+                subject: c.subject, negative: c.negative, profile: normalizeCharacterDna(c.profile) };
+        }) };
+    }
+    if (value.sentPrompt !== undefined) {
+        const raw = value.sentPrompt;
+        const caption = normalizeCaption(raw?.caption);
+        if (raw?.version !== 1 || !caption || typeof raw.model !== 'string'
+            || !['generate', 'img2img', 'infill'].includes(raw.action)
+            || (raw.artist !== null && (!raw.artist || typeof raw.artist.positivePrompt !== 'string'
+                || typeof raw.artist.negativePrompt !== 'string'))) invalid();
+        out.sentPrompt = { version: 1, model: raw.model, action: raw.action, caption,
+            artist: raw.artist === null ? null : { positivePrompt: raw.artist.positivePrompt, negativePrompt: raw.artist.negativePrompt } };
+    }
+    if (value.consistencyPrompt !== undefined) {
+        const raw = value.consistencyPrompt;
+        if (raw?.version !== 1 || !Array.isArray(raw.rounds) || !raw.rounds.length || raw.rounds.length > 16) invalid();
+        const ids = new Set(), keys = new Set();
+        out.consistencyPrompt = { version: 1, rounds: raw.rounds.map((round) => {
+            if (!Number.isSafeInteger(round?.slotId) || round.slotId < 2 || ids.has(round.slotId)
+                || typeof round.characterKey !== 'string' || !round.characterKey.trim()
+                || keys.has(round.characterKey) || round.consistencyPrompt !== undefined) invalid();
+            ids.add(round.slotId); keys.add(round.characterKey);
+            const checked = promptProvenance({ promptRecipe: round.promptRecipe,
+                dnaSnapshot: round.dnaSnapshot, sentPrompt: round.sentPrompt });
+            if (!checked.promptRecipe || !checked.dnaSnapshot || checked.sentPrompt?.action !== 'infill'
+                || !checked.promptRecipe.bindings.some((b) => b.kind === 'reference'
+                    && b.characterKey === round.characterKey)) invalid();
+            return { slotId: round.slotId, characterKey: round.characterKey, ...checked };
+        }) };
+    }
+    return out;
+}
+
+// 后端结果的正文和来源分别归档，不从 wire 文本猜测/剥除画师。
+export function storedPromptFromResult(result, fallbackCaption) {
+    const prompt = normalizeStoredPrompt(result?.prompt) || promptFromCaption(result?.caption || fallbackCaption);
+    return prompt ? { ...prompt, ...promptProvenance(result) } : null;
+}
+
+export function editedStoredPrompt(prompt, previous = {}) {
+    const body = normalizeStoredPrompt(prompt);
+    if (!body) return null;
+    return { ...body, ...promptProvenance(previous), captionMode: 'final' };
 }
 
 export function formatStoredPrompt(prompt) {

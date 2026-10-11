@@ -6,8 +6,11 @@ import { formatStoredPrompt, promptFromCaption, promptFromText } from './generat
 import { findChatu8Host, requestChatu8Image } from './chatu8-client.js';
 import { findBaibaiApi, requestBaibaiImage } from './baibai-client.js';
 import { waitFloorPromptTags } from './floor-prompt-tags.js';
-import { writeCaptionsWithLlm } from './illustration/caption-writer.js';
+import { writeCaptionsWithLlm, writeTemplateCaptionsWithLlm } from './illustration/caption-writer.js';
 import { clampPixelPair } from './illustration/cg-pixel-cap.js';
+import { checkCharacterMeta } from '../schemas/character-meta.js';
+import { checkPromptTask, checkPromptOutput, isSceneOnlyPromptOutput } from '../schemas/prompt-recipe.js';
+import { prepareCharacterCaption } from './character-caption.js';
 
 // 生图来源：nai = IGS 内置 NAI；dbgen = 数据库生图插件（window.NaiDbGen）；
 // extension = 智绘姬：剧情 CG、素材与物品图经智绘姬的出图事件生成，剧情 CG 优先用它写在楼层里的词；
@@ -65,6 +68,54 @@ export function mergeLegacyNaiSettings(autoIllustration, imageApi) {
         ...(String(legacy.promptPrefix || '').trim() && !nai.artistPrefix && { artistPrefix: String(legacy.promptPrefix).trim() }),
     };
     return auto;
+}
+
+// 公开诊断只接收协议字段、受控原因与有效索引；不复制模型载荷。
+function promptDiagnostic(result, stage, slotId) {
+    const error = result?.error;
+    const source = result?.diagnostic || (error && typeof error === 'object' ? error.context : {}) || {};
+    const diagnostic = {};
+    const code = result?.reason || source.code || error?.code;
+    if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) diagnostic.code = code;
+    const stages = ['prompt-input', 'prompt-parse', 'prompt-output', 'prompt-write', 'igs-prompt-input', 'igs-prompt-output'];
+    diagnostic.stage = stages.includes(source.stage) ? source.stage : stage;
+    const fields = ['promptTask', 'promptTask.characters', 'promptTask.characters.characterKey',
+        'promptTask.characters.token', 'promptTask.characters.kind', 'promptTask.characters.framing',
+        'promptTask.slots', 'promptTask.slots.slotId', 'promptTask.slots.tokens',
+        'promptRecipe', 'promptRecipe.bindings', 'promptRecipe.bindings.length',
+        'binding.kind', 'binding.captionIndex', 'binding.characterKey', 'binding.token', 'binding.framing',
+        'caption', 'caption.scene', 'caption.char', 'caption.char_uc', 'characterContext',
+        'characterMeta', 'characterMeta.characters', 'dnaCandidates', 'dnaCandidates.characters',
+        'prompt_mode', 'meta_fields', 'meta_rows', 'meta_kind', 'meta_key', 'meta_token', 'meta_frame',
+        'meta_identity', 'meta_signature', 'meta_outfit_name', 'meta_outfit_description', 'meta_region',
+        ...['full_body', 'half_body', 'portrait', 'partial']
+            .flatMap((frame) => [`meta_dna_${frame}`, `meta_dna_uc_${frame}`]),
+        'dna.views', 'dna.views.full_body', 'dna.views.half_body', 'dna.views.portrait', 'dna.views.partial'];
+    if (fields.includes(source.field)) diagnostic.field = source.field;
+    if (['invalid', 'missing', 'mismatch', 'duplicate', 'placeholder', 'preserved', 'locked'].includes(source.issue))
+        diagnostic.issue = source.issue;
+    const id = source.slotId ?? slotId;
+    if (Number.isInteger(id) && id >= 1 && id <= 9999) diagnostic.slotId = id;
+    for (const key of ['characterIndex', 'captionIndex']) {
+        if (Number.isInteger(source[key]) && source[key] >= 0 && source[key] < 16) diagnostic[key] = source[key];
+    }
+    const traceId = error?.traceId;
+    if (typeof traceId === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(traceId)) diagnostic.traceId = traceId;
+    return diagnostic;
+}
+
+function describePromptFailure(result, stage, slotId, prefix = '') {
+    const diagnostic = promptDiagnostic(result, stage, slotId);
+    const labels = { 'prompt-input': 'DBGen 输入校验', 'prompt-parse': 'DBGen 回复解析',
+        'prompt-output': 'DBGen 输出校验', 'prompt-write': 'DBGen 写词',
+        'igs-prompt-input': 'IGS 输入校验', 'igs-prompt-output': 'IGS 输出校验' };
+    const details = [labels[diagnostic.stage], diagnostic.code,
+        diagnostic.field && `字段=${diagnostic.field}`, diagnostic.issue && `原因=${diagnostic.issue}`];
+    for (const key of ['slotId', 'characterIndex', 'captionIndex', 'traceId']) {
+        if (diagnostic[key] !== undefined) details.push(`${key}=${diagnostic[key]}`);
+    }
+    return { ok: false, ...(diagnostic.code && { reason: diagnostic.code }), diagnostic,
+        error: `${prefix}${describeResultError(result, '未返回提示词')} [${details.filter(Boolean).join('；')}]` };
 }
 
 function describeResultError(result, fallback) {
@@ -178,30 +229,30 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
     async function viaDbgen(meta = {}) {
         const api = findDbgenApi(globalObject);
         if (!api) return { ok: false, error: `未检测到${DBGEN_LABEL}` };
-        const description = String(meta.description || '').trim();
-        if (!description) return { ok: false, error: '没有可交给数据库生图插件的画面描述' };
-        let written = null;
-        try {
-            if (typeof api.generateSinglePrompt !== 'function') return { ok: false, error: `${DBGEN_LABEL}版本过旧，缺少写提示词接口` };
-            written = await withTimeout(api.generateSinglePrompt({
-                description,
-                ...(meta.skipRecall === true && { skipRecall: true }),
-                ...(meta.messageId != null && { messageId: Number(meta.messageId) }),
-            }), timeouts.write);
-            if (!written || !written.ok || !written.value || !written.value.caption) {
-                return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${describeResultError(written, '未返回提示词')}` };
-            }
-        } catch (error) {
-            return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${(error && error.message) || error}` };
-        }
-        const size = parseSize(meta.size) || (written.value.width && written.value.height
-            ? clampPixelPair(written.value.width, written.value.height) : null);
-        return paintDbgenCaption(api, { ...meta, size: size ? `${size.width}x${size.height}` : meta.size }, written.value.caption);
+        const written = await writeDbgenFloorPrompts(meta);
+        if (!written.ok) return written;
+        const entry = written.captions[0];
+        if (!entry) return { ok: false, error: '写词未返回可出图的条目' };
+        const size = parseSize(meta.size) || (entry.width && entry.height
+            ? clampPixelPair(entry.width, entry.height) : null);
+        return paintDbgenCaption(api, { ...meta,
+            slotId: entry.slotId,
+            characterMeta: entry.characterMeta,
+            ...(entry.promptRecipe !== undefined && { promptRecipe: entry.promptRecipe }),
+            ...(entry.dnaCandidates !== undefined && { dnaCandidates: entry.dnaCandidates }),
+            size: size ? `${size.width}x${size.height}` : meta.size }, entry.caption);
     }
 
     // 表情差分、头像、立绘与服装：数据库生图之外的来源由副 LLM 写词，返回形状与插件一致。
     async function writeDbgenPrompt(meta = {}) {
-        if (describe().mode !== 'dbgen') {
+        const task = checkPromptTask(meta.promptTask, meta.characterContext);
+        if (!task.ok) return describePromptFailure(task, 'igs-prompt-input');
+        const mode = describe().mode;
+        if (mode !== 'dbgen') {
+            if (task.value && mode === 'nai') return writeTemplateCaptionsWithLlm(llm,
+                normalizeAutoIllustrationSettings(readBridge().autoIllustration).llm,
+                { ...meta, promptTask: task.value });
+            if (task.value) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '当前写词来源尚未支持 DNA 模板协议' };
             return writeCaptionsWithLlm(llm, normalizeAutoIllustrationSettings(readBridge().autoIllustration).llm, meta.description);
         }
         const api = findDbgenApi(globalObject);
@@ -215,20 +266,36 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                 description,
                 skipRecall: true,
                 ...(meta.messageId != null && { messageId: Number(meta.messageId) }),
+                ...(meta.characterContext !== undefined && { characterContext: meta.characterContext }),
+                ...(task.value !== undefined && { promptTask: task.value }),
+                ...(task.value && meta.userPrompts !== undefined && { userPrompts: structuredClone(meta.userPrompts) }),
+                ...(task.value && meta.writingRequirements !== undefined && { writingRequirements: structuredClone(meta.writingRequirements) }),
+                ...(meta.signal && { signal: meta.signal }),
             }), timeouts.write);
         } catch (error) {
             return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${(error && error.message) || error}` };
         }
         if (!written || !written.ok || !written.value || !written.value.caption) {
-            return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${describeResultError(written, '未返回提示词')}` };
+            return describePromptFailure(written, 'prompt-write', undefined, `${DBGEN_LABEL}写提示词失败：`);
         }
         const captions = Array.isArray(written.value.captions) && written.value.captions.length
             ? written.value.captions.filter((item) => item && item.caption)
-            : [{ slotId: 1, caption: written.value.caption, width: written.value.width, height: written.value.height }];
+            : [{ slotId: 1, ...written.value }];
+        for (const entry of captions) {
+            const checked = checkCharacterMeta(entry.characterMeta, entry.caption, meta.characterContext?.map((c) => c.characterKey));
+            if (!checked.ok) return describePromptFailure(checked, 'igs-prompt-output', entry.slotId);
+            entry.characterMeta = checked.value;
+            const prompt = checkPromptOutput(entry, task.value, meta.characterContext);
+            if (!prompt.ok) return describePromptFailure(prompt, 'igs-prompt-output', entry.slotId);
+            Object.assign(entry, prompt.value);
+        }
         return {
             ok: true,
             caption: written.value.caption,
+            characterMeta: captions[0]?.characterMeta,
             captions,
+            ...(captions[0]?.promptRecipe !== undefined && { promptRecipe: captions[0].promptRecipe }),
+            ...(captions[0]?.dnaCandidates !== undefined && { dnaCandidates: captions[0].dnaCandidates }),
             width: written.value.width,
             height: written.value.height,
         };
@@ -236,6 +303,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
 
     // 楼内 CG：走召回，把生成点原样带回。不出图。
     async function writeDbgenFloorPrompts(meta = {}) {
+        const task = checkPromptTask(meta.promptTask, meta.characterContext);
+        if (!task.ok) return describePromptFailure(task, 'igs-prompt-input');
         const api = findDbgenApi(globalObject);
         if (!api) return { ok: false, error: `未检测到${DBGEN_LABEL}` };
         const description = String(meta.description || '').trim();
@@ -245,28 +314,45 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         try {
             written = await withTimeout(api.generateSinglePrompt({
                 description,
+                ...(meta.skipRecall === true && { skipRecall: true }),
                 ...(meta.messageId != null && { messageId: Number(meta.messageId) }),
+                ...(meta.characterContext !== undefined && { characterContext: meta.characterContext }),
+                ...(task.value !== undefined && { promptTask: task.value }),
+                ...(task.value && meta.userPrompts !== undefined && { userPrompts: structuredClone(meta.userPrompts) }),
+                ...(task.value && meta.writingRequirements !== undefined && { writingRequirements: structuredClone(meta.writingRequirements) }),
+                ...(meta.signal && { signal: meta.signal }),
             }), timeouts.write);
         } catch (error) {
             return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${(error && error.message) || error}` };
         }
         if (!written || !written.ok || !written.value || !written.value.caption) {
-            return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${describeResultError(written, '未返回提示词')}` };
+            return describePromptFailure(written, 'prompt-write', undefined, `${DBGEN_LABEL}写提示词失败：`);
         }
         const captions = (Array.isArray(written.value.captions) && written.value.captions.length
             ? written.value.captions
-            : [{ slotId: 1, caption: written.value.caption, width: written.value.width, height: written.value.height }])
+            : [{ slotId: 1, ...written.value }])
             .filter((item) => item && item.caption)
             .map((item) => {
                 const anchor = String(item.anchorSentence || item.anchor || '').trim();
                 return {
-                    slotId: Number(item.slotId) || 1,
+                    slotId: Number(item.slotId),
                     caption: item.caption,
                     ...(anchor && { anchorSentence: anchor }),
+                    ...(item.characterMeta !== undefined && { characterMeta: item.characterMeta }),
+                    ...(item.promptRecipe !== undefined && { promptRecipe: item.promptRecipe }),
+                    ...(item.dnaCandidates !== undefined && { dnaCandidates: item.dnaCandidates }),
                     ...(item.width != null && { width: item.width }),
                     ...(item.height != null && { height: item.height }),
                 };
             });
+        for (const entry of captions) {
+            const checked = checkCharacterMeta(entry.characterMeta, entry.caption, meta.characterContext?.map((c) => c.characterKey));
+            if (!checked.ok) return describePromptFailure(checked, 'igs-prompt-output', entry.slotId);
+            entry.characterMeta = checked.value;
+            const prompt = checkPromptOutput(entry, task.value, meta.characterContext);
+            if (!prompt.ok) return describePromptFailure(prompt, 'igs-prompt-output', entry.slotId);
+            Object.assign(entry, prompt.value);
+        }
         return { ok: true, caption: written.value.caption, captions };
     }
 
@@ -283,8 +369,17 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             return { ok: false, error: `${DBGEN_LABEL}返回的不是生图提示词，已停止出图`, prompt: promptFromCaption(caption) };
         }
         const userPrompts = meta.userPrompts && typeof meta.userPrompts === 'object' ? meta.userPrompts : null;
-        const merged = userPrompts ? applyUserPromptsToCaption(caption, userPrompts) : caption;
+        const prepared = prepareCharacterCaption({ ...meta, caption });
+        if (!prepared.ok) return prepared;
+        const final = prepared.captionMode === 'final';
+        if (final && (String(userPrompts?.positive || '').trim() || String(userPrompts?.negative || '').trim()))
+            return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿发送不能再追加模板，请在写词阶段提供要求' };
+        if (final && api.getPromptCapabilities?.().finalCaption !== 1)
+            return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '数据库生图插件尚未支持定稿协议，请升级后重试' };
+        const merged = final ? prepared.caption : userPrompts ? applyUserPromptsToCaption(caption, userPrompts) : caption;
         const artist = artistFor(meta);
+        const requestArtist = meta.artist !== undefined ? meta.artist
+            : artist ? { positivePrompt: artist.positive, negativePrompt: artist.negative } : undefined;
         const positive = userPrompts ? String(userPrompts.positive || '').trim() : '';
         const negative = userPrompts ? String(userPrompts.negative || '').trim() : '';
         reportLong(report, '拼之前', captionLogText(caption));
@@ -309,8 +404,13 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         try {
             result = await withTimeout(api.generate({
                 caption: merged,
-                replaceCharacterKeywords: true,
-                ...(artist && { artist: { positivePrompt: artist.positive, negativePrompt: artist.negative } }),
+                replaceCharacterKeywords: final || meta.replaceCharacterKeywords === false
+                    || isSceneOnlyPromptOutput({ ...meta, caption: merged })
+                    || meta.characterMeta?.characters?.length ? false : true,
+                ...(final && { captionMode: 'final', capturePrompt: true }),
+                signal: meta.signal,
+                shouldStart: meta.shouldStart,
+                ...(requestArtist !== undefined && { artist: requestArtist }),
                 ...(Object.keys(params).length && { params }),
             }), timeouts.paint);
         } catch (error) {
@@ -319,7 +419,13 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         const image = result && result.ok && Array.isArray(result.value) ? result.value[0] : null;
         if (!image || !image.blob) return { ok: false, error: `${DBGEN_LABEL}出图失败：${describeResultError(result, '未返回图片')}`, prompt: promptFromCaption(merged) };
         try {
-            return { ok: true, dataUrl: await blobToDataUrl(image.blob, image.mimeType, globalObject), prompt: promptFromCaption(merged) };
+            if (final && !image.promptSnapshot)
+                return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿生图缺少实际发送快照，不能保存来源' };
+            return { ok: true, dataUrl: await blobToDataUrl(image.blob, image.mimeType, globalObject),
+                prompt: promptFromCaption(merged), characterMeta: meta.characterMeta, caption: merged,
+                ...(final && { captionMode: 'final', sentPrompt: image.promptSnapshot }),
+                ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
+                ...(prepared.dnaCandidates && { dnaCandidates: prepared.dnaCandidates }) };
         } catch (error) {
             return { ok: false, error: `${DBGEN_LABEL}图片读取失败：${(error && error.message) || error}`, prompt: promptFromCaption(merged) };
         }
@@ -336,6 +442,36 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
     // 非数据库生图来源：caption 合上模板后拆回 slot，按当前图像来源（NAI / 智绘姬 / 柏宝绘）出图。
     async function paintCaption(meta) {
         const userPrompts = meta.userPrompts && typeof meta.userPrompts === 'object' ? meta.userPrompts : null;
+        if (describe().mode === 'nai') {
+            const prepared = prepareCharacterCaption(meta);
+            if (!prepared.ok) return prepared;
+            if (prepared.captionMode === 'final') {
+                if (String(userPrompts?.positive || '').trim() || String(userPrompts?.negative || '').trim())
+                    return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿发送不能再追加模板，请在写词阶段提供要求' };
+                const settings = { ...normalizeAutoIllustrationSettings(readBridge().autoIllustration).nai,
+                    ...(meta.size && { size: meta.size }),
+                    ...(Number.isInteger(meta.seed) && meta.seed >= 0 && { seed: meta.seed }),
+                    ...(meta.signal && { signal: meta.signal }),
+                    ...(meta.shouldStart && { shouldStart: meta.shouldStart }) };
+                const artist = artistFor(meta);
+                settings.finalArtist = meta.artist !== undefined ? meta.artist : artist
+                    ? { positivePrompt: artist.positive, negativePrompt: artist.negative }
+                    : { positivePrompt: settings.artistPrefix || '', negativePrompt: '' };
+                const model = kindModel(meta);
+                if (model) settings.model = model;
+                const result = await nai.generate({ caption: prepared.caption, captionMode: 'final',
+                    transparent: meta.transparent === true }, settings);
+                if (!result?.ok) return result;
+                if (!result.sentPrompt) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿生图缺少实际发送快照' };
+                return { ok: true, dataUrl: result.dataUrl, via: 'nai', caption: prepared.caption,
+                    prompt: promptFromCaption(prepared.caption), captionMode: 'final', sentPrompt: result.sentPrompt,
+                    ...(meta.characterMeta !== undefined && { characterMeta: meta.characterMeta }),
+                    ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
+                    ...(prepared.dnaCandidates && { dnaCandidates: prepared.dnaCandidates }) };
+            }
+        } else if (meta.promptRecipe !== undefined || meta.promptTask !== undefined || meta.dnaCandidates !== undefined || meta.captionMode !== undefined) {
+            return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '其他图像插件不接管 DNA 模板或定稿协议' };
+        }
         const merged = userPrompts ? applyUserPromptsToCaption(meta.caption, userPrompts) : meta.caption;
         const pos = (merged && merged.v4_prompt && merged.v4_prompt.caption) || {};
         const neg = (merged && merged.v4_negative_prompt && merged.v4_negative_prompt.caption) || {};
@@ -454,8 +590,22 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
     }
 
     // 剧情 CG / 素材补全入口，签名与 nai-official-client 的 generate 一致，多一个 meta。
+    const hasPromptProtocol = (input) => ['promptRecipe', 'promptTask', 'dnaCandidates', 'captionMode']
+        .some((key) => input?.[key] !== undefined);
+
     async function generate(slot, naiSettings, meta = {}) {
         const mode = describe().mode;
+        if (hasPromptProtocol(meta) || hasPromptProtocol(slot)) {
+            if (mode !== 'nai' && mode !== 'dbgen')
+                return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '其他图像插件不接管 DNA 模板或定稿协议' };
+            const caption = meta.caption || slot?.caption;
+            if (caption) return generateDbgenCaption({ ...slot, ...meta, caption });
+            // DBGen 同次写词后出图仍使用显式任务；其余缺正文输入不能降级。
+            if (mode === 'dbgen' && meta.promptTask !== undefined && !hasPromptProtocol(slot)
+                && meta.promptRecipe === undefined && meta.captionMode === undefined && meta.dnaCandidates === undefined)
+                return viaDbgen(meta);
+            return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '新提示词协议缺少可发送的正文' };
+        }
         const model = kindModel(meta);
         if (model && naiSettings && typeof naiSettings === 'object') naiSettings = { ...naiSettings, model };
         if (mode === 'dbgen') return viaDbgen(meta);
@@ -470,6 +620,16 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         const unified = opts.unifiedSettings || {};
         const bridge = unified.bridge && typeof unified.bridge === 'object' ? unified.bridge : {};
         const mode = normalizeImageSourceMode((opts.imageApi && opts.imageApi.mode) || (bridge.imageApi && bridge.imageApi.mode));
+        if (hasPromptProtocol(request)) {
+            if (!['nai', 'dbgen'].includes(mode) || mode !== describe().mode)
+                return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '提示词协议与当前图像来源不一致，已停止出图' };
+            if (!request.caption)
+                return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '新提示词协议缺少可发送的正文' };
+            const result = await generateDbgenCaption({ ...request, imageKind: 'cg' });
+            if (!result.ok) return result;
+            const { dataUrl, ...details } = result;
+            return { ...details, url: dataUrl, providerId: `vn.provider.${mode}` };
+        }
         const prompt = String(request.prompt || request.input || '').trim();
         if (mode === 'extension') return { ok: false, reason: 'provider-not-enabled' };
         if (mode === 'baibai') {
@@ -495,6 +655,13 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
     // 不支持时返回 image-edit-unsupported，绝不静默退化为整张重画。
     function describeEdit(bridgeOverride) {
         const base = describe(bridgeOverride);
+        if (base.mode === 'dbgen') {
+            const api = findDbgenApi(globalObject);
+            const cap = typeof api?.describeInfill === 'function' ? api.describeInfill() : null;
+            return cap?.supported ? { supported: true, reason: '', via: 'dbgen' }
+                : { supported: false, reason: cap?.reason || 'dbgen-upgrade-required',
+                    message: '请升级数据库生图插件并选择 V5 Full NAI 配置以启用局部重绘' };
+        }
         if (base.mode !== 'nai') {
             return { supported: false, reason: 'image-edit-unsupported', message: base.mode === 'dbgen'
                 ? `${DBGEN_LABEL}不支持局部重绘，请在「生图 → 图像来源」改用内置 NAI`
@@ -511,16 +678,98 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         return { supported: true, reason: '', message: '' };
     }
 
+    // 一致性任务只拿脱敏配置租约与实际画师，不读取或保存上游凭据。
+    async function getEditConfig(meta = {}) {
+        if (describeEdit().via !== 'dbgen') return { ok: false, reason: 'stale-config' };
+        const api = findDbgenApi(globalObject);
+        const capabilities = api.getPromptCapabilities?.();
+        if (capabilities?.generationConfig !== 1 || capabilities?.generationConfigLease !== 1
+            || typeof api.getGenerationConfig !== 'function' || typeof api.isGenerationConfigCurrent !== 'function')
+            return { ok: false, reason: 'generation-config-unavailable', error: '请升级数据库生图插件以支持任务配置校验' };
+        try {
+            const result = await withTimeout(api.getGenerationConfig(), timeouts.write);
+            if (!result?.ok) return { ok: false, reason: 'generation-config-unavailable',
+                error: '无法读取本次生图配置，未开始一致性任务' };
+            const config = result.value;
+            if (config?.version !== 1 || typeof config.configToken !== 'string' || !config.configToken
+                || (config.artist !== null && (!config.artist || typeof config.artist.positivePrompt !== 'string'
+                    || typeof config.artist.negativePrompt !== 'string'))) return { ok: false, reason: 'generation-config-unavailable' };
+            const selection = () => {
+                const selected = artistFor(meta);
+                return meta.artist !== undefined ? meta.artist : selected
+                    ? { positivePrompt: selected.positive, negativePrompt: selected.negative } : undefined;
+            };
+            const override = selection(), overrideSignature = JSON.stringify(override);
+            const artist = override !== undefined ? override : config.artist;
+            return { ok: true, version: 1, configToken: config.configToken,
+                artist: artist === null ? null : { positivePrompt: artist.positivePrompt, negativePrompt: artist.negativePrompt },
+                // 运行时租约守卫不进入来源、wire 或持久化；事务内只能同步判断。
+                isCurrent() {
+                    try {
+                        const cap = describeEdit();
+                        return cap.supported === true && cap.via === 'dbgen'
+                            && findDbgenApi(globalObject) === api
+                            && api.isGenerationConfigCurrent(config.configToken) === true
+                            && JSON.stringify(selection()) === overrideSignature;
+                    } catch { return false; }
+                } };
+        } catch {
+            return { ok: false, reason: 'generation-config-unavailable', error: '无法读取本次生图配置，未开始一致性任务' };
+        }
+    }
+
     // request：{ sourceDataUrl, maskDataUrl, prompt, negative, width, height }；不记录原图与请求体。
     async function edit(request = {}, bridgeOverride) {
         const capability = describeEdit(bridgeOverride);
         if (!capability.supported) return { ok: false, reason: capability.reason, error: capability.message };
         if (!request.sourceDataUrl || !request.maskDataUrl) return { ok: false, reason: 'invalid-edit-request', error: '缺少原图或修复区域' };
+        const caption = request.caption || {
+            v4_prompt: { caption: { base_caption: request.prompt || '', char_captions: [] } },
+            v4_negative_prompt: { caption: { base_caption: request.negative || '', char_captions: [] } },
+        };
+        const prepared = prepareCharacterCaption({ ...request, caption });
+        if (!prepared.ok) return prepared;
+        const final = prepared.captionMode === 'final';
+        const selected = artistFor(request);
+        const artist = request.artist !== undefined ? request.artist
+            : selected ? { positivePrompt: selected.positive, negativePrompt: selected.negative } : undefined;
+        if (capability.via === 'dbgen') {
+            const api = findDbgenApi(globalObject);
+            if (final && api.getPromptCapabilities?.()?.finalCaption !== 1)
+                return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '数据库生图插件尚未支持定稿协议' };
+            try {
+                const result = await withTimeout(api.generate({ caption: prepared.caption, replaceCharacterKeywords: false,
+                    ...(final && { captionMode: 'final', capturePrompt: true }),
+                    ...(artist !== undefined && { artist }),
+                    ...(request.expectedConfigToken !== undefined && { expectedConfigToken: request.expectedConfigToken }),
+                    params: { width: request.width, height: request.height, straight_alpha: false, tag_hint_transparent_background: false },
+                    inpaint: { image: request.sourceDataUrl, mask: request.maskDataUrl, strength: request.strength },
+                    signal: request.signal, shouldStart: request.shouldStart,
+                }), timeouts.paint);
+                const image = result?.ok && result.value?.[0];
+                if (result?.error?.code === 'GENERATION_CONFIG_CHANGED')
+                    return { ok: false, reason: 'stale-config', error: '生图配置已变化，本次一致性任务已停止' };
+                if (!image?.blob) return { ok: false, reason: 'edit-failed', error: describeResultError(result, '局部重绘未返回图片') };
+                if (final && !image.promptSnapshot)
+                    return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿重绘缺少实际发送快照' };
+                return { ok: true, dataUrl: await blobToDataUrl(image.blob, image.mimeType, globalObject),
+                    ...(final && { caption: prepared.caption, captionMode: 'final', sentPrompt: image.promptSnapshot }),
+                    ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }) };
+            } catch {
+                return { ok: false, reason: 'edit-failed', error: '局部重绘失败或超时；上游请求可能仍在执行' };
+            }
+        }
         const settings = normalizeAutoIllustrationSettings(readBridge(bridgeOverride).autoIllustration).nai;
+        if (final) settings.finalArtist = artist !== undefined ? artist
+            : { positivePrompt: settings.artistPrefix || '', negativePrompt: '' };
         try {
-            const result = await nai.edit(request, settings);
+            const result = await nai.edit(final ? { ...request, caption: prepared.caption, captionMode: 'final' } : request, settings);
+            if (result?.ok && final && !result.sentPrompt)
+                return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿重绘缺少实际发送快照' };
             return result && result.ok && result.dataUrl
-                ? { ok: true, dataUrl: result.dataUrl }
+                ? { ok: true, dataUrl: result.dataUrl,
+                    ...(final && { caption: prepared.caption, captionMode: 'final', sentPrompt: result.sentPrompt }),
+                    ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }) }
                 : { ok: false, reason: result && result.reason === 'image-edit-unsupported' ? 'image-edit-unsupported' : 'edit-failed', error: (result && result.error) || '局部重绘失败' };
         } catch (error) {
             return { ok: false, reason: 'edit-failed', error: `局部重绘失败：${(error && error.message) || error}` };
@@ -534,5 +783,5 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             : { ok: false, message: `未检测到${DBGEN_LABEL}，请确认已安装并启用。` };
     }
 
-    return { describe, describeEdit, edit, generate, generateForReader, probeDbgen, writeDbgenPrompt, writeDbgenFloorPrompts, generateDbgenCaption, waitSourceFloorPrompts };
+    return { describe, describeEdit, getEditConfig, edit, generate, generateForReader, probeDbgen, writeDbgenPrompt, writeDbgenFloorPrompts, generateDbgenCaption, waitSourceFloorPrompts };
 }

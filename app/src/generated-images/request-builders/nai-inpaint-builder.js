@@ -35,9 +35,15 @@ export function buildNaiInpaintRequest(request = {}, naiSettings = {}, random = 
     const width = Number(request.width);
     const height = Number(request.height);
     if (!validSide(width) || !validSide(height) || width * height > CG_PIXEL_CAP) return { ok: false, reason: 'invalid-size' };
-    if (!String(request.prompt || '').trim()) return { ok: false, reason: 'empty-prompt' };
+    const final = request.captionMode === 'final';
+    if (request.captionMode !== undefined && !final) return { ok: false, reason: 'PROMPT_MODE_CONFLICT' };
+    if (final ? !request.caption : !String(request.prompt || '').trim()) return { ok: false, reason: 'empty-prompt' };
+    if (final && ![request.caption.v4_prompt?.caption?.base_caption,
+        ...(request.caption.v4_prompt?.caption?.char_captions || []).map((c) => c.char_caption)].some((v) => typeof v === 'string' && v.trim()))
+        return { ok: false, reason: 'empty-prompt' };
     const body = buildNaiV4Request(
-        { scene: String(request.prompt || ''), sceneUc: String(request.negative || ''), chars: [] },
+        final ? { caption: request.caption, captionMode: 'final' }
+            : { scene: String(request.prompt || ''), sceneUc: String(request.negative || ''), chars: [] },
         { ...naiSettings, model: baseModel, size: `${width}x${height}` },
         random,
     );

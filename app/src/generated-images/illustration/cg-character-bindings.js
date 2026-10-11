@@ -1,0 +1,150 @@
+import { buildCharacterContext } from '../../scene/character-identity.js';
+import { buildCharacterDnaPromptParts, mergePromptTags } from '../../scene/character-dna.js';
+import { createOutfitResolver, collectLatestOutfits } from '../../scene/character-outfits.js';
+import { extractSceneDirectives, resolveCharacterKey } from '../../scene/scene-directives.js';
+import { checkCharacterMeta } from '../../schemas/character-meta.js';
+import { readCaptionIdentity } from '../character-caption.js';
+import { checkPromptTask, checkPromptOutput, isSceneOnlyPromptOutput } from '../../schemas/prompt-recipe.js';
+
+// CG 是允许池，不套用立绘批次的必需角色 slots；每图由 recipe 显式选角色和景别。
+export function cgPromptTask(context) {
+    const characterContext = structuredClone(context);
+    return { characterContext, promptTask: { version: 1, mode: 'dna_template', purpose: 'cg',
+        characters: characterContext.map((c, index) => ({ characterKey: c.characterKey,
+            token: `r${index.toString(36)}`, kind: 'named' })) } };
+}
+
+// 预检只校验绑定与可用身份来源，不展开或改写正文；展开仍在发送准备入口。
+export function preflightCgCaption(entry, task, context) {
+    const checkedTask = checkPromptTask(task, context);
+    if (!checkedTask.ok) return checkedTask;
+    if (checkedTask.value && checkedTask.value.purpose !== 'cg') return {
+        ok: false, reason: 'PROMPT_MODE_CONFLICT', error: 'CG 缺少只读身份任务，已停止该图',
+    };
+    const meta = checkCharacterMeta(entry.characterMeta, entry.caption, context.map((c) => c.characterKey));
+    if (!meta.ok) return meta;
+    const output = checkPromptOutput({ ...entry, characterMeta: meta.value }, checkedTask.value, context);
+    if (!output.ok) return output;
+    if (!checkedTask.value && !isSceneOnlyPromptOutput(entry) && !output.value.promptRecipe) return {
+        ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '人物 CG 缺少只读身份任务，已停止该图',
+    };
+    if (!output.value.promptRecipe) return { ok: true, caption: structuredClone(entry.caption) };
+    if (!checkedTask.value && output.value.promptRecipe.bindings.some((b) => ['named', 'reference'].includes(b.kind))) return {
+        ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '人物 CG 缺少只读身份任务，已停止该图',
+    };
+    for (const binding of output.value.promptRecipe.bindings.filter((b) => b.kind === 'named')) {
+        const sources = context.filter((c) => c.characterKey === binding.characterKey);
+        if (sources.length !== 1) return { ok: false, reason: 'DNA_TEMPLATE_BINDING', error: 'CG 角色资料无法唯一绑定' };
+        const metadata = meta.value.characters.find((c) => c.characterKey === binding.characterKey
+            && c.captionIndex === binding.captionIndex);
+        const view = readCaptionIdentity(sources[0].dna, binding.framing, 'cg', metadata);
+        if (!view.ok) return { ...view, characterKey: binding.characterKey, framing: binding.framing,
+            error: `「${binding.characterKey}」缺少可用的 ${binding.framing} 保存资料或当次身份描述；该 CG 未发送` };
+    }
+    return { ok: true, caption: structuredClone(entry.caption), characterMeta: meta.value,
+        promptRecipe: output.value.promptRecipe,
+        ...(checkedTask.value && { promptTask: checkedTask.value }),
+        characterContext: structuredClone(context) };
+}
+
+// 两条发送链复用同一只读预检；历史定稿旁路不参与身份处理。
+export function cgPaintRequests(slots, assets) {
+    return slots.map(({ status, error, failureReason, dataUrl, floorKey, key, updatedAt, ...source }) => {
+        // 未迁移的旧协议保留原引用和请求形状。
+        if (!source.promptRecipe && !source.promptTask && !source.captionMode
+            && source.promptEdited !== true && source.edited !== true) return source;
+        const request = structuredClone(source);
+        if (request.promptEdited === true || request.edited === true) return request;
+        try {
+            if (request.promptRecipe) {
+                delete request.captionMode;
+                request.caption = structuredClone(request.promptRecipe.caption);
+                if (assets) {
+                    request.characterContext = currentCgContext(request, assets);
+                    request.promptTask = { version: 1, mode: 'dna_template', purpose: 'cg',
+                        characters: request.promptRecipe.bindings.filter((b) => b.kind === 'named')
+                            .map(({ characterKey, token }) => ({ characterKey, token, kind: 'named' })) };
+                }
+                const checked = preflightCgCaption(request, request.promptTask, request.characterContext || []);
+                request.preflightFailure = checked.ok ? null : { reason: checked.reason, error: checked.error };
+                if (checked.ok) request.characterMeta = checked.characterMeta;
+            } else if (request.promptTask) {
+                const checked = preflightCgCaption(request, request.promptTask, request.characterContext || []);
+                request.preflightFailure = checked.ok ? null : { reason: checked.reason, error: checked.error };
+                if (checked.ok) delete request.promptTask;
+            }
+        } catch {
+            request.preflightFailure = { reason: 'DNA_TEMPLATE_BINDING', error: 'CG 模板或角色绑定无效，未发送该图' };
+        }
+        return request;
+    });
+}
+
+// 手改定稿只发正文；旧 recipe / 快照留在存储中追溯。
+export function cgFinalRequest(request) {
+    const { promptRecipe, promptTask, dnaCandidates, dnaSnapshot, sentPrompt, preflightFailure, ...final } = request;
+    return { ...final, captionMode: 'final' };
+}
+
+// 普通重画只取当前 DNA；保留原 CG 当次衣装元数据，不重新解释剧情或复用历史身份。
+export function currentCgContext(record, assets) {
+    const keys = record.promptRecipe.bindings.filter((b) => b.kind === 'named').map((b) => b.characterKey);
+    return buildCharacterContext(keys, assets).map((c) => ({ ...c,
+        outfit: structuredClone(record.characterMeta?.characters?.find((m) => m.characterKey === c.characterKey)?.outfit
+            || { name: '', description: '' }) }));
+}
+
+// 仅消费既有正文和资料；不看图、不做额外写词或定位请求。
+export function cgCharacterState(text, names, assets, previousTexts = [], readClues) {
+    const outfitResolver = createOutfitResolver(assets);
+    const directives = extractSceneDirectives(text, { outfitResolver }).directives;
+    const known = { ...assets.characterDna, ...assets.characters, ...assets.characterOutfits, ...assets.generated?.characters };
+    const canonical = (name) => resolveCharacterKey(known, assets.characterAliases || {}, name) || name;
+    const inheritedOutfits = {};
+    for (const previous of previousTexts.slice(-3).reverse()) {
+        const latest = collectLatestOutfits(extractSceneDirectives(previous, { outfitResolver }).directives, canonical);
+        for (const [key, value] of Object.entries(latest)) {
+            if (!Object.hasOwn(inheritedOutfits, key)) inheritedOutfits[key] = value;
+        }
+    }
+    const at = (offset) => {
+        const scene = directives.filter((d) => d.type === 'scene' && d.offset <= offset).at(-1);
+        return buildCharacterContext(names, assets, { directives, offset, inheritedOutfits, readClues,
+            scene: scene?.scene ? [scene.scene] : [] });
+    };
+    const context = at(Infinity);
+    const timeline = directives.filter((d) => d.outfit).map((d) => ({
+        characterKey: canonical(d.character), offset: d.offset,
+        outfit: at(d.offset).find((c) => c.characterKey === canonical(d.character))?.outfit,
+    }));
+    return { context, at, timeline };
+}
+
+// captionIndex 只定位本次 caption，身份始终由已核验的规范键确定。
+export function bindCgCaption(caption, rawMeta, context, assets) {
+    if (rawMeta === undefined) return { ok: true, caption };
+    const known = { ...assets.characterDna, ...assets.characters, ...assets.characterOutfits, ...assets.generated?.characters };
+    const normalized = rawMeta && Array.isArray(rawMeta.characters) ? { ...rawMeta,
+        characters: rawMeta.characters.map((c) => ({ ...c,
+            characterKey: resolveCharacterKey(known, assets.characterAliases || {}, c?.characterKey) || c?.characterKey })) } : rawMeta;
+    const checked = checkCharacterMeta(normalized, caption, context.map((c) => c.characterKey));
+    if (!checked.ok) return checked;
+    const next = JSON.parse(JSON.stringify(caption));
+    const pos = next.v4_prompt.caption.char_captions;
+    const neg = next.v4_negative_prompt ||= { caption: { base_caption: '', char_captions: [] } };
+    neg.caption ||= { base_caption: '', char_captions: [] };
+    neg.caption.char_captions ||= [];
+    const characters = checked.value.characters.map((binding) => {
+        const source = context.find((c) => c.characterKey === binding.characterKey);
+        const parts = buildCharacterDnaPromptParts(source.dna);
+        const outfit = source.outfit.name ? source.outfit : binding.outfit;
+        const index = binding.captionIndex;
+        pos[index].char_caption = mergePromptTags(parts.positive, pos[index].char_caption, outfit.description);
+        while (neg.caption.char_captions.length <= index) neg.caption.char_captions.push({ char_caption: '' });
+        neg.caption.char_captions[index].char_caption = mergePromptTags(neg.caption.char_captions[index].char_caption, parts.negative);
+        return { ...binding, identityAnchor: source.dna.identity || binding.identityAnchor,
+            signatureDetails: source.dna.identity ? '' : binding.signatureDetails,
+            outfit: { ...outfit }, positionExplicit: binding.positionExplicit === true && binding.centers.length > 0 };
+    });
+    return { ok: true, caption: next, characterMeta: { version: 1, characters } };
+}

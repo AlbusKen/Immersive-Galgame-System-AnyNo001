@@ -208,8 +208,8 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
     const files = createTavernImageFiles(globalObject, 'igs-assets');
     const migrate = async (raw) => {
         const next = await files.offload(raw, raw.id);
-        const now = await store.getImage(raw.id);
-        if (now && now.revision === raw.revision && files.sameRecord(raw, now)) await store.putImage(next);
+        if (typeof store.relocateImage !== 'function') return;
+        await store.relocateImage(raw, next);
     };
     const restoring = new Map();
     const restore = async (id) => {
@@ -248,6 +248,10 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
             await store.deleteImage(id);
             files.dropUnused(old, null);
         },
+        async updateImagePrompt(id, expectedRevision, prompt, updatedAt) {
+            if (typeof store.updateImagePrompt !== 'function') return { ok: false, reason: 'update-unavailable' };
+            return store.updateImagePrompt(id, expectedRevision, prompt, updatedAt);
+        },
         async updateImage(id, expectedRevision, patch, updatedAt) {
             const old = await store.getImage(id);
             const next = await files.offload(patch || {}, id, old);
@@ -278,11 +282,21 @@ export function withTavernIllustrationFiles(store, globalObject = globalThis) {
     const keyOf = (floorKey, slot) => `${floorKey}|${slot}`;
     const rawSlot = async (floorKey, slot) => (await store.getSlots(floorKey)).find((s) => s.slot === slot) || null;
     const migrate = async (floorKey, raw) => {
-        const next = await files.offload(raw, keyOf(floorKey, raw.slot));
-        if (files.sameRecord(raw, await rawSlot(floorKey, raw.slot))) {
-            await store.putSlot(floorKey, next);
-            remember(keyOf(floorKey, raw.slot), { ...next, floorKey });
-        }
+        if (typeof store.updateSlot !== 'function') return;
+        return serialized(keyOf(floorKey, raw.slot), async () => {
+            if (!files.sameRecord(raw, await rawSlot(floorKey, raw.slot))) return;
+            const next = await files.offload(raw, keyOf(floorKey, raw.slot), raw);
+            const result = await store.updateSlot(floorKey, raw.slot, raw.revision || 0, next,
+                { expectedToken: raw.revisionToken });
+            if (!result?.ok) { files.dropUnused(next, raw); return; }
+            remember(keyOf(floorKey, raw.slot), result.record);
+        });
+    };
+    const writes = new Map();
+    const serialized = (key, task) => {
+        const job = (writes.get(key) || Promise.resolve()).catch(() => {}).then(task);
+        writes.set(key, job);
+        return job.finally(() => { if (writes.get(key) === job) writes.delete(key); });
     };
     const backup = new Map();
     // 只有读到了备份文件（或确认没有）才允许上传，免得网络抖一下就用本机的半份记录盖掉备份。
@@ -385,19 +399,65 @@ export function withTavernIllustrationFiles(store, globalObject = globalThis) {
         },
         async putSlot(floorKey, value) {
             await restored();
-            const old = await rawSlot(floorKey, value.slot);
-            const next = await files.offload(value, keyOf(floorKey, value.slot), old);
-            await store.putSlot(floorKey, next);
-            remember(keyOf(floorKey, value.slot), { ...next, floorKey });
-            files.dropUnused(old, next);
+            return serialized(keyOf(floorKey, value.slot), async () => {
+                const old = await rawSlot(floorKey, value.slot);
+                const next = await files.offload(value, keyOf(floorKey, value.slot), old);
+                let saved;
+                try { saved = await store.putSlot(floorKey, next); }
+                catch (error) { files.dropUnused(next, old); throw error; }
+                const record = saved || { ...next, floorKey };
+                remember(keyOf(floorKey, value.slot), record);
+                files.dropUnused(old, record);
+                return files.hydrate(record);
+            });
+        },
+        async updateSlot(floorKey, slot, expectedRevision, patch, options = {}) {
+            await restored();
+            if (typeof store.updateSlot !== 'function') return { ok: false, reason: 'update-unavailable' };
+            return serialized(keyOf(floorKey, slot), async () => {
+                const old = await rawSlot(floorKey, slot);
+                if (!old) return { ok: false, reason: 'not-found' };
+                if ((old.revision || 0) !== expectedRevision || old.revisionToken !== options.expectedToken)
+                    return { ok: false, reason: 'stale-revision' };
+                if (options.shouldCommit && !options.shouldCommit()) return { ok: false, reason: 'stale-target' };
+                const prepared = { ...patch };
+                if (options.preserveBaseline && !old.consistencyBaselineDataUrl)
+                    prepared.consistencyBaselineDataUrl = old.dataUrl;
+                // 每次候选有独立文件名，失败清理不会删掉其他写入者的同内容图片。
+                const uploadKey = `${keyOf(floorKey, slot)}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                const next = await files.offload(prepared, uploadKey, old);
+                let result;
+                try {
+                    // 上传之后重新读配置；下游事务只保留同步守卫，不重复异步复核。
+                    await options.beforeCommit?.();
+                    const { beforeCommit, ...commitOptions } = options;
+                    result = await store.updateSlot(floorKey, slot, expectedRevision, next, commitOptions);
+                }
+                catch (error) { files.dropUnused(next, old); throw error; }
+                if (!result?.ok) { files.dropUnused(next, old); return result; }
+                remember(keyOf(floorKey, slot), result.record);
+                files.dropUnused(old, result.record);
+                try {
+                    const record = await files.hydrate(result.record);
+                    // 文件回读失败不撤销已经提交的记录；本次候选仍可立即展示。
+                    if (!record?.dataUrl && patch.dataUrl) return { ...result,
+                        record: { ...record, dataUrl: patch.dataUrl }, warning: 'cg-file-read-failed' };
+                    return { ...result, record };
+                } catch {
+                    return { ...result, record: { ...result.record,
+                        ...(patch.dataUrl && { dataUrl: patch.dataUrl }) }, warning: 'cg-file-read-failed' };
+                }
+            });
         },
         async deleteSlot(floorKey, slot) {
             await restored();
-            const old = await rawSlot(floorKey, slot);
-            const result = await store.deleteSlot(floorKey, slot);
-            remember(keyOf(floorKey, slot), null);
-            files.dropUnused(old, null);
-            return result;
+            return serialized(keyOf(floorKey, slot), async () => {
+                const old = await rawSlot(floorKey, slot);
+                const result = await store.deleteSlot(floorKey, slot);
+                remember(keyOf(floorKey, slot), null);
+                files.dropUnused(old, null);
+                return result;
+            });
         },
         ...(typeof store.listSlotKeys === 'function' ? { async listSlotKeys() { await restored(); return store.listSlotKeys(); } } : {}),
         ...(typeof store.getSlotRecord === 'function' ? { async getSlotRecord(key) { await restored(); return store.getSlotRecord(key); } } : {}),

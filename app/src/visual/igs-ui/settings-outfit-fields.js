@@ -1,6 +1,8 @@
 import { esc } from './reader-value-utils.js';
 import { resolveSpriteAsset } from '../../scene/asset-match.js';
 import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit } from '../../scene/character-outfits.js';
+import { characterPromptRecovery } from '../../generated-images/illustration/character-prompt-task.js';
+import { promptProvenance } from '../../generated-images/generation-prompt.js';
 
 const encSeg = (value) => encodeURIComponent(String(value == null ? '' : value));
 
@@ -80,7 +82,7 @@ export function pendingExpressionCaptions(notes, slots) {
     return Object.entries(notes && typeof notes === 'object' ? notes : {})
         .filter(([mood, note]) => note && note.caption && mood !== '默认' && !String(own[mood] || '').trim()
             && (Object.prototype.hasOwnProperty.call(own, mood) || note.error === '已停止'))
-        .map(([mood, note]) => ({ mood, caption: note.caption }));
+        .map(([mood, note]) => ({ mood, caption: note.caption, ...promptProvenance(note), ...characterPromptRecovery(note) }));
 }
 
 export const menuItem = (action, label, extra = '') => `<button type="button" class="igs-add-menu-item${extra}" data-action="${action}" role="menuitem">${esc(label)}</button>`;

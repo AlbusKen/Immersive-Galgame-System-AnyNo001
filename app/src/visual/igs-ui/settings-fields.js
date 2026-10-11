@@ -642,10 +642,17 @@ const CHARACTER_DNA_FIELD_LABELS = [
     ['defaultAppearance', '默认外观', '默认发型、服装、饰品；剧情明确换装时可被覆盖'],
     ['negative', '负面词', '防漂移与禁止增加的特征'],
     ['triggerWords', '触发词', '模型token / LoRA触发词等纯文本'],
+    ...[['full_body', '全身'], ['half_body', '半身'], ['portrait', '头像'], ['partial', '局部／背面']].flatMap(([view, label]) => [
+        [`views.${view}.subject`, `${label}身份`, '英文身份主语片段；固定特征与其他景别一致，不含衣装或动作'],
+        [`views.${view}.negative`, `${label}身份负面词`, '该景别固定身份的排除词，可留空'],
+    ]),
 ];
 
 // 角色 DNA 折叠编辑器：角色名只进 data 属性，不拼入点号路径；输入只更新草稿。
-const dnaValue = (dna, field) => (dna && typeof dna === 'object' && !Array.isArray(dna) && typeof dna[field] === 'string' ? dna[field] : '');
+const dnaValue = (dna, field) => {
+    const value = field.split('.').reduce((node, key) => node?.[key], dna);
+    return typeof value === 'string' ? value : '';
+};
 
 function characterDnaFilled(dna) {
     return CHARACTER_DNA_FIELD_LABELS.some(([field]) => dnaValue(dna, field).trim());

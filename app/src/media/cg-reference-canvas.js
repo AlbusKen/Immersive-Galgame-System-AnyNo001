@@ -1,0 +1,137 @@
+import { CG_PIXEL_CAP, clampPixelPair } from '../generated-images/illustration/cg-pixel-cap.js';
+
+const fail = (reason) => ({ ok: false, reason, error: '角色位置或画布资料不足，原图保持不变' });
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+const validSize = (w, h) => [w, h].every((n) => Number.isSafeInteger(n) && n > 0) && w * h <= CG_PIXEL_CAP;
+
+// 规划坐标不是检测结果；默认中心、同位中心与多中心均不能自动分辨人物。
+export function planReferenceCanvas(width, height, meta, characterKey) {
+    if (!validSize(width, height)) return fail('cg-size-invalid');
+    const characters = meta?.characters;
+    if (!Array.isArray(characters) || !characters.length || new Set(characters.map((c) => c.characterKey)).size !== characters.length) return fail('cg-binding-invalid');
+    const target = characters.find((c) => c.characterKey === characterKey);
+    if (!target) return fail('cg-binding-missing');
+    let region = target.region;
+    if (!region) {
+        if (characters.some((c) => !c.positionExplicit || c.centers?.length !== 1)) return fail('cg-position-missing');
+        const points = characters.map((c) => ({ key: c.characterKey, ...c.centers[0] }));
+        if (points.some((p) => ![p.x, p.y].every((v) => Number.isFinite(v) && v >= 0 && v <= 1))) return fail('cg-position-invalid');
+        const center = points.find((p) => p.key === characterKey);
+        if (points.some((p) => p.key !== characterKey && Math.abs(p.x - center.x) < 0.08)) return fail('cg-position-ambiguous');
+        const left = points.filter((p) => p.x < center.x).sort((a, b) => b.x - a.x)[0];
+        const right = points.filter((p) => p.x > center.x).sort((a, b) => a.x - b.x)[0];
+        const x = left ? (left.x + center.x) / 2 : Math.max(0, center.x - 0.3);
+        const end = right ? (right.x + center.x) / 2 : Math.min(1, center.x + 0.3);
+        region = { x, y: Math.max(0, center.y - 0.45), width: end - x, height: Math.min(1, center.y + 0.45) - Math.max(0, center.y - 0.45) };
+    }
+    if (![region.x, region.y, region.width, region.height].every(Number.isFinite) || region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0 || region.x + region.width > 1 || region.y + region.height > 1) return fail('cg-region-invalid');
+    const rect = { x: Math.floor(region.x * width), y: Math.floor(region.y * height), right: Math.ceil((region.x + region.width) * width), bottom: Math.ceil((region.y + region.height) * height) };
+    return finishPlan(width, height, rect);
+}
+
+function finishPlan(width, height, rect) {
+    const margin = Math.ceil(Math.min(width, height) * 0.1);
+    const crop = { x: Math.max(0, rect.x - margin), y: Math.max(0, rect.y - margin),
+        right: Math.min(width, rect.right + margin), bottom: Math.min(height, rect.bottom + margin) };
+    crop.width = crop.right - crop.x; crop.height = crop.bottom - crop.y;
+    const redrawRect = { x: crop.x, y: crop.y, right: crop.right, bottom: crop.bottom };
+    // 内部边缘收回原区域；触及整张 CG 边缘的侧边保留扩大后的范围。
+    const compositeRect = { x: crop.x === 0 ? 0 : rect.x, y: crop.y === 0 ? 0 : rect.y,
+        right: crop.right === width ? width : rect.right,
+        bottom: crop.bottom === height ? height : rect.bottom };
+    const size = clampPixelPair(Math.ceil(crop.width / 0.75), crop.height);
+    const workWidth = Math.floor(size.width * 0.75);
+    const scale = Math.min(workWidth / crop.width, size.height / crop.height);
+    const work = { x: 0, y: 0, width: Math.max(1, Math.floor(crop.width * scale)), height: Math.max(1, Math.floor(crop.height * scale)) };
+    const reference = { x: workWidth, y: 0, width: size.width - workWidth, height: size.height };
+    return { ok: true, width, height, rect, redrawRect, compositeRect, crop, size, work, reference };
+}
+
+const validPixels = (image) => image && Number.isSafeInteger(image.width) && Number.isSafeInteger(image.height)
+    && image.width > 0 && image.height > 0 && image.width * image.height <= CG_PIXEL_CAP
+    && image.data?.length === image.width * image.height * 4;
+const sourcePoint = (plan, x, y) => ({
+    x: clamp(Math.floor(plan.crop.x + (x + 0.5) * plan.crop.width / plan.work.width), 0, plan.width - 1),
+    y: clamp(Math.floor(plan.crop.y + (y + 0.5) * plan.crop.height / plan.work.height), 0, plan.height - 1),
+});
+const inRect = (rect, x, y) => x >= rect.x && x < rect.right && y >= rect.y && y < rect.bottom;
+
+// 只在图内的区域边缘圆角渐变；整张 CG 边缘没有外侧接缝，不收缩或渐隐。
+function regionMaskWeight(plan, rect, x, y, featherWidth) {
+    if (!inRect(rect, x, y)) return 0;
+    const width = rect.right - rect.x, height = rect.bottom - rect.y;
+    const side = Math.min(width, height);
+    const radius = Math.min(32, side * 0.12);
+    const feather = featherWidth ?? Math.max(1, Math.min(24, side * 0.08));
+    const dx = Math.min(rect.x === 0 ? Infinity : x - rect.x,
+        rect.right === plan.width ? Infinity : rect.right - 1 - x);
+    const dy = Math.min(rect.y === 0 ? Infinity : y - rect.y,
+        rect.bottom === plan.height ? Infinity : rect.bottom - 1 - y);
+    const qx = radius - 0.5 - dx, qy = radius - 0.5 - dy;
+    const distance = radius - Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
+        - Math.min(Math.max(qx, qy), 0) - 0.5;
+    const t = clamp(distance / feather, 0, 1);
+    return Math.round(255 * t * t * (3 - 2 * t));
+}
+
+export function buildReferencePixels(source, referenceImage, plan) {
+    if (!plan?.ok || !validPixels(source) || source.width !== plan.width || source.height !== plan.height || !validPixels(referenceImage)) throw new Error('cg-pixels-invalid');
+    const { size, work, reference } = plan;
+    const data = new Uint8ClampedArray(size.width * size.height * 4);
+    const mask = new Uint8ClampedArray(data.length);
+    for (let i = 0; i < data.length; i += 4) {
+        data.set([224, 224, 224, 255], i); mask[i + 3] = 255;
+    }
+    // 工作区的取整留白延续 CG 边缘像素，不引入灰色矩形；延展部分保持黑色蒙版。
+    for (let y = 0; y < size.height; y++) for (let x = 0; x < reference.x; x++) {
+        const p = sourcePoint(plan, Math.min(x, work.width - 1), Math.min(y, work.height - 1));
+        const from = (p.y * source.width + p.x) * 4;
+        const to = (y * size.width + x) * 4;
+        data.set(source.data.subarray(from, from + 4), to);
+        if (x < work.width && y < work.height) {
+            const weight = regionMaskWeight(plan, plan.redrawRect, p.x, p.y);
+            mask.set([weight, weight, weight, 255], to);
+        }
+    }
+    drawIdentityReference(data, size.width, referenceImage, reference);
+    return { image: { ...size, data }, mask: { ...size, data: mask } };
+}
+
+// 无人工头部标定时仅取立绘上部作几何参考，不识别人脸或服装。
+function drawIdentityReference(data, width, image, box) {
+    const head = image.referenceCrop || { x: 0, y: 0, width: image.width, height: Math.max(1, Math.ceil(image.height * 0.4)) };
+    if (![head.x, head.y, head.width, head.height].every(Number.isFinite) || head.x < 0 || head.y < 0 || head.width <= 0 || head.height <= 0 || head.x + head.width > image.width || head.y + head.height > image.height) throw new Error('cg-reference-crop-invalid');
+    const scale = Math.min(box.width / head.width, box.height / head.height);
+    const w = Math.max(1, Math.floor(head.width * scale)), h = Math.max(1, Math.floor(head.height * scale));
+    const left = box.x + Math.floor((box.width - w) / 2), top = box.y + Math.floor((box.height - h) / 2);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const sx = Math.floor(head.x + x * head.width / w), sy = Math.floor(head.y + y * head.height / h);
+        const from = (sy * image.width + sx) * 4, to = ((top + y) * width + left + x) * 4;
+        const a = image.data[from + 3] / 255;
+        for (let k = 0; k < 3; k++) data[to + k] = Math.round(image.data[from + k] * a + data[to + k] * (1 - a));
+        data[to + 3] = 255;
+    }
+}
+
+// 从扩大后的重绘区域取内侧结果，图内回贴边缘混合新旧 RGB，原 alpha 不变。
+export function composeReferencePixels(source, generated, plan) {
+    if (!plan?.ok || !validPixels(source) || !validPixels(generated) || source.width !== plan.width || source.height !== plan.height || generated.width !== plan.size.width || generated.height !== plan.size.height) throw new Error('cg-result-size-mismatch');
+    const data = new Uint8ClampedArray(source.data);
+    const { compositeRect: rect, redrawRect, crop, work } = plan;
+    const side = Math.min(rect.right - rect.x, rect.bottom - rect.y);
+    const blendFeather = Math.max(1, Math.min(96, side * 0.16));
+    for (let y = rect.y; y < rect.bottom; y++) for (let x = rect.x; x < rect.right; x++) {
+        const wx = clamp(Math.floor((x - crop.x + 0.5) * work.width / crop.width), 0, work.width - 1);
+        const wy = clamp(Math.floor((y - crop.y + 0.5) * work.height / crop.height), 0, work.height - 1);
+        const p = sourcePoint(plan, wx, wy);
+        // 蒙版过渡区不回贴；同时核对原坐标及实际采样点，隔离缩放量化的边缘像素。
+        if (regionMaskWeight(plan, redrawRect, x, y) !== 255
+            || regionMaskWeight(plan, redrawRect, p.x, p.y) !== 255) continue;
+        const blend = Math.min(regionMaskWeight(plan, rect, x, y, blendFeather),
+            regionMaskWeight(plan, rect, p.x, p.y, blendFeather)) / 255;
+        if (!blend) continue;
+        const from = (wy * generated.width + wx) * 4, to = (y * source.width + x) * 4;
+        for (let k = 0; k < 3; k++) data[to + k] = Math.round(source.data[to + k] * (1 - blend) + generated.data[from + k] * blend);
+    }
+    return { width: source.width, height: source.height, data };
+}

@@ -2,6 +2,7 @@ import { parseImageResponse } from './image-api-client.js';
 import { buildNaiV4Request, validateNaiV4Request, NAI_DEFAULT_SETTINGS, NAI_OFFICIAL_ENDPOINT } from './request-builders/nai-v4-builder.js';
 import { promptFromNaiBody } from './generation-prompt.js';
 import { buildNaiInpaintRequest, resolveNaiInpaintModel } from './request-builders/nai-inpaint-builder.js';
+import { promptSnapshotFromBody } from './final-caption.js';
 
 export { NAI_OFFICIAL_ENDPOINT };
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
@@ -57,6 +58,9 @@ export function createNaiOfficialClient(deps = {}) {
         const url = direct ? target : toProxyUrl(target);
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
         const timer = controller ? setTimeout(() => controller.abort(), Number(settings.timeoutMs) || 120000) : null;
+        const abort = () => controller?.abort();
+        settings.signal?.addEventListener('abort', abort, { once: true });
+        if (settings.signal?.aborted) abort();
         try {
             return await fetchImpl(url, {
                 method: 'POST',
@@ -68,16 +72,19 @@ export function createNaiOfficialClient(deps = {}) {
                 body: JSON.stringify(body),
                 mode: direct ? 'cors' : 'same-origin',
                 credentials: direct ? 'omit' : 'same-origin',
-                signal: controller ? controller.signal : undefined,
+                signal: controller ? controller.signal : settings.signal,
             });
         } finally {
             if (timer) clearTimeout(timer);
+            settings.signal?.removeEventListener('abort', abort);
         }
     }
 
     // 生成与局部重绘共用的发送 / 重试 / 响应解析；错误文案不含 Key 与请求体。
     async function sendWithRetry(body, settings) {
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+            if (settings.signal?.aborted || (typeof settings.shouldStart === 'function' && !settings.shouldStart()))
+                return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效，停止发送' };
             let response;
             try {
                 response = await send(body, settings);
@@ -122,8 +129,10 @@ export function createNaiOfficialClient(deps = {}) {
         const body = buildNaiV4Request(slot, settings, random);
         const valid = validateNaiV4Request(body);
         if (!valid.ok) return { ok: false, error: `生图请求无效：${valid.reason}` };
+        const snapshot = slot?.captionMode === 'final' ? promptSnapshotFromBody(body, settings.finalArtist
+            !== undefined ? settings.finalArtist : { positivePrompt: settings.artistPrefix || '', negativePrompt: '' }) : null;
         const sent = await sendWithRetry(body, settings);
-        if (sent && sent.ok) return { ...sent, prompt: promptFromNaiBody(body) };
+        if (sent && sent.ok) return { ...sent, prompt: promptFromNaiBody(body), ...(snapshot && { sentPrompt: snapshot }) };
         return sent;
     }
 
@@ -138,7 +147,9 @@ export function createNaiOfficialClient(deps = {}) {
         if (blocked) return blocked;
         const built = buildNaiInpaintRequest(request, settings, random);
         if (!built.ok) return { ok: false, reason: built.reason, error: `局部重绘请求无效：${built.reason}` };
-        return sendWithRetry(built.body, settings);
+        const snapshot = request.captionMode === 'final' ? promptSnapshotFromBody(built.body, settings.finalArtist) : null;
+        const sent = await sendWithRetry(built.body, { ...settings, signal: request.signal, shouldStart: request.shouldStart });
+        return sent?.ok && snapshot ? { ...sent, sentPrompt: snapshot } : sent;
     }
 
     return { generate, edit, supportsEdit };

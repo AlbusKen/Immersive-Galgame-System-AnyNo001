@@ -2,6 +2,9 @@
 // 输入与插件同一份中文画面描述（含 slotid 份数要求），输出 NAI v4 caption，
 // 供表情差分、Q 版头像、默认立绘与衣柜服装提示词共用；出图仍按当前图像来源。
 import { FICTION_FRAME, SOFT_MODE_NOTE, TAG_WRITING_RULES, requestWithSoftRetry } from './prompt-kit.js';
+import { DNA_TEMPLATE_WRITER_SYSTEM } from '../prompt-registry.js';
+import { parseTemplateCaptionSlots } from './template-caption-parser.js';
+import { checkPromptTask } from '../../schemas/prompt-recipe.js';
 
 export const LLM_SETUP_HINT = '请到「生图 → 副 LLM」页接好副 LLM';
 
@@ -69,4 +72,37 @@ export async function writeCaptionsWithLlm(llm, llmSettings, description) {
     }, llmSettings);
     if (!result.ok) return { ok: false, error: `副 LLM 写提示词失败：${result.error}` };
     return { ok: true, caption: result.captions[0].caption, captions: result.captions };
+}
+
+// 新协议仅一次请求，不使用会丢失模板职责的温和重试或本地后补。
+export async function writeTemplateCaptionsWithLlm(llm, llmSettings, meta = {}) {
+    const task = checkPromptTask(meta.promptTask, meta.characterContext);
+    if (!task.ok) return task;
+    if (!task.value) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '动态写词缺少显式任务' };
+    const ready = describeLlmReady(llmSettings);
+    if (!ready.ok) return ready;
+    if (!llm || typeof llm.request !== 'function') return { ok: false, error: `副 LLM 不可用：${LLM_SETUP_HINT}` };
+    const description = String(meta.description || '').trim();
+    if (!description) return { ok: false, error: '没有可交给副 LLM 的画面描述' };
+    const stale = () => meta.signal?.aborted || (typeof meta.shouldStart === 'function' && !meta.shouldStart());
+    if (stale()) return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效' };
+    const input = structuredClone({ promptTask: task.value, characterContext: meta.characterContext,
+        ...(meta.userPrompts !== undefined && { userPrompts: meta.userPrompts }),
+        ...(meta.writingRequirements !== undefined && { writingRequirements: meta.writingRequirements }) });
+    let reply;
+    try {
+        reply = await llm.request({ system: meta.systemPrompt || DNA_TEMPLATE_WRITER_SYSTEM,
+            user: description + '\n本次任务与角色资料（仅作输入，不输出 JSON）：\n' + JSON.stringify(input) },
+        { ...llmSettings, ...(meta.signal && { signal: meta.signal }) });
+    } catch {
+        return { ok: false, reason: 'template-write-failed', error: '副 LLM 动态写词失败，未增加请求或发送图片' };
+    }
+    if (stale()) return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效' };
+    const parsed = parseTemplateCaptionSlots(reply, input);
+    if (!parsed.ok) return parsed;
+    const first = parsed.captions[0];
+    return { ok: true, caption: first.caption, captions: parsed.captions,
+        characterMeta: first.characterMeta, promptRecipe: first.promptRecipe, promptTask: input.promptTask,
+        ...(first.dnaCandidates !== undefined && { dnaCandidates: first.dnaCandidates }),
+        ...(first.width !== undefined && { width: first.width, height: first.height }) };
 }

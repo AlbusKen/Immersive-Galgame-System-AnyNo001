@@ -23,6 +23,9 @@ ${IGS_HINT_THEME_STYLE_TEXT}
 .igs-page-modal{position:fixed;inset:0;z-index:2147483600;display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:24px;background:rgba(0,0,0,.38);color:var(--igs-hint-ink);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",sans-serif;animation:igs-page-modal-fade .18s ease both;}
 .igs-page-modal-card{width:min(400px,100%);display:flex;flex-direction:column;gap:18px;box-sizing:border-box;padding:24px 22px 16px;border-radius:14px;background:var(--igs-hint-bg);box-shadow:var(--igs-hint-shadow);animation:igs-page-modal-rise .22s cubic-bezier(.2,.8,.2,1) both;}
 .igs-page-modal-msg{margin:0;font-size:15px;line-height:1.7;letter-spacing:.04em;white-space:pre-line;word-break:break-word;}
+.igs-page-modal-card{max-height:100%;overflow:auto;}
+.igs-page-modal-preview{display:block;max-width:100%;max-height:55vh;object-fit:contain;align-self:center;}
+@media (pointer:coarse){.igs-page-modal-actions button{min-height:44px;}}
 .igs-page-modal-input{width:100%;box-sizing:border-box;margin:0;padding:9px 12px;border-radius:8px;border:0;outline:0;background:var(--igs-hint-field);color:inherit;font:inherit;font-size:14px;}
 .igs-page-modal-input:focus{box-shadow:inset 0 0 0 1.5px var(--igs-hint-accent);}
 .igs-page-modal-actions{display:flex;justify-content:flex-end;gap:6px;}
@@ -88,11 +91,12 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
         if (!entry || pending !== entry) return;
         pending = null;
         detach(entry);
+        if (entry.kind === 'progress' && result === false) entry.onCancel?.();
         entry.resolve(result);
     }
 
     function cancelValue(entry) {
-        if (entry.kind === 'confirm') return false;
+        if (entry.kind === 'confirm' || entry.kind === 'progress') return false;
         if (entry.kind === 'alert') return true;
         return null;
     }
@@ -117,6 +121,14 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
         msg.className = 'igs-page-modal-msg';
         msg.textContent = entry.message;
         card.appendChild(msg);
+        entry.messageEl = msg;
+        if (entry.imageUrl) {
+            const image = doc.createElement('img');
+            image.className = 'igs-page-modal-preview';
+            image.src = entry.imageUrl;
+            image.setAttribute('alt', '尚未保存的一致性重绘候选');
+            card.appendChild(image);
+        }
         let input = null;
         if (entry.kind === 'prompt') {
             input = doc.createElement('input');
@@ -129,7 +141,8 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
         }
         const actions = doc.createElement('div');
         actions.className = 'igs-page-modal-actions';
-        const buttons = entry.kind === 'alert' ? [['ok', entry.okLabel]] : [['cancel', entry.cancelLabel], ['ok', entry.okLabel]];
+        const buttons = entry.kind === 'progress' ? [['cancel', entry.cancelLabel]]
+            : entry.kind === 'alert' ? [['ok', entry.okLabel]] : [['cancel', entry.cancelLabel], ['ok', entry.okLabel]];
         for (const [role, label] of buttons) {
             const btn = doc.createElement('button');
             btn.type = 'button';
@@ -139,7 +152,9 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
         }
         card.appendChild(actions);
         el.appendChild(card);
-        const accept = () => settle(entry, entry.kind === 'prompt' ? (input ? input.value : entry.value) : true);
+        const accept = () => {
+            if (entry.kind !== 'progress') settle(entry, entry.kind === 'prompt' ? (input ? input.value : entry.value) : true);
+        };
         el.addEventListener('click', (event) => {
             if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
             const target = event && event.target;
@@ -181,6 +196,8 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
             cancelLabel: labels.cancelLabel || '取消',
             resolve: null,
             el: null,
+            imageUrl: labels.imageUrl || '',
+            onCancel: labels.onCancel,
         };
         return new Promise((resolve) => {
             entry.resolve = resolve;
@@ -196,6 +213,17 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
         alert: (message, labels) => open('alert', message, '', labels),
         confirm: (message, labels) => open('confirm', message, '', labels),
         prompt: (message, value = '', labels) => open('prompt', message, value, labels),
+        confirmImage: (imageUrl, message, labels = {}) => open('confirm', message, '', { ...labels, imageUrl }),
+        progress(message, onCancel) {
+            void open('progress', message, '', { cancelLabel: '停止', onCancel });
+            const entry = pending;
+            return {
+                update(text) {
+                    if (entry && pending === entry && entry.messageEl) entry.messageEl.textContent = String(text);
+                },
+                close() { if (entry && pending === entry) settle(entry, true); },
+            };
+        },
         cancel() {
             if (pending) settle(pending, cancelValue(pending));
         },

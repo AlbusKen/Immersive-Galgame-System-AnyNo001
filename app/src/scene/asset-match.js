@@ -1,5 +1,7 @@
 import { lookupSceneBackground, lookupSceneAssetUrls, resolveCharacterKey, lookupAssetValue, sceneTimeSlot } from './scene-directives.js';
 import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit, outfitsOfCharacter } from './character-outfits.js';
+import { promptProvenance } from '../generated-images/generation-prompt.js';
+import { characterPromptRecovery } from '../generated-images/illustration/character-prompt-task.js';
 
 export const GENERATED_ASSET_URL_PREFIX = 'igs-gen:';
 
@@ -33,7 +35,8 @@ function normalizeExpressionNotes(value) {
             const caption = item.caption && typeof item.caption === 'object' && !Array.isArray(item.caption)
                 ? item.caption : null;
             if (!String(mood || '').trim() || (!positive && !negative && !error && !caption)) continue;
-            bucket[String(mood).trim()] = { positive, negative, error, ...(caption ? { caption } : {}) };
+            bucket[String(mood).trim()] = { positive, negative, error, ...(caption ? { caption } : {}),
+                ...promptProvenance(item), ...characterPromptRecovery(item) };
         }
         if (Object.keys(bucket).length) out[name] = bucket;
     }
@@ -79,6 +82,7 @@ export function setGeneratedExpressionNote(library, name, mood, note = {}) {
             negative: typeof item.negative === 'string' ? item.negative : '',
             error: typeof item.error === 'string' ? item.error : '',
             ...(item.caption && typeof item.caption === 'object' ? { caption: item.caption } : {}),
+            ...promptProvenance(item), ...characterPromptRecovery(item),
         },
     };
     return { ok: true, library: next };
