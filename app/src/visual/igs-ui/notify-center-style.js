@@ -18,7 +18,8 @@ export const NOTIFY_CENTER_STYLE_TEXT = `
 .igs-nc-title{flex:1;font-size:16px;font-weight:700;}
 .igs-nc-clear{padding:5px 11px;border:0;border-radius:14px;background:#2b303a;color:#f4f1ec;font-size:12px;cursor:pointer;}
 .igs-nc-close{width:30px;height:30px;padding:6px;box-sizing:border-box;border:0;border-radius:50%;background:#2b303a;color:#f4f1ec;cursor:pointer;}
-@media (max-width:640px){.igs-nc-close{order:-1;}}
+/* 手机回读弹窗把操作键放在同一行居中，不让关闭键被 order 推到左边、清除键留在右边。 */
+@media (max-width:640px){.igs-nc-bar{flex-wrap:wrap;justify-content:center;}.igs-nc-title{flex:0 0 100%;text-align:center;}}
 .igs-nc-close svg{display:block;width:100%;height:100%;}
 .igs-nc-list{overflow-y:auto;overscroll-behavior:contain;padding:2px 12px 14px;}
 .igs-nc-group{margin-top:8px;padding:8px 10px;border-radius:12px;background:#252932;}
