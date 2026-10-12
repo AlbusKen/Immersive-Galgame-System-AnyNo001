@@ -1,3 +1,5 @@
+import { createLocalImageCache } from '../../media/tavern-image-cache.js';
+import { IMAGE_FIELDS, isImageData } from '../../media/image-identity.js';
 import { numberParagraphs } from './marker-placer.js';
 import { MIN_AUTO_IMAGE_BODY_CHARS, floorBodyLength } from './floor-body-length.js';
 import { buildAssetPlannerUserPrompt, parseAssetPlan, buildAssetSlot, buildDictionaryAssetItems } from './asset-prompt.js';
@@ -17,10 +19,6 @@ import { isCharacterDnaEmpty, resolveCharacterDna } from '../../scene/character-
 import { BUILTIN_PROMPTS } from '../prompt-registry.js';
 
 export const GENERATED_ASSET_UPDATED_EVENT = 'igs:generated-asset-updated';
-const IMAGE_CACHE_LIMIT = 60;
-// 正在显示的图不淘汰：一页缩略图超过上限时，按张数硬淘汰会把刚读回的图挤掉，
-// 重绘后又缺图再读，循环闪「载入中」。近几秒内被取用过的图保留，离开页面后再按上限回收。
-const IMAGE_IN_USE_MS = 5000;
 const AVATAR_SIZE = '1024x1024';
 // 头像按圆形裁切：只到头、颈、肩，脸占画面大半；胸以下一律进负面。
 const AVATAR_POSITIVE = BUILTIN_PROMPTS.avatar.positive;
@@ -59,28 +57,21 @@ export function createAssetGenerationService(deps) {
     const report = deps.report || (() => {});
     const newId = deps.newId || (() => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
     const locks = new Map();
-    const images = new Map();
-    const imageUsedAt = new Map();
-    const clock = deps.clock || (() => Date.now());
+    const cache = deps.mediaCache || createLocalImageCache(deps.urlApi ? {
+        URL: deps.urlApi, Blob: deps.Blob || globalThis.Blob, atob: globalThis.atob, btoa: globalThis.btoa,
+    } : {});
     const pendingImages = new Set();
-    // 设置页缩略图用 blob: 短地址：dataUrl 直接拼进 HTML 时一页几十 MB，重绘、开菜单都卡；
-    // 短地址浏览器按地址缓存已解码的图，重绘不重载、不闪。
-    const urlApi = deps.urlApi || globalThis.URL;
-    const BlobCtor = deps.Blob || globalThis.Blob;
-    const canThumbUrl = Boolean(urlApi && typeof urlApi.createObjectURL === 'function' && BlobCtor);
-    const thumbUrls = new Map();
-    // 有小图库（thumbStore + makeThumb）时，设置页缩略图是 160 宽小图，生成一次存起来，原图不进内存；
-    // 没有时（测试、老环境）退回旧做法：把已读回的原图转成 blob 短地址。
     const thumbStore = deps.thumbStore || null;
     const makeThumb = typeof deps.makeThumb === 'function' ? deps.makeThumb : null;
-    const smallThumbs = Boolean(thumbStore && makeThumb && canThumbUrl);
-    const thumbIds = new Map();
+    const smallThumbs = Boolean(thumbStore && makeThumb);
     const pendingThumbs = new Set();
-    const THUMB_LIMIT = 800;
+    const imageKey = id => `asset:${id}`;
+    const thumbKey = id => `thumb:asset:${id}`;
     let tempChatId = '';
     let tempRecords = new Map();
     let tempLoading = null;
     let offRendered = null;
+    let stopped = false;
 
     const readSettings = () => {
         const raw = getSettings ? getSettings() || {} : {};
@@ -103,48 +94,24 @@ export function createAssetGenerationService(deps) {
     );
 
     function emit(detail) {
+        if (stopped) return;
         if (events && typeof events.emit === 'function') events.emit(GENERATED_ASSET_UPDATED_EVENT, detail);
     }
 
-    function dropThumb(id) {
-        const url = thumbUrls.get(id);
-        if (!url) return;
-        thumbUrls.delete(id);
-        thumbIds.delete(url);
-        try { if (typeof urlApi.revokeObjectURL === 'function') urlApi.revokeObjectURL(url); } catch (error) { /* 已失效 */ }
-    }
-
-    // 图的内容变了（抠图、导入覆盖）或删了：内存和小图库里的旧小图都作废。
     function invalidateThumb(id) {
-        dropThumb(id);
-        if (smallThumbs) thumbStore.remove([id]).catch(() => {});
+        void cache.drop(thumbKey(id)).catch(() => {});
+        if (smallThumbs) void thumbStore.remove([id]).catch(() => {});
     }
+    function forgetImage(id) { cache.forget(imageKey(id)); }
+    function rememberImage(id, dataUrl) { if (!stopped) { cache.forget(imageKey(id)); cache.remember(imageKey(id), dataUrl); } }
 
-    function forgetImage(id) {
-        images.delete(id);
-        imageUsedAt.delete(id);
-        // 小图独立于原图缓存：原图被挤出内存时小图照样留着；旧做法的 blob 就是原图，要一起放掉。
-        if (!smallThumbs) dropThumb(id);
+    async function persistTempRecord(record) {
+        const old = typeof store.getAssetsByChat === 'function'
+            ? (await store.getAssetsByChat(record.chatId)).find(value => value.key === record.key) : tempRecords.get(record.key);
+        try { await store.putAsset(record); }
+        catch (error) { if (record.imageId && record.imageId !== old?.imageId) await deleteImagesImpl([record.imageId]); throw error; }
+        if (old?.imageId && old.imageId !== record.imageId) await deleteImagesImpl([old.imageId]);
     }
-
-    function touchImage(id, dataUrl) {
-        if (smallThumbs ? images.has(id) && images.get(id) !== dataUrl : images.get(id) !== dataUrl) invalidateThumb(id);
-        images.delete(id);
-        images.set(id, dataUrl);
-        imageUsedAt.set(id, clock());
-    }
-
-    function rememberImage(id, dataUrl) {
-        touchImage(id, dataUrl);
-        const cutoff = clock() - IMAGE_IN_USE_MS;
-        // Map 按取用先后排序，最旧的都还在用就说明整页都在用，停止淘汰。
-        while (images.size > IMAGE_CACHE_LIMIT) {
-            const oldest = images.keys().next().value;
-            if ((imageUsedAt.get(oldest) || 0) > cutoff) break;
-            forgetImage(oldest);
-        }
-    }
-
     function loadTempRecords(chatId) {
         if (!chatId) return Promise.resolve();
         if (chatId === tempChatId && !tempLoading) return Promise.resolve();
@@ -200,97 +167,49 @@ export function createAssetGenerationService(deps) {
         return out;
     }
 
-    // 同步取图：命中内存直接返回；否则异步从 IndexedDB 补并在补完后通知重渲染。
     function resolveUrl(url) {
         if (!isGeneratedAssetUrl(url)) return String(url || '');
-        const id = generatedAssetIdOf(url);
-        const hit = images.get(id);
-        if (hit) {
-            touchImage(id, hit);
-            return hit;
-        }
+        if (stopped) return '';
+        const id = generatedAssetIdOf(url), key = imageKey(id), hit = cache.peek(key);
+        if (hit) return hit;
         if (!pendingImages.has(id)) {
             pendingImages.add(id);
-            store.getImage(id).then((record) => {
-                if (record && record.dataUrl) {
-                    rememberImage(id, record.dataUrl);
-                    emit({ imageId: id, reason: 'image-loaded' });
-                }
-            }).catch(() => {}).finally(() => pendingImages.delete(id));
+            const stamp = cache.token(key);
+            cache.load(key, async () => (await store.getImage(id, { fields: ['dataUrl'] }))?.dataUrl || '', { persist: false })
+                .then(value => { if (value && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' }); })
+                .catch(() => {}).finally(() => pendingImages.delete(id));
         }
         return '';
     }
 
-    function dataUrlToBlob(dataUrl) {
-        const m = /^data:([^;,]+);base64,/i.exec(dataUrl);
-        if (!m || typeof globalThis.atob !== 'function') return null;
-        const bin = globalThis.atob(dataUrl.slice(m[0].length));
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-        return new BlobCtor([bytes], { type: m[1] });
-    }
-
-    function setThumbUrl(id, dataUrl) {
-        let blob = null;
-        try { blob = dataUrlToBlob(dataUrl); } catch (error) { blob = null; }
-        if (!blob) return false;
-        dropThumb(id);
-        const url = urlApi.createObjectURL(blob);
-        thumbUrls.set(id, url);
-        thumbIds.set(url, id);
-        while (thumbUrls.size > THUMB_LIMIT) dropThumb(thumbUrls.keys().next().value);
-        return true;
-    }
-
-    // 小图：先查小图库；没有就读一次原图缩成小图存进去（比原图小两个数量级）。缩不了（图本来就小）直接用原图。
     async function loadSmallThumb(id) {
-        let dataUrl = '';
-        try { dataUrl = await thumbStore.get(id); } catch (error) { dataUrl = ''; }
-        if (!dataUrl) {
-            const full = images.get(id) || (normalizeGeneratedImageRecord(await store.getImage(id)) || {}).dataUrl || '';
-            if (!full) return;
-            let small = '';
-            try { small = await makeThumb(full); } catch (error) { small = ''; }
-            if (small) {
-                try { await thumbStore.put(id, small); } catch (error) { /* 存不下就只在这次打开里用 */ }
-            }
-            dataUrl = small || full;
-        }
-        if (setThumbUrl(id, dataUrl)) emit({ imageId: id, reason: 'image-loaded' });
+        const key = thumbKey(id), stamp = cache.token(key);
+        const value = await cache.load(key, async () => {
+            let dataUrl = await thumbStore.get(id).catch(() => '');
+            if (dataUrl) return dataUrl;
+            const full = (await store.getImage(id, { fields: ['dataUrl'] }))?.dataUrl || '';
+            if (!full) return '';
+            const small = await Promise.resolve().then(() => makeThumb(full)).catch(() => '');
+            if (small && cache.token(key) === stamp) await thumbStore.put(id, small, stamp);
+            return small || full;
+        });
+        if (value && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' });
     }
 
-    // 点缩略图看大图时用：小图地址 → 图片编号，好去读原图。
     function thumbSourceId(url) {
-        return thumbIds.get(String(url || '')) || '';
+        const key = cache.sourceId(String(url || ''));
+        return key.startsWith('thumb:asset:') ? key.slice(12) : key.startsWith('asset:') ? key.slice(6) : '';
     }
 
-    // 设置页缩略图取图：返回 blob: 短地址，已有就当场给，不多等一轮重绘；
-    // 还没准备好返回空串，好了发 image-loaded。环境不支持 blob 地址时退回 dataUrl。
     function resolveThumbUrl(url) {
-        if (isGeneratedAssetUrl(url) && smallThumbs) {
-            const id = generatedAssetIdOf(url);
-            const ready = thumbUrls.get(id);
-            if (ready) return ready;
-            if (!pendingThumbs.has(id)) {
-                pendingThumbs.add(id);
-                loadSmallThumb(id).catch(() => {}).finally(() => pendingThumbs.delete(id));
-            }
-            return '';
+        if (!isGeneratedAssetUrl(url) || !smallThumbs) return resolveUrl(url);
+        const id = generatedAssetIdOf(url), ready = cache.peek(thumbKey(id));
+        if (ready) return ready;
+        if (!pendingThumbs.has(id)) {
+            pendingThumbs.add(id);
+            loadSmallThumb(id).catch(() => {}).finally(() => pendingThumbs.delete(id));
         }
-        if (!isGeneratedAssetUrl(url) || !canThumbUrl) return resolveUrl(url);
-        const id = generatedAssetIdOf(url);
-        const dataUrl = images.get(id);
-        if (!dataUrl) return resolveUrl(url);
-        touchImage(id, dataUrl);
-        let ready = thumbUrls.get(id);
-        if (!ready) {
-            let blob = null;
-            try { blob = dataUrlToBlob(dataUrl); } catch (error) { blob = null; }
-            if (!blob) return dataUrl;
-            ready = urlApi.createObjectURL(blob);
-            thumbUrls.set(id, ready);
-        }
-        return ready;
+        return '';
     }
 
     function matchContext(s) {
@@ -389,7 +308,7 @@ export function createAssetGenerationService(deps) {
             record = { ...base, imageId: '', status: 'failed', error: (result && result.error) || 'NAI 生成失败' };
             report('error', `素材「${item.need.name}」生成失败：${record.error}`);
         }
-        await store.putAsset(record);
+        await persistTempRecord(record);
         if (tempChatId === floor.chatId) tempRecords.set(key, record);
         emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
         return record;
@@ -429,7 +348,7 @@ export function createAssetGenerationService(deps) {
                 report('error', `「${need.name}」${need.time}差分生成失败：${record.error}`);
             }
         }
-        await store.putAsset(record);
+        await persistTempRecord(record);
         if (tempChatId === floor.chatId) tempRecords.set(key, record);
         if (record.status !== 'skipped') emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
         return record;
@@ -490,7 +409,7 @@ export function createAssetGenerationService(deps) {
                 record = { ...base, imageId: '', status: 'failed', error: (result && result.error) || 'NAI 生成失败' };
                 report('error', `素材「${item.need.name}」生成失败：${record.error}`);
             }
-            await store.putAsset(record);
+            await persistTempRecord(record);
             if (tempChatId === floor.chatId) tempRecords.set(key, record);
             emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
             records.push(record);
@@ -523,7 +442,7 @@ export function createAssetGenerationService(deps) {
                 record = { ...base, imageId: '', status: 'failed', error: (result && result.error) || 'NAI 生成失败' };
                 report('error', `素材「${item.need.name}」生成失败：${record.error}`);
             }
-            await store.putAsset(record);
+            await persistTempRecord(record);
             if (tempChatId === floor.chatId) tempRecords.set(key, record);
             emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
             return record;
@@ -606,8 +525,10 @@ export function createAssetGenerationService(deps) {
         let [backgroundNeeds, spriteNeeds] = collectNeeds();
         for (const url of probed) {
             const id = generatedAssetIdOf(url);
-            if (images.has(id)) continue;
-            const record = await store.getImage(id).catch(() => null);
+            if (cache.peek(imageKey(id))) continue;
+            let record;
+            try { record = await (store.getImageRecord ? store.getImageRecord(id) : store.getImage(id)); }
+            catch { report('warn', '素材记录暂时读不到，保留已有引用'); continue; }
             if (!record || !record.dataUrl) lost.add(url);
         }
         if (lost.size) {
@@ -750,13 +671,13 @@ export function createAssetGenerationService(deps) {
         const record = currentTempRecords().get(key);
         if (!record) return { ok: false, reason: 'not-found' };
         const next = { ...record, status, updatedAt: now() };
-        if (status === 'discarded' && record.imageId) {
-            await store.deleteImage(record.imageId);
-            forgetImage(record.imageId);
-            next.imageId = '';
-        }
-        tempRecords.set(key, next);
+        if (status === 'discarded') next.imageId = '';
         await store.putAsset(next);
+        tempRecords.set(key, next);
+        if (status === 'discarded' && record.imageId) {
+            const deleted = await store.deleteImage(record.imageId);
+            if (!deleted?.retained?.length) { forgetImage(record.imageId); invalidateThumb(record.imageId); }
+        }
         emit({ chatId: record.chatId, key, reason: status });
         return { ok: true, record: next };
     }
@@ -767,8 +688,10 @@ export function createAssetGenerationService(deps) {
 
     // 遮罩编辑器读取：legacy 记录（无原图）只可查看，editable 为 false。
     async function getEditableImage(imageId) {
-        const record = normalizeGeneratedImageRecord(await store.getImage(imageId));
+        const record = normalizeGeneratedImageRecord(await store.getImage(imageId, { fields: '*' }));
         if (!record) return { ok: false, reason: 'not-found' };
+        const metadata = typeof store.getImageRecord === 'function' ? await store.getImageRecord(imageId) : record;
+        if (IMAGE_FIELDS.some(field => metadata?.[field] && !record[field])) return { ok: false, reason: 'image-read-failed' };
         return { ok: true, record, editable: !isLegacyGeneratedImage(record) };
     }
 
@@ -785,23 +708,24 @@ export function createAssetGenerationService(deps) {
 
     async function deleteImagesImpl(ids) {
         let failed = false;
+        const retained = [];
         for (const id of ids || []) {
             try {
-                await store.deleteImage(id);
+                const deleted = await store.deleteImage(id);
+                if (deleted?.retained?.length) { retained.push(...deleted.retained); continue; }
+                if (deleted?.ok === false) { failed = true; continue; }
                 forgetImage(id);
                 invalidateThumb(id);
             } catch (error) { failed = true; }
         }
-        return failed ? { ok: false, reason: 'image-delete-failed' } : { ok: true };
+        return failed ? { ok: false, reason: 'image-delete-failed', retained } : retained.length ? { ok: true, retained } : { ok: true };
     }
 
     // 下载用：取 IGS 实际存储的图片 dataUrl（立绘为裁边后的版本），找不到返回空串。
     async function getImageDataUrl(id) {
         const key = String(id || '');
         if (!key) return '';
-        const hit = images.get(key);
-        if (hit) return hit;
-        const record = await store.getImage(key);
+        const record = await store.getImage(key, { fields: ['dataUrl'] });
         return record && record.dataUrl ? record.dataUrl : '';
     }
 
@@ -1136,7 +1060,7 @@ export function createAssetGenerationService(deps) {
     async function getImagePrompt(id) {
         const key = String(id || '');
         if (!key || !store || typeof store.getImage !== 'function') return null;
-        const record = await store.getImage(key);
+        const record = await (typeof store.getImageRecord === 'function' ? store.getImageRecord(key) : store.getImage(key));
         const prompt = normalizeStoredPrompt(record && record.prompt);
         return prompt && record.promptEdited === true ? { ...prompt, edited: true } : prompt;
     }
@@ -1148,17 +1072,25 @@ export function createAssetGenerationService(deps) {
         if (!store || typeof store.getImage !== 'function' || typeof store.putImage !== 'function') {
             return { ok: false, error: '提示词存不了' };
         }
-        const record = await store.getImage(key);
-        if (!record) return { ok: false, error: '找不到这张立绘' };
-        await store.putImage({ ...record, prompt: stored, promptEdited: true });
+        if (typeof store.patchImageMetadata === 'function') {
+            const saved = await store.patchImageMetadata(key, { prompt: stored, promptEdited: true });
+            if (!saved?.ok) return { ok: false, error: '找不到这张立绘' };
+        } else {
+            const record = await store.getImage(key);
+            if (!record) return { ok: false, error: '找不到这张立绘' };
+            await store.putImage({ ...record, prompt: stored, promptEdited: true });
+        }
         return { ok: true, prompt: stored };
     }
 
     async function readStoredImage(id) {
         const key = String(id || '');
         if (!key || !store || typeof store.getImage !== 'function') return null;
-        const record = normalizeGeneratedImageRecord(await store.getImage(key));
-        return record ? JSON.parse(JSON.stringify(record)) : null;
+        const record = normalizeGeneratedImageRecord(await store.getImage(key, { fields: '*' }));
+        if (!record || !isImageData(record.dataUrl) || IMAGE_FIELDS.some(field => record[field] && !isImageData(record[field]))) return null;
+        const metadata = typeof store.getImageRecord === 'function' ? await store.getImageRecord(key) : record;
+        if (IMAGE_FIELDS.some(field => metadata?.[field] && !record[field])) return null;
+        return JSON.parse(JSON.stringify(record));
     }
 
     async function importAssetImage(dataUrl, type) {
@@ -1196,12 +1128,16 @@ export function createAssetGenerationService(deps) {
         getEditableImage, saveMatteEdit,
         getRecord: (key) => currentTempRecords().get(key) || null,
         start() {
+            stopped = false;
             if (offRendered) return;
             offRendered = messageHost.on('CHARACTER_MESSAGE_RENDERED', (messageId) => {
                 void processMessage(Number(messageId));
             });
         },
+        clearCache() { pendingImages.clear(); pendingThumbs.clear(); },
         stop() {
+            stopped = true;
+            pendingImages.clear(); pendingThumbs.clear();
             if (offRendered) { offRendered(); offRendered = null; }
         },
     };

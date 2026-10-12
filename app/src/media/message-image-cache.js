@@ -1,9 +1,20 @@
-export function createMessageImageCache(store = new Map()) {
+import { createLocalImageCache } from './tavern-image-cache.js';
+import { imageFingerprint, isImageData } from './image-identity.js';
+export function createMessageImageCache(store = new Map(), options = {}) {
+    const media = options.mediaCache || createLocalImageCache({});
+    const limit = options.limit || 128;
+    let epoch = 0;
+    const keyOf = (id, scope = {}) => JSON.stringify([String(scope.chatId || ''), id, Number(scope.swipeId) || 0, String(scope.revision || '')]);
+    const offClear = media.onClear(() => { epoch += 1; store.clear(); });
     return {
-        get(messageId) {
+        epoch: () => epoch,
+        destroy() { offClear(); store.clear(); epoch += 1; },
+        get(messageId, scope) {
             const normalizedId = normalizeMessageId(messageId);
             if (normalizedId == null) return null;
-            return cloneData(store.get(normalizedId) || null);
+            const key = keyOf(normalizedId, scope), entry = store.get(key);
+            if (entry) { store.delete(key); store.set(key, entry); }
+            return cloneData(entry || null);
         },
 
         remember(messageId, images, options = {}) {
@@ -11,24 +22,26 @@ export function createMessageImageCache(store = new Map()) {
             if (normalizedId == null) {
                 return { ok: false, reason: 'invalid-message-id', messageId };
             }
-            const nextImages = normalizeImages(images);
-            const current = store.get(normalizedId);
+            const key = keyOf(normalizedId, options.scope);
+            const nextImages = normalizeImages(images).map(image => isImageData(image.url) ? { ...image, url: media.remember(`external:${imageFingerprint(image.url)}`, image.url) } : image);
+            const current = store.get(key);
             const merged = options.merge === true && current
                 ? uniqueImages([...(current.images || []), ...nextImages])
                 : nextImages;
             const entry = createEntry(normalizedId, merged);
-            store.set(normalizedId, entry);
+            store.set(key, entry);
+            while (store.size > limit) store.delete(store.keys().next().value);
             return { ok: true, entry: cloneData(entry) };
         },
 
-        clearMessage(messageId) {
+        clearMessage(messageId, scope) {
             const normalizedId = normalizeMessageId(messageId);
             if (normalizedId == null) return { ok: false, reason: 'invalid-message-id', messageId };
-            return { ok: store.delete(normalizedId), messageId: normalizedId };
+            return { ok: store.delete(keyOf(normalizedId, scope)), messageId: normalizedId };
         },
 
         clear() {
-            store.clear();
+            epoch += 1; store.clear();
             return { ok: true };
         },
     };
@@ -93,7 +106,7 @@ function uniqueImages(images) {
 }
 
 function createImageSignature(images) {
-    return uniqueImages(images).map((image) => image.url).join('\n');
+    return imageFingerprint(uniqueImages(images).map((image) => image.url).join('\n'));
 }
 
 function normalizeMessageId(value) {

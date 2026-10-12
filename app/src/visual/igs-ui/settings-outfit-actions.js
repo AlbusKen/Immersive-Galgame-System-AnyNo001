@@ -1,3 +1,4 @@
+import { storedImageReferences } from '../../media/image-references.js';
 import { openSettingsPage } from './settings-pages.js';
 import { BUILTIN_NUDE_OUTFIT, normalizeOutfitForm, fuzzyOutfitName, isBuiltinNudeOutfit, isValidOutfitName, isValidOutfitWord, normalizeWardrobe, OUTFIT_RESET } from '../../scene/character-outfits.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
@@ -325,7 +326,8 @@ async function handleWardrobe(command, segs, ctx) {
             }
             return persisted && persisted !== false ? persisted : { ok: false, reason: 'save-failed' };
         }
-        if (previousId && previousId !== painted.imageId && typeof service.deleteImages === 'function') {
+        if (previousId && previousId !== painted.imageId && typeof service.deleteImages === 'function'
+            && !storedImageReferences(globalObj, settingsState.draft.bridge.sceneAssets).ids.has(previousId)) {
             try {
                 const deleted = await service.deleteImages([previousId]);
                 if (deleted === false || (deleted && deleted.ok === false)) warn(ctx, '旧参考图未能从本机清除。');

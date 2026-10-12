@@ -310,16 +310,13 @@ test('gate:simulation:resource cache preserves local resource entry', () => {
 
 test('gate:simulation:image-resource-cache-loads-on-demand-and-deduplicates-url', async () => {
     let fetchCount = 0;
+    const images = [];
     const revoked = [];
     const cache = createImageResourceCache({
-        async fetch(url, options) {
-            fetchCount += 1;
-            assert.equal(url, 'https://example.com/scene.png');
-            assert.deepEqual(options, { cache: 'force-cache', mode: 'cors' });
-            return { ok: true, async blob() { return { type: 'image/png' }; } };
-        },
+        Image: class { constructor() { images.push(this); } },
+        async fetch() { fetchCount += 1; throw new Error('external-display-must-use-browser-cache'); },
         URL: {
-            createObjectURL() { return 'blob:scene-cache'; },
+            createObjectURL() { assert.fail('external-display-must-not-copy-bytes'); },
             revokeObjectURL(url) { revoked.push(url); },
         },
     });
@@ -328,14 +325,16 @@ test('gate:simulation:image-resource-cache-loads-on-demand-and-deduplicates-url'
     assert.equal(cache.get('https://example.com/scene.png'), '');
     const first = cache.load('https://example.com/scene.png');
     const second = cache.load('https://example.com/scene.png');
-    assert.equal(first, second);
-    assert.equal(fetchCount, 1);
-    assert.equal(await first, 'blob:scene-cache');
-    assert.equal(await second, 'blob:scene-cache');
-    assert.equal(cache.get('https://example.com/scene.png'), 'blob:scene-cache');
+    assert.equal(images.length, 1);
+    assert.equal(images[0].src, 'https://example.com/scene.png');
+    images[0].onload();
+    assert.equal(fetchCount, 0);
+    assert.equal(await first, 'https://example.com/scene.png');
+    assert.equal(await second, 'https://example.com/scene.png');
+    assert.equal(cache.get('https://example.com/scene.png'), 'https://example.com/scene.png');
     assert.equal(cache.size(), 1);
     cache.clear();
-    assert.deepEqual(revoked, ['blob:scene-cache']);
+    assert.deepEqual(revoked, []);
     assert.equal(cache.size(), 0);
 });
 

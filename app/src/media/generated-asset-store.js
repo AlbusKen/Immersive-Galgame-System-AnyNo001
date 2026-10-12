@@ -1,3 +1,4 @@
+import { createIdbConnection } from './idb-connection.js';
 // 生成素材存储：images 存图片本体（素材库与临时素材共用，按 id 引用），
 // assets 存本聊天的临时素材记录（按 chatId / floorKey 查询），floors 记录楼层是否已处理过。
 const DB_NAME = 'igs-generated-assets';
@@ -63,6 +64,18 @@ export function createMemoryGeneratedAssetStore() {
         async getImage(id) { return clone(images.get(id)); },
         async putImage(value) { images.set(value.id, clone(value)); },
         async deleteImage(id) { images.delete(id); },
+        async listImages() { return Array.from(images.values(), clone); },
+        async listAssets() { return Array.from(assets.values(), clone); },
+        async listFloors() { return Array.from(floors.values(), clone); },
+        async deleteAsset(key) { assets.delete(key); },
+        async deleteFloor(key) { floors.delete(key); },
+        async patchImageMetadata(id, patch) {
+            const old = images.get(id);
+            if (!old) return { ok: false, reason: 'not-found' };
+            const next = { ...old, ...patch, id }; images.set(id, clone(next));
+            return { ok: true, record: clone(next) };
+        },
+        async putImages(list) { for (const value of list) images.set(value.id, clone(value)); },
         async updateImage(id, expectedRevision, patch, updatedAt) {
             const result = applyGeneratedImageUpdate(images.get(id), expectedRevision, patch, updatedAt);
             if (result.ok) images.set(id, clone(result.record));
@@ -79,45 +92,23 @@ export function createMemoryGeneratedAssetStore() {
 export function createIndexedDbGeneratedAssetStore(globalObject = globalThis) {
     const idb = globalObject && globalObject.indexedDB;
     if (!idb) return createMemoryGeneratedAssetStore();
-    let dbPromise = null;
-    const open = () => {
-        if (!dbPromise) {
-            dbPromise = new Promise((resolve, reject) => {
-                const req = idb.open(DB_NAME, DB_VERSION);
-                req.onupgradeneeded = () => {
-                    const db = req.result;
-                    if (!db.objectStoreNames.contains('images')) db.createObjectStore('images', { keyPath: 'id' });
-                    if (!db.objectStoreNames.contains('floors')) db.createObjectStore('floors', { keyPath: 'key' });
-                    if (!db.objectStoreNames.contains('assets')) {
-                        const store = db.createObjectStore('assets', { keyPath: 'key' });
-                        store.createIndex('chatId', 'chatId', { unique: false });
-                        store.createIndex('floorKey', 'floorKey', { unique: false });
-                    }
-                };
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => reject(req.error);
-            });
+    const connection = createIdbConnection(idb, DB_NAME, DB_VERSION, db => {
+        if (!db.objectStoreNames.contains('images')) db.createObjectStore('images', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('floors')) db.createObjectStore('floors', { keyPath: 'key' });
+        if (!db.objectStoreNames.contains('assets')) {
+            const store = db.createObjectStore('assets', { keyPath: 'key' });
+            store.createIndex('chatId', 'chatId', { unique: false });
+            store.createIndex('floorKey', 'floorKey', { unique: false });
         }
-        return dbPromise;
-    };
-    const run = async (storeName, mode, fn) => {
-        const db = await open();
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction(storeName, mode);
-            const req = fn(tx.objectStore(storeName));
-            tx.oncomplete = () => resolve(req ? req.result : undefined);
-            tx.onerror = () => reject(tx.error);
-        });
-    };
+    });
+    const run = (name, mode, fn) => connection.transact(name, mode, tx => fn(tx.objectStore(name)));
     return {
         async getImage(id) { return (await run('images', 'readonly', (s) => s.get(id))) || null; },
         async putImage(value) { await run('images', 'readwrite', (s) => s.put(value)); },
         async deleteImage(id) { await run('images', 'readwrite', (s) => s.delete(id)); },
         // 读取与写入在同一 readwrite 事务内，避免另一会话在检查与写入之间覆盖。
         async updateImage(id, expectedRevision, patch, updatedAt) {
-            const db = await open();
-            return new Promise((resolve, reject) => {
-                const tx = db.transaction('images', 'readwrite');
+            return connection.transact('images', 'readwrite', tx => {
                 const objectStore = tx.objectStore('images');
                 let outcome = { ok: false, reason: 'not-found' };
                 const req = objectStore.get(id);
@@ -125,10 +116,29 @@ export function createIndexedDbGeneratedAssetStore(globalObject = globalThis) {
                     outcome = applyGeneratedImageUpdate(req.result, expectedRevision, patch, updatedAt);
                     if (outcome.ok) objectStore.put(outcome.record);
                 };
-                tx.oncomplete = () => resolve(outcome);
-                tx.onerror = () => reject(tx.error);
-                tx.onabort = () => reject(tx.error);
+                return () => outcome;
             });
+        },
+        async patchImageMetadata(id, patch) {
+            return connection.transact('images', 'readwrite', tx => {
+                const objectStore = tx.objectStore('images');
+                let outcome = { ok: false, reason: 'not-found' };
+                const req = objectStore.get(id);
+                req.onsuccess = () => {
+                    if (!req.result) return;
+                    const record = { ...req.result, ...patch, id };
+                    objectStore.put(record); outcome = { ok: true, record };
+                };
+                return () => outcome;
+            });
+        },
+        async listImages() { return await run('images', 'readonly', s => s.getAll()) || []; },
+        async listAssets() { return await run('assets', 'readonly', s => s.getAll()) || []; },
+        async listFloors() { return await run('floors', 'readonly', s => s.getAll()) || []; },
+        async deleteAsset(key) { await run('assets', 'readwrite', s => s.delete(key)); },
+        async deleteFloor(key) { await run('floors', 'readwrite', s => s.delete(key)); },
+        async putImages(list) {
+            await run('images', 'readwrite', s => { for (const value of list) s.put(value); return () => undefined; });
         },
         async getAssetsByChat(chatId) { return (await run('assets', 'readonly', (s) => s.index('chatId').getAll(chatId))) || []; },
         async getAssetsByFloor(floorKey) { return (await run('assets', 'readonly', (s) => s.index('floorKey').getAll(floorKey))) || []; },

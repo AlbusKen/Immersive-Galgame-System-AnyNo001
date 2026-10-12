@@ -40,6 +40,7 @@ export function createPublicApi(app) {
         name: 'Immersive Galgame System',
         version: app.version,
         api: groupedApi,
+        media: app.media,
 
         refresh: app.refresh,
         renderScene(textScene) {

@@ -59,7 +59,7 @@ export function createItemImageService(deps) {
     const report = deps.report || (() => {});
     const newId = deps.newId || (() => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
     const emit = (detail) => { if (events && typeof events.emit === 'function') events.emit(ITEM_IMAGE_UPDATED_EVENT, detail); };
-    const cache = createItemRecordCache({ store, type: ITEM_ASSET_TYPE, emit });
+    const cache = createItemRecordCache({ store, type: ITEM_ASSET_TYPE, emit, mediaCache: deps.mediaCache });
     const floorLocks = new Map();
     const inflight = new Map();
     let queue = Promise.resolve();
@@ -139,8 +139,12 @@ export function createItemImageService(deps) {
             if (previous && previous.status === 'ready') return { ok: false, error, record: previous };
             record = { ...base, imageId: '', status: 'failed', error };
         }
-        if (record.status === 'ready' && previous && previous.imageId) await cache.dropImage(previous.imageId);
-        await store.putAsset(record);
+        try { await store.putAsset(record); }
+        catch (error) {
+            if (record.status === 'ready' && record.imageId) await cache.dropImage(record.imageId);
+            throw error;
+        }
+        if (record.status === 'ready' && previous && previous.imageId && previous.imageId !== record.imageId) await cache.dropImage(previous.imageId);
         cache.set(record);
         emit({ chatId, key, name: need.name, reason: record.status === 'ready' ? 'generated' : 'failed' });
         return { ok: record.status === 'ready', error, record };
@@ -232,10 +236,10 @@ export function createItemImageService(deps) {
         await cache.ensure(chatId);
         const record = recordFor(chatId, name);
         if (!record) return { ok: false, reason: 'not-found' };
-        await cache.dropImage(record.imageId);
         const next = { ...record, imageId: '', status: 'discarded', updatedAt: now() };
         await store.putAsset(next);
         cache.set(next);
+        await cache.dropImage(record.imageId);
         emit({ chatId, key: record.key, name: record.name, reason: 'discarded' });
         return { ok: true, record: next };
     }
@@ -255,7 +259,9 @@ export function createItemImageService(deps) {
             if (offRendered) return;
             offRendered = messageHost.on('CHARACTER_MESSAGE_RENDERED', (messageId) => { void processMessage(Number(messageId)); });
         },
+        clearCache() { cache.clear(); },
         stop() {
+            cache.clear();
             if (offRendered) { offRendered(); offRendered = null; }
         },
     };

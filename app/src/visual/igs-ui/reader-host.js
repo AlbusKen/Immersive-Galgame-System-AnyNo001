@@ -1,3 +1,5 @@
+import { createMediaLeaseScope } from '../../media/media-lease-scope.js';
+import { clearSpriteHeadCache } from './fx-anchor.js';
 import { narrationKeepsSprite, narrationCastLeft, otherNamesOf } from '../../scene/narration-sprite.js';
 import {
     buildIgsTextPayload,
@@ -371,6 +373,16 @@ export function createIgsReaderHost(options = {}) {
         parse: (input) => buildIgsTextPayload(input.liveMessage, input.parseOptions),
     });
     const imageResourceCache = createImageResourceCache(options.global || globalThis, { limit: 96 });
+    let mediaHostDisposed = false;
+    const offMediaClear = options.media?.cache?.onClear(() => {
+        clearSpriteHeadCache();
+        state.activeReader?.assetLoadRequests?.clear();
+        queueMicrotask(() => {
+            if (mediaHostDisposed) return;
+            if (state.activeReader) rerenderActiveReader();
+            if (state.activeSettings && isAssetSettingsPage(state.activeSettings)) scheduleImageRefresh({ settings: true });
+        });
+    }) || (() => {});
     let moodAutoTimer = 0;
     let moodAutoRunning = false;
     let moodAutoAgain = false;
@@ -917,9 +929,12 @@ export function createIgsReaderHost(options = {}) {
     function resolveReaderAssetUrl(url, current) {
         const source = String(url || '').trim();
         if (!source) return '';
-        if (isGeneratedAssetUrl(source)) return concreteReaderAssetUrl(source);
+        const leases = current.assetLeases ||= options.media?.cache ? createMediaLeaseScope(options.media.cache) : null;
+        if (isGeneratedAssetUrl(source)) { leases?.use(`asset:${source.slice(8)}`); return concreteReaderAssetUrl(source); }
+        const ownedKey = options.media?.cache?.sourceId?.(source);
+        if (ownedKey) leases?.use(ownedKey);
         const ready = imageResourceCache.get(source);
-        if (ready) return ready;
+        if (ready) { const key = options.media?.cache?.sourceId?.(ready); if (key) leases?.use(key); return ready; }
         // data / blob 已经是本地像素。先原样画上，解码只为了预热缓存；
         // 等解码完再补地址会先把背景清成空的，播 CG 时整屏闪一下。
         const inline = /^(?:data:|blob:)/i.test(source);
@@ -979,6 +994,7 @@ export function createIgsReaderHost(options = {}) {
         if (closeOptions.keepFullscreen !== true) {
             exitDocumentFullscreen(getRootDocument(options.global));
         }
+        current.assetLeases?.releaseAll();
         current.imagePollToken += 1;
         streamObserver.stop();
         stopEmbeddedStoryWatch();
@@ -1020,6 +1036,7 @@ export function createIgsReaderHost(options = {}) {
         moodAutoTimer = 0;
         const closed = closeSettings();
         if (closed.ok === false) return closed;
+        mediaHostDisposed = true; offMediaClear();
         offIllustrationUpdated();
         offDlcSkins();
         offDlcFx();
@@ -4121,6 +4138,7 @@ export function createIgsReaderHost(options = {}) {
             setTheme: (settingsTheme) => saveBridgePatch({ settingsTheme }),
         });
         const mapController = createMapPanelController(doc, options.global, fillRecordDraft, {
+            mediaCache: options.media?.cache,
             getChatId: () => {
                 const ctx = getSillyTavernContext(options.global || globalThis);
                 return ctx && (typeof ctx.getCurrentChatId === 'function' ? ctx.getCurrentChatId() : ctx.chatId) || '';
@@ -4339,11 +4357,12 @@ export function createIgsReaderHost(options = {}) {
     function updateMountedReader(snapshot) {
         const current = state.activeReader;
         if (!current) return;
+        current.assetLeases?.begin();
         warmActiveFloorImages(snapshot);
         current.autoPlayer?.setSpeed(snapshot.readerSettings?.typewriter?.speed);
         noteReadingProgress(current, snapshot);
         backfillOldFloor(current);
-        if (!current.dom || !current.dom.root) return;
+        if (!current.dom || !current.dom.root) { current.assetLeases?.releaseAll(); return; }
         generationStripRemount = true;
         const refs = hydrateReaderMount(current.dom.root, snapshot);
         current.dom.overlay = refs.overlay;
@@ -4359,6 +4378,7 @@ export function createIgsReaderHost(options = {}) {
             const titleOn = !snapshot.readerSettings || snapshot.readerSettings.titleScreen !== false;
             if (titleOn && Number(snapshot.content && snapshot.content.currentIndex) === 0) {
                 renderTitleGate(current);
+                current.assetLeases?.releaseAll();
                 return;
             }
             dropTitleGate(current);
@@ -4381,6 +4401,7 @@ export function createIgsReaderHost(options = {}) {
             onCgPortraitMove: (statusHud) => saveReaderSettingsPatch({ statusHud }),
             onLivePortraitMove: (liveFx) => saveReaderSettingsPatch({ liveFx }),
         });
+        current.assetLeases?.end();
         if (current.dom.progress) {
             const progressText = formatReaderProgress(snapshot);
             current.dom.progress.textContent = progressText;

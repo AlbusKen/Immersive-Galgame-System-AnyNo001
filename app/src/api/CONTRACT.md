@@ -47,3 +47,7 @@ IGS.api.promptPresets.register(preset);
 - 迁移期保留 Immersive Galgame System 既有公开能力的兼容入口：`openSettings()`、`getConfig()`、`getUnifiedSettings()`、`generateImage()`、`destroy()`。
 - 酒馆入口诊断能力：`ensureMagicWandEntry()`、`getMagicWandEntryState()`。
 - 新二创能力优先挂在 `IGS.api.*` 下，不继续扩散旧 `ImmersiveGalgameSystemBridge` 调试入口。
+
+## 媒体诊断（v0.36.39）
+
+兼容全局新增 `IGS.media`，暴露 `stats/clearCache/auditImages/auditFiles/collectImages/flush/retryDeletes`。审计只读；collect 只删除无引用的候选，并由媒体层再次复查。缓存清理与业务资产删除分离，接口不返回原始图片字节或 API Key。生命周期装配与 destroy 仍由 core 管理。

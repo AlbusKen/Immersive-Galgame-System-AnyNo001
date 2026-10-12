@@ -1,3 +1,4 @@
+import { createMediaRuntime } from '../media/media-runtime.js';
 import { createPublicApi, attachPublicApi, detachPublicApi } from '../api/public-api.js';
 import { createTavernHelperAdapter, getSillyTavernContext } from '../host/tavern-helper-adapter.js';
 import { sceneAssetsForContext } from '../scene/asset-scope.js';
@@ -61,7 +62,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.38';
+const IGS_VERSION = '0.36.39';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -102,6 +103,7 @@ export function bootstrapIGS(options = {}) {
     const layerController = options.layerController || createLayerController(options.layers || {});
     const renderer = options.renderer || createStageRenderer(layerController);
     const readerImageService = options.readerImageService || createReaderImageService({
+        mediaCache: localImageCacheFor(globalObject),
         global: globalObject,
         hostAdapter,
         imageGenerator: options.imageGenerator || ((request, opts) => imageBackend.generateForReader(request, {
@@ -160,6 +162,7 @@ export function bootstrapIGS(options = {}) {
         llm: secondaryLlm,
         nai: imageBackend,
         store: illustrationStore,
+        mediaCache: localImageCacheFor(globalObject),
         getSettings: () => readImageBridge().autoIllustration,
         getReaderMode: readerModeNow,
         getViewport: () => readCgViewport(globalObject, readerModeNow()),
@@ -176,6 +179,7 @@ export function bootstrapIGS(options = {}) {
         llm: secondaryLlm,
         nai: imageBackend,
         store: generatedAssetStore,
+        mediaCache: localImageCacheFor(globalObject),
         matte: options.alphaMatte || createAlphaMatte(globalObject),
         getSettings: () => {
             const bridge = readImageBridge();
@@ -189,7 +193,10 @@ export function bootstrapIGS(options = {}) {
         thumbStore: options.assetThumbStore !== undefined ? options.assetThumbStore : createIndexedDbAssetThumbStore(globalObject),
         makeThumb: createAssetThumbnailer(globalObject),
     });
+    generatedAssetStore.setReferenceResolver?.(() => readImageBridge().sceneAssets);
+    const media = createMediaRuntime(globalObject, { generatedAssetStore });
     const itemCg = createItemAndCgServices({
+        mediaCache: media.cache,
         globalObject,
         messageHost: illustrationMessageHost,
         llm: secondaryLlm,
@@ -219,6 +226,7 @@ export function bootstrapIGS(options = {}) {
     const app = {
         version: IGS_VERSION,
         global: globalObject,
+        media,
         events,
         illustrations: illustrationService,
         generatedAssets: assetGenerationService,
@@ -243,10 +251,15 @@ export function bootstrapIGS(options = {}) {
         magicWandEntry: null,
         extensionPanel: null,
     };
+    const offMediaClear = media.cache.onClear(() => {
+        illustrationService.clearCache?.(); assetGenerationService.clearCache?.(); itemCg.itemImages.clearCache?.(); readerImageService.clearCache?.();
+        events.emit('igs:media-cache-cleared');
+    });
     let publicApi = null;
     let sceneAssetsInjectionTimer = null;
     app.igsUi = options.igsUi || createIgsReaderHost({
         global: globalObject,
+        media,
         version: app.version,
         random: options.random,
         getIllustrationSource: (messageId) => illustrationMessageHost.readFloor(messageId),
@@ -339,6 +352,7 @@ export function bootstrapIGS(options = {}) {
     app.magicWandEntry = options.magicWandEntry || createMagicWandEntry({
         ...(options.magicWandEntryOptions || {}),
         global: globalObject,
+        media,
         version: app.version,
         label: '沉浸式Galgame系统',
         open: (mode) => publicApi.openLatestAvailable(mode),
@@ -894,6 +908,8 @@ export function bootstrapIGS(options = {}) {
         assetGenerationService.stop();
         itemCg.itemImages.stop();
         itemCg.itemLedger.stop();
+        offMediaClear(); readerImageService.destroy?.();
+        media.destroy();
         if (app.igsUi && typeof app.igsUi.destroy === 'function') {
             app.igsUi.destroy();
         }

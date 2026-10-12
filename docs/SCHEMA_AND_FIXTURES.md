@@ -97,3 +97,14 @@ pnpm perf
 ```
 
 本项目的“实机验真”由 `S0-S10` 的模拟矩阵替代。只有用户明确要求发布实测时，才临时增加真实酒馆或真实 provider 验证。
+
+## 图片重构验证（v0.36.39）
+
+| 数据 | Schema / 归属 | 回归重点 |
+| --- | --- | --- |
+| 内容缓存 | `igs-image-cache` v3，files 内容 / meta 别名 | 同内容去重、原子 quota abort、条目与字节预算、活跃租约、多页面失效、清理中断、四路下载、销毁 |
+| 图片业务记录 | 素材 schema v2；CG / 照片原有 schema | 原图不可变、metadata 不读像素、revision 冲突、重画失败保旧图 |
+| 媒体日志 / 备份 | `igs-media-journal` v1；四类酒馆备份 v2 | WAL 准备失败、离线上传恢复、版本合并、tombstone 防复活、浏览器数据丢失后恢复删除队列 |
+| 配置引用 | `igs-settings.json` v2；地图记录独立权威 | 网络/500 不覆盖、远程键合并、地图旧配置迁移与删除、导入新 ID/共享链接/头像/失败补偿 |
+
+新增 `media-cache-lifecycle`、`media-cache-concurrency`、`media-storage-lifecycle`、`media-transactions`、`media-settings-concurrency` 测试。`helpers/fake-idb.js` 模拟多 store 原子事务、abort、quota 与升级；`helpers/fake-media-server.js` 模拟文件和图片 API，不接触真实图库。真实酒馆、移动端解码内存和真实 provider 为未验证边界，不用这些 fixture 结果替代真机验收。

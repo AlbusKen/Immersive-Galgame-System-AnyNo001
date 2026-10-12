@@ -241,6 +241,7 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
                 imageLogStatus: esc(asyncState.imageLogStatus || ''),
                 imageLogList: page === 'logs' && !idx ? renderImageJobLogList() : '',
                 imageCacheCountField: field('bridge.imageCache.maxCount', '本地缓存张数', numberInput('bridge.imageCache.maxCount', normalizeImageCacheCount(bridge.imageCache && bridge.imageCache.maxCount), 1, 2000)),
+                imageCacheStatus: esc(asyncState.imageCacheStatus || '图片统一按需缓存：内存上限 64 MB，本地上限 192 MB。'),
                 imageCgStatus: esc(asyncState.imageCgStatus || ''),
                 imageCgList: page === 'cglib' && !idx ? renderImageCgList() : '',
                 imageCgOldestFirst: String(Boolean(asyncState.imageCg && asyncState.imageCg.state.filters.oldestFirst)),

@@ -2,6 +2,7 @@
 // 不带台词正文、聊天内容、演出参数文本和图片本体，外链只留域名，方便用户直接贴出来求助。
 import { PROMPT_ENTRY_LABELS, PROMPT_POSITION_LABELS } from '../../scene/prompt-entries.js';
 import { describePromptTrigger } from '../../scene/prompt-triggers.js';
+import { describeMediaUsage } from '../../storage/storage-usage.js';
 
 const SOURCE_LABELS = Object.freeze({
     user: '用户配置', 'user-outfit': '衣柜', library: '生成图库', temp: '临时图', placeholder: '占位图',
@@ -75,7 +76,7 @@ function promptLines(report) {
     return [`提示词按需块（共展开 ${total} 字）`, ...blocks.map(([key, item]) => `  ${PROMPT_ENTRY_LABELS[key] || key} ${item.reason === 'off' ? '' : item.active ? '展开' : '收起'} ${describePromptTrigger(item)}${item.active && item.chars ? ` · ${item.chars} 字` : ''}${item.position ? ` · ${PROMPT_POSITION_LABELS[item.position] || item.position}${item.position === 'depth' ? ` @D${item.depth}` : ''}` : ''}`.replace(/ {2,}/g, ' ').replace(/^ /, '  '))];
 }
 
-export function buildPageDiagnostic(snapshot, { version = '', worldview = '', promptReport = null } = {}) {
+export function buildPageDiagnostic(snapshot, { version = '', worldview = '', promptReport = null, mediaStats = null } = {}) {
     if (!snapshot || !snapshot.content) return '';
     const c = snapshot.content;
     const rs = snapshot.readerSettings || {};
@@ -98,5 +99,6 @@ export function buildPageDiagnostic(snapshot, { version = '', worldview = '', pr
     if (notes.length) lines.push(`提示 ${notes.join('、')}`);
     lines.push(`直播 ${liveLine(c, rs)}`);
     lines.push(...promptLines(promptReport));
+    if (mediaStats) lines.push(`图片资源 ${describeMediaUsage(mediaStats)}`);
     return lines.join('\n');
 }

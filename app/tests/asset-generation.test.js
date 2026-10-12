@@ -1900,13 +1900,15 @@ test('gate:assets:resume-button-shows-only-when-captions-wait-for-paint', async 
     assert.ok(waiting.includes('继续生图（1）'));
 });
 
-test('gate:asset-gen:image-cache-keeps-on-screen-thumbs-beyond-limit', async () => {
+test('gate:asset-gen:visible-page-uses-the-shared-cache-count-budget', async () => {
+    const { createLocalImageCache } = await import('../src/media/tavern-image-cache.js');
     let t = 0;
     const service = createAssetGenerationService({
         messageHost: { getChatId: () => 'chat', readFloor: () => null, readPreviousAiTexts: () => [], on: () => () => {} },
         llm: {}, nai: {}, store: { getImage: async (id) => ({ dataUrl: `data:image/png;base64,${id}` }) },
         getSettings: () => ({ autoIllustration: {}, sceneAssets: {} }),
         clock: () => t,
+        mediaCache: createLocalImageCache({}, { maxCount: 80 }),
     });
     const refs = Array.from({ length: 80 }, (_, i) => `igs-gen:p${i}`);
     const missing = () => refs.filter((ref) => !service.resolveUrl(ref)).length;
@@ -1937,7 +1939,7 @@ test('gate:asset-gen:settings-thumbs-use-short-blob-urls-and-revoke-on-delete', 
     const thumb = service.resolveThumbUrl('igs-gen:t1');
     assert.equal(thumb, 'blob:t0');
     assert.equal(service.resolveThumbUrl('igs-gen:t1'), thumb, '重绘复用同一个短地址，浏览器不重载不闪');
-    assert.equal(service.resolveUrl('igs-gen:t1'), 'data:image/png;base64,QUJD', '舞台等其他用途仍拿 dataUrl');
+    assert.equal(service.resolveUrl('igs-gen:t1'), thumb, '舞台和设置页共用同一份 Blob 与对象 URL');
     assert.equal(service.resolveThumbUrl('https://example.com/a.png'), 'https://example.com/a.png');
     await service.deleteImages(['t1']);
     assert.deepEqual(revoked, ['blob:t0']);

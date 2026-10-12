@@ -23,11 +23,12 @@ export function createItemAndCgServices(deps = {}) {
         }
     };
     const itemImages = deps.itemImageService || createItemImageService({
-        messageHost, llm, nai, store: generatedAssetStore, events, readTables, matte, report,
+        messageHost, llm, nai, store: generatedAssetStore, events, readTables, matte, report, mediaCache: deps.mediaCache,
         getSettings: () => (typeof getBridge === 'function' ? getBridge() || {} : {}),
     });
     // CG 库：楼层 CG 与相册照片共用一份目录（igs-cg-index）；注入的 cgGalleryService（测试替身）保持原样。
     const cgGallery = deps.cgGalleryService || createCgLibrary({
+        mediaCache: deps.mediaCache,
         illustrationStore,
         photoStore: deps.photoAlbumStore || withTavernPhotoFiles(createIndexedDbPhotoAlbumStore(globalObject), globalObject),
         marksStore: deps.cgGalleryStore || createIndexedDbCgGalleryStore(globalObject),

@@ -36,3 +36,11 @@ export function describeLocalStorageUsage(storage) {
     if (!total) return '';
     return `本机存储已用 ${formatStorageSize(total)}：${groups.map(([label, size]) => `${label} ${formatStorageSize(size)}`).join('、')}`;
 }
+
+export function describeMediaUsage(stats) {
+    if (!stats?.cache) return '图片缓存状态暂不可用';
+    const cache = stats.cache, lifecycle = stats.lifecycle || {};
+    const mb = value => `${(Math.max(0, Number(value) || 0) / 1024 / 1024).toFixed(1)} MB`;
+    const pending = (stats.records || []).reduce((sum, row) => sum + (row.dirty || 0), 0);
+    return `内存 ${cache.memoryCount} 张 / ${mb(cache.memoryBytes)}（上限 ${mb(cache.memoryBudget)}）；本地 ${cache.diskCount} 张 / ${mb(cache.diskBytes)}（上限 ${mb(cache.diskBudget)}）；正在加载 ${cache.pending} 张；待备份 ${pending} 条；待回收 ${lifecycle.pendingDeletes || 0} 个文件（共享引用保护 ${lifecycle.protectedDeletes || 0}，失败待重试 ${lifecycle.failedDeletes || 0}）`;
+}

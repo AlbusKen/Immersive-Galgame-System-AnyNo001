@@ -1,3 +1,5 @@
+import { createMediaLeaseScope } from '../../media/media-lease-scope.js';
+import { localImageCacheFor } from '../../media/tavern-image-cache.js';
 import { hashString } from './seed-random.js';
 import { classifyMapPlace, detectMapTheme, resolveMapScale } from './place-semantics.js';
 import { generateCitySteps } from './city.js';
@@ -56,29 +58,32 @@ export function createMapBasemapGenerator(options = {}) {
     });
     const renderScale = options.scale ?? ((view.devicePixelRatio || 1) >= 1.5 ? 2 : 1.5);
     const cache = new Map();
+    const media = options.mediaCache || localImageCacheFor(view);
+    const leases = createMediaLeaseScope(media);
+    let activeKey = '';
+    let generation = 0;
     let disposed = false;
+    const offClear = media.onClear(() => { generation += 1; for (const entry of cache.values()) entry.cancelled = true; cache.clear(); });
 
     const revoke = entry => {
-        for (const url of [entry?.result?.url, entry?.result?.lightsUrl]) {
-            if (url && url.startsWith('blob:')) try { view.URL?.revokeObjectURL?.(url); } catch (error) { /* 宿主已卸载时忽略 */ }
-        }
+        if (entry?.key === activeKey) { leases.releaseAll(); activeKey = ''; }
+        if (!entry) return;
+        entry.cancelled = true;
+        for (const key of entry.resourceKeys || []) media.forget(key);
     };
     const remember = (key, entry) => {
-        cache.delete(key);
-        cache.set(key, entry);
+        cache.delete(key); cache.set(key, entry);
         while (cache.size > limit) {
             const [oldKey, old] = cache.entries().next().value;
-            if (old.status === 'pending') break;
-            cache.delete(oldKey);
-            revoke(old);
+            cache.delete(oldKey); revoke(old);
         }
     };
 
     // 按时间预算推进生成器：每片不超过 budget 毫秒，其余交回宿主事件循环。
-    const drive = iterator => new Promise((resolve, reject) => {
+    const drive = (iterator, cancelled) => new Promise((resolve, reject) => {
         const started = now();
         const tick = () => {
-            if (disposed) { reject(new Error('disposed')); return; }
+            if (disposed || cancelled()) { reject(new Error('disposed')); return; }
             try {
                 const t0 = now();
                 let step = iterator.next();
@@ -91,11 +96,14 @@ export function createMapBasemapGenerator(options = {}) {
         schedule(tick);
     });
 
-    const toUrl = canvas => new Promise(resolve => {
-        if (typeof canvas.toBlob === 'function' && view.URL?.createObjectURL) {
-            canvas.toBlob(blob => resolve(blob ? view.URL.createObjectURL(blob) : canvas.toDataURL('image/png')), 'image/webp', 0.9);
-        } else resolve(canvas.toDataURL('image/png'));
-    });
+    const toUrl = async (canvas, key, stamp) => {
+        if (media.token(key) !== stamp || disposed) return '';
+        await media.load(key, () => new Promise(resolve => {
+            if (typeof canvas.toBlob === 'function' && view.URL?.createObjectURL) canvas.toBlob(blob => resolve(blob || canvas.toDataURL('image/png')), 'image/webp', 0.9);
+            else resolve(canvas.toDataURL('image/png'));
+        }), { persist: false, timeoutMs: timeout });
+        return media.token(key) === stamp && !disposed ? media.peek(key) : '';
+    };
 
     function* cityJob(input) {
         const scene = yield* generateCitySteps(input);
@@ -121,6 +129,7 @@ export function createMapBasemapGenerator(options = {}) {
     function peek(key) {
         const entry = cache.get(key);
         if (!entry) return null;
+        if (entry.status === 'ready' && entry.resourceKeys.some(resourceKey => !media.peek(resourceKey))) { cache.delete(key); revoke(entry); return null; }
         cache.delete(key);
         cache.set(key, entry);
         return entry;
@@ -128,18 +137,29 @@ export function createMapBasemapGenerator(options = {}) {
 
     function request(input) {
         const existing = peek(input.key);
+        if (input.key !== activeKey) { leases.releaseAll(); activeKey = input.key; }
+        leases.begin();
+        leases.use(`map:${input.key}:base`); leases.use(`map:${input.key}:lights`); leases.end();
         if (existing) return existing;
-        const entry = { status: 'pending', result: null, error: '' };
-        entry.promise = drive(input.kind === 'lights' ? lightsJob(input) : cityJob(input))
+        const entry = { key: input.key, status: 'pending', result: null, error: '', cancelled: false, resourceKeys: [] };
+        const currentGeneration = generation;
+        const imageKey = `map:${input.key}:base`, lightsKey = `map:${input.key}:lights`;
+        const imageStamp = media.token(imageKey), lightsStamp = media.token(lightsKey);
+        entry.promise = drive(input.kind === 'lights' ? lightsJob(input) : cityJob(input), () => entry.cancelled || currentGeneration !== generation)
             .then(async ({ canvas, lights }) => {
-                const url = canvas ? await toUrl(canvas) : '';
-                const lightsUrl = lights ? await toUrl(lights) : '';
+                if (entry.cancelled || currentGeneration !== generation) throw new Error('disposed');
+                entry.resourceKeys = [canvas && imageKey, lights && lightsKey].filter(Boolean);
+                const url = canvas ? await toUrl(canvas, imageKey, imageStamp) : '';
+                if (disposed || entry.cancelled || currentGeneration !== generation) throw new Error('disposed');
+                const lightsUrl = lights ? await toUrl(lights, lightsKey, lightsStamp) : '';
+                if (disposed || entry.cancelled || currentGeneration !== generation) throw new Error('disposed');
                 entry.result = { url, lightsUrl, width: input.width, height: input.height };
                 entry.status = 'ready';
-                if (disposed) revoke(entry);
+                if (cache.get(input.key) === entry) remember(input.key, entry);
                 return entry;
             })
             .catch(error => {
+                if (cache.get(input.key) === entry) revoke(entry);
                 entry.status = 'failed';
                 entry.error = String(error?.message || error);
                 return entry;
@@ -149,10 +169,10 @@ export function createMapBasemapGenerator(options = {}) {
     }
 
     function dispose() {
-        disposed = true;
+        disposed = true; offClear(); leases.releaseAll();
         for (const entry of cache.values()) revoke(entry);
         cache.clear();
     }
 
-    return { request, peek, dispose };
+    return { request, peek, dispose, releaseActive() { leases.releaseAll(); activeKey = ''; } };
 }

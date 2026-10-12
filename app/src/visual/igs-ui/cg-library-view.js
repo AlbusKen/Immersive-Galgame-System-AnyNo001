@@ -1,10 +1,11 @@
+import { createMediaLeaseScope } from '../../media/media-lease-scope.js';
+import { createLocalImageCache } from '../../media/tavern-image-cache.js';
 // CG 库界面状态（不碰 DOM），工具栏面板和设置页共用。
 // 打开：先读目录（每张一条轻记录）马上出列表；随后后台对账，只有真有新图 / 删图时才动列表。
 // 翻页：只为当前页取缩略图，最多 3 张同时读；每张单独通知（onChange('thumb', key)），界面只换那一格。
 // 状态文字永远说清楚在做哪一步、做到第几张、哪张失败了为什么。
 import { CG_PAGE_SIZE, cgPageSlice, cgReasonText, filterCgEntries } from '../../media/cg-library.js';
 
-const THUMB_MEMORY = 240;
 const THUMB_WORKERS = 3;
 const ORDER_KEY = 'igs:cg-order:v1';
 
@@ -33,17 +34,22 @@ export function createCgLibraryView(library, options = {}) {
         pages: 1,
         entries: [],
     };
-    // 每张图只在一处：thumbs = 已显示，failed = 失败，batching = 正在查已存缩略图，queue = 排队现做，working = 正在现做。
-    // 读到的结果一律记下并通知界面，不按「第几轮」丢弃；界面自己判断那一格还在不在本页。
-    const thumbs = new Map();
+    // 这里只持资源键和任务状态，像素与对象 URL 归中央缓存。
+    const cache = options.mediaCache || library?.mediaCache || createLocalImageCache({});
+    const thumbKey = key => `thumb:cg:${key}:${String(state.all.find(entry => entry.key === key)?.updatedAt || '')}`;
+    const thumbs = { get: key => cache.peek(thumbKey(key)), has: key => Boolean(cache.peek(thumbKey(key))), set: (key, url) => cache.remember(thumbKey(key), url), delete: key => cache.forget(thumbKey(key)) };
+    const leases = createMediaLeaseScope(cache);
     const failed = new Map();
-    const batching = new Set();
-    const working = new Set();
+    const batching = new Map();
+    const working = new Map();
     let openGen = 0;
+    let thumbGeneration = 0;
     let queue = [];
     let opening = null;
     let disposed = false;
     let waiters = [];
+    const resetThumbWork = () => { thumbGeneration += 1; failed.clear(); queue = []; batching.clear(); working.clear(); };
+    const offClear = cache.onClear(() => { resetThumbWork(); if (!disposed) { emit('list'); void loadPageThumbs(); } });
 
     const emit = (type, key) => {
         try { onChange(type, key); } catch (error) { console.warn('[IGS] CG 库界面刷新失败', type, error); }
@@ -62,6 +68,9 @@ export function createCgLibraryView(library, options = {}) {
         state.page = sliced.page;
         state.pages = sliced.pages;
         state.entries = sliced.items;
+        leases.begin();
+        for (const entry of state.entries) leases.use(thumbKey(entry.key));
+        leases.end();
     }
 
     const pageKeys = () => state.entries.map((e) => e.key).join('\n');
@@ -70,14 +79,9 @@ export function createCgLibraryView(library, options = {}) {
     const pending = (key) => batching.has(key) || working.has(key) || queue.some((e) => e.key === key);
 
     function remember(key, url) {
-        thumbs.delete(key);
         thumbs.set(key, url);
         failed.delete(key);
-        if (thumbs.size <= THUMB_MEMORY) return;
-        for (const old of thumbs.keys()) {
-            if (thumbs.size <= THUMB_MEMORY) break;
-            if (!onPage(old)) thumbs.delete(old);
-        }
+
     }
 
     function dropEntry(key) {
@@ -87,10 +91,12 @@ export function createCgLibraryView(library, options = {}) {
         if (before !== pageKeys()) { emit('list'); loadPageThumbs(); }
     }
 
-    function finish(key) {
-        working.delete(key);
+    function finish(key, gen) {
+        if (working.get(key) === gen) working.delete(key);
+        if (disposed) { wake(); return; }
         emit('thumb', key);
         pump();
+        void loadPageThumbs();
         wake();
     }
 
@@ -98,18 +104,22 @@ export function createCgLibraryView(library, options = {}) {
         if (disposed) return;
         while (working.size < THUMB_WORKERS && queue.length) {
             const entry = queue.shift();
-            working.add(entry.key);
+            const gen = thumbGeneration;
+            working.set(entry.key, gen);
             Promise.resolve()
                 .then(() => library.makeThumb(entry))
                 .catch(() => ({ ok: false, reason: 'thumb-failed' }))
                 .then((result) => {
+                    if (disposed || gen !== thumbGeneration || String(entry.updatedAt || '') !== String(state.all.find(row => row.key === entry.key)?.updatedAt || '')) {
+                        finish(entry.key, gen); return;
+                    }
                     if (result && result.ok) remember(entry.key, result.dataUrl);
                     else {
                         const reason = (result && result.reason) || 'thumb-failed';
                         failed.set(entry.key, reason);
                         if (reason === 'missing') dropEntry(entry.key);
                     }
-                    finish(entry.key);
+                    finish(entry.key, gen);
                 });
         }
     }
@@ -120,13 +130,16 @@ export function createCgLibraryView(library, options = {}) {
         queue = queue.filter((e) => onPage(e.key));
         const need = state.entries.filter((e) => !thumbs.has(e.key) && !failed.has(e.key) && !pending(e.key));
         if (!need.length) { emit('status'); wake(); return; }
-        for (const e of need) batching.add(e.key);
+        const gen = thumbGeneration;
+        for (const e of need) batching.set(e.key, gen);
         emit('status');
         let cached = new Map();
         try { cached = await library.readThumbs(need); } catch { cached = new Map(); }
-        for (const e of need) batching.delete(e.key);
+        for (const e of need) if (batching.get(e.key) === gen) batching.delete(e.key);
         if (disposed) { wake(); return; }
+        if (gen !== thumbGeneration) { void loadPageThumbs(); return; }
         for (const e of need) {
+            if (String(e.updatedAt || '') !== String(state.all.find(row => row.key === e.key)?.updatedAt || '')) continue;
             const url = cached.get(e.key);
             if (url) { remember(e.key, url); emit('thumb', e.key); }
             else if (onPage(e.key) && !pending(e.key) && !thumbs.has(e.key)) queue.push(state.entries.find((x) => x.key === e.key) || e);
@@ -186,6 +199,7 @@ export function createCgLibraryView(library, options = {}) {
     function open(filters) {
         if (filters) state.filters = { ...state.filters, ...filters };
         const gen = ++openGen;
+        resetThumbWork();
         state.notice = '';
         const job = runOpen(gen).catch(() => {
             if (gen !== openGen) return;
@@ -224,6 +238,7 @@ export function createCgLibraryView(library, options = {}) {
         queue.push(entry);
         emit('thumb', key);
         pump();
+        void loadPageThumbs();
     }
 
     function removeKeys(keys) {
@@ -294,8 +309,8 @@ export function createCgLibraryView(library, options = {}) {
         whenIdle: () => (busy() ? new Promise((resolve) => { waiters.push(resolve); }) : Promise.resolve()),
         dispose() {
             openGen += 1;
-            disposed = true;
-            queue = [];
+            disposed = true; offClear(); leases.releaseAll();
+            resetThumbWork(); opening = null; wake();
             onChange = () => {};
         },
     };

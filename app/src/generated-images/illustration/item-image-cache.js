@@ -1,16 +1,14 @@
+import { createLocalImageCache } from '../../media/tavern-image-cache.js';
 // 物品图记录与图片的按聊天缓存：只读本地存储，不联网；同步取图未命中时异步补载并发事件通知重绘。
-export function createItemRecordCache({ store, type, emit, imageLimit = 60 }) {
-    const images = new Map();
+export function createItemRecordCache({ store, type, emit, mediaCache }) {
+    const images = mediaCache || createLocalImageCache({});
+    const keyOf = id => `asset:${id}`;
     const pending = new Set();
     let chatId = '';
     let records = new Map();
     let loading = null;
 
-    function rememberImage(id, dataUrl) {
-        images.delete(id);
-        images.set(id, dataUrl);
-        while (images.size > imageLimit) images.delete(images.keys().next().value);
-    }
+    function rememberImage(id, dataUrl) { images.remember(keyOf(id), dataUrl); }
 
     function ensure(nextChatId) {
         if (nextChatId !== chatId) { chatId = nextChatId; records = new Map(); loading = null; }
@@ -38,12 +36,13 @@ export function createItemRecordCache({ store, type, emit, imageLimit = 60 }) {
     // 同步取图：命中内存直接返回，否则异步从存储补载，补完后发 image-loaded。
     function imageUrl(imageId) {
         if (!imageId) return '';
-        const hit = images.get(imageId);
+        const hit = images.peek(keyOf(imageId));
         if (hit) return hit;
         if (!pending.has(imageId)) {
             pending.add(imageId);
-            Promise.resolve(store.getImage(imageId)).then((record) => {
-                if (record && record.dataUrl) { rememberImage(imageId, record.dataUrl); emit({ imageId, reason: 'image-loaded' }); }
+            const stamp = images.token(keyOf(imageId));
+            images.load(keyOf(imageId), async () => (await store.getImage(imageId, { fields: ['dataUrl'] }))?.dataUrl || '', { persist: false }).then(value => {
+                if (value && images.token(keyOf(imageId)) === stamp) emit({ imageId, reason: 'image-loaded' });
             }).catch(() => {}).finally(() => pending.delete(imageId));
         }
         return '';
@@ -51,9 +50,11 @@ export function createItemRecordCache({ store, type, emit, imageLimit = 60 }) {
 
     async function dropImage(imageId) {
         if (!imageId) return;
-        images.delete(imageId);
-        try { await store.deleteImage(imageId); } catch (error) { /* 图片已不存在时忽略 */ }
+        const result = await store.deleteImage(imageId);
+        if (result?.ok === false) throw new Error(result.reason || 'image-delete-failed');
+        if (!result?.retained?.length) images.forget(keyOf(imageId));
+        return result;
     }
 
-    return { ensure, get, set, list, imageUrl, rememberImage, dropImage };
+    return { ensure, get, set, list, imageUrl, rememberImage, dropImage, clear() { pending.clear(); records.clear(); chatId = ''; loading = null; } };
 }
