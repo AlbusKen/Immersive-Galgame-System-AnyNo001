@@ -4,7 +4,7 @@ import { buildIgsTextPayload, normalizeSourceFilter, normalizeVirtualRegex } fro
 import { dropConfirmedOutfitReview } from '../../scene/outfit-review-store.js';
 import { assetOwnerKey, assetShadowsGlobal, draftEffectiveAssets, effectiveSceneAssets, rememberAssetScope } from '../../scene/asset-scope.js';
 import { getSillyTavernContext } from '../../host/tavern-helper-adapter.js';
-import { menuItem, renderOutfitReviewList, renderRowMenu, renderWardrobe } from './settings-outfit-fields.js';
+import { menuItem, renderMigrateEntry, renderOutfitReviewList, renderRowMenu, renderWardrobe } from './settings-outfit-fields.js';
 import { normalizeItemImageSettings } from '../../generated-images/illustration/item-image-settings.js';
 import { createCgLibraryView } from './cg-library-view.js';
 import { countEnabledPerformance, performanceGroupCounts, renderPerformancePage, renderPerformancePresetBar } from './performance-settings-layout.js';
@@ -45,6 +45,7 @@ import { renderAssetFolderView, renderAssetFolderSelect } from './asset-folder-v
 import { loadMoodReview } from '../../scene/mood-review-store.js';
 import { CLASSIC_DIALOG_THEME_DEFAULTS, DIALOG_SKIN_GRADIENT_VEIL, DIALOG_SKIN_WESTERN_CLASSIC, isIllustratedDialogSkin, supportsDialogAutoHeight } from './classic-dialog-skin.js';
 import { dialogSkinLabel, getDialogSkinChoices } from './dialog-skin-catalog.js';
+import { DIALOG_SKIN_XIANXIA_INK } from './dialog-theme-xianxia.js';
 import { DIALOG_SKIN_MAGIC_ACADEMY, MAGIC_HOUSES, normalizeMagicAccent, normalizeMagicHouse } from './dialog-theme-css-skins.js';
 import { VOICE_BARK_FREQUENCIES, normalizeVoiceBarkSettings } from './voice-bark.js';
 import { TTS_API_FORMATS, TTS_BILINGUAL_MODES, TTS_PROVIDERS, TTS_RATES, TTS_TRANSPORTS, normalizeTtsSettings, systemVoiceOptions, ttsApiVoiceList } from './tts.js';
@@ -549,6 +550,7 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
           ${CHARACTER_ADD_MENU}
         </div>
         ${renderDnaCandidateBar(asyncState.dnaCandidate)}
+        ${idx ? '' : renderMigrateEntry(asyncState.migrateRows)}
         ${idx ? '' : charsHtml()}
         ${idx ? '' : renderDnaOnlyCharacterList(sceneAssets.characterDna || {}, sceneAssets.characters || {})}
       </div>`;
@@ -655,7 +657,7 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
                     ? `<div class="igs-source-filter-note igs-card-skin-note">当前角色卡在主界面选定了「${esc(dialogSkinLabel(worldviewAssets.dialogSkin))}」，阅读这张卡时以此为准，上方选项仅对其他角色卡生效。<button type="button" class="igs-settings-action" data-action="card-dialog-skin-clear">跟随上方</button></div>`
                     : ''),
             gradientVeilFields: gradientVeilDialog ? '<div class="igs-gradient-veil-settings">' + field('readerSettings.gradientVeil.color', '黑幕颜色', colorInput('readerSettings.gradientVeil.color', reader.gradientVeil.color)) + field('readerSettings.gradientVeil.heightPercent', '渐变高度', selectInput('readerSettings.gradientVeil.heightPercent', reader.gradientVeil.heightPercent, [30, 40, 50, 60, 70].map((n) => [n, `${n}%`]))) + field('readerSettings.gradientVeil.opacity', '最大不透明度', selectInput('readerSettings.gradientVeil.opacity', reader.gradientVeil.opacity, [.4, .55, .7, .85, 1].map((n) => [n, `${Math.round(n * 100)}%`]))) + field('readerSettings.gradientVeil.speakerStyle', '姓名样式', selectInput('readerSettings.gradientVeil.speakerStyle', reader.gradientVeil.speakerStyle, [['default', '默认风格'], ['plain-text', '纯文字']])) + '</div>' : '',
-            magicHouseField: reader.dialogSkin === DIALOG_SKIN_MAGIC_ACADEMY ? field('readerSettings.magicHouse', resolveWorldview(bridge.sceneAssets) === 'magic' ? '学院配色' : '配色', selectInput('readerSettings.magicHouse', normalizeMagicHouse(reader.magicHouse), MAGIC_HOUSES.map((house) => [house.id, house.label]))) + (MAGIC_HOUSES.find((house) => house.id === normalizeMagicHouse(reader.magicHouse)).custom ? field('readerSettings.magicAccent', '装饰颜色', colorInput('readerSettings.magicAccent', normalizeMagicAccent(reader.magicAccent))) : '') : reader.dialogSkin === DIALOG_SKIN_HORROR_GORE || reader.dialogSkin === DIALOG_SKIN_HORROR_PSYCH ? field('readerSettings.horrorDreadCap', '恐怖强度上限', selectInput('readerSettings.horrorDreadCap', normalizeHorrorDreadCap(reader.horrorDreadCap), HORROR_DREAD_LEVELS.map((n) => [n, HORROR_DREAD_CAP_LABELS[n]]))) : '',
+            magicHouseField: reader.dialogSkin === DIALOG_SKIN_XIANXIA_INK ? field('readerSettings.xianxiaSpeaker', '姓名排布', selectInput('readerSettings.xianxiaSpeaker', reader.xianxiaSpeaker === 'center' ? 'center' : 'left', [['left', '左侧落款'], ['center', '居中（名字+剑气下划线）']])) : reader.dialogSkin === DIALOG_SKIN_MAGIC_ACADEMY ? field('readerSettings.magicHouse', resolveWorldview(bridge.sceneAssets) === 'magic' ? '学院配色' : '配色', selectInput('readerSettings.magicHouse', normalizeMagicHouse(reader.magicHouse), MAGIC_HOUSES.map((house) => [house.id, house.label]))) + (MAGIC_HOUSES.find((house) => house.id === normalizeMagicHouse(reader.magicHouse)).custom ? field('readerSettings.magicAccent', '装饰颜色', colorInput('readerSettings.magicAccent', normalizeMagicAccent(reader.magicAccent))) : '') : reader.dialogSkin === DIALOG_SKIN_HORROR_GORE || reader.dialogSkin === DIALOG_SKIN_HORROR_PSYCH ? field('readerSettings.horrorDreadCap', '恐怖强度上限', selectInput('readerSettings.horrorDreadCap', normalizeHorrorDreadCap(reader.horrorDreadCap), HORROR_DREAD_LEVELS.map((n) => [n, HORROR_DREAD_CAP_LABELS[n]]))) : '',
             classicDialogWidthPercentField: classicDialog ? field('readerSettings.classicDialogWidthPercent', '电脑端宽度', selectInput('readerSettings.classicDialogWidthPercent', reader.classicDialogWidthPercent, [60, 70, 80, 90, 100].map((n) => [n, `${n}%`]))) : '',
             skinDialogScaleField: classicDialog || illustratedDialog ? field('readerSettings.skinDialogScale', '对话框高度', selectInput('readerSettings.skinDialogScale', reader.skinDialogScale, SKIN_DIALOG_SCALE_OPTIONS.map((n) => [n, n === 1 ? '原尺寸' : `${Math.round(n * 100)}%`]))) : '',
             optionFontSizeField: field('readerSettings.optionFontSize', '选项字体大小', selectInput('readerSettings.optionFontSize', reader.optionFontSize, [10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24].map((n) => [n, `${n}px`]))),

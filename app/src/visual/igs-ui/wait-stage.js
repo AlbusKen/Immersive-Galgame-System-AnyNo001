@@ -129,6 +129,7 @@ export const WAIT_STAGE_STYLE_TEXT = `
 .igs-ws-chip.is-on{background:color-mix(in srgb,var(--igs-bar-ink,#fff) 22%,transparent);font-weight:600;}
 .igs-ws-chip.is-off{opacity:.4;cursor:default;}
 .igs-ws-board{box-sizing:border-box;display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;max-width:min(440px,94%);padding:16px;border-radius:14px;background:color-mix(in srgb,var(--igs-dialog-bg,#1f2225) 72%,transparent);box-shadow:0 10px 30px rgba(0,0,0,.28);animation:igs-ws-rise .38s ease-out both;}
+.igs-ws-games[hidden],.igs-ws-board[hidden]{display:none;}
 .igs-ws-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;color:color-mix(in srgb,var(--igs-bar-ink,#e8e5df) 60%,transparent);font-size:11px;letter-spacing:.14em;}
 .igs-ws-close{border:0;background:transparent;color:inherit;font:inherit;font-size:14px;line-height:1;cursor:pointer;opacity:.6;}
 .igs-ws-close:hover{opacity:1;}

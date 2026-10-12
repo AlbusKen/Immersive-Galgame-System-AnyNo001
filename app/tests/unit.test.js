@@ -49,6 +49,7 @@ import {
     ensureMessageImagePlaceholders,
 } from '../src/host/tavern-helper-adapter.js';
 import { createIgsReaderHost } from '../src/visual/igs-ui/reader-host.js';
+import { syncSpriteTextWait } from '../src/visual/igs-ui/reader-dom-render.js';
 import { createPromptInjector } from '../src/host/prompt-injector.js';
 import {
     extractSceneDirectives,
@@ -1952,7 +1953,7 @@ test('gate:settings:generated-asset-actions-manage-library-and-temp-status', asy
     let promptValue = '';
     let confirmed = true;
     const service = {
-        getRecord: (key) => key === 'temp/bg' ? {
+        readRecord: async (key) => key === 'temp/bg' ? {
             key,
             imageId: 'bg-temp',
             type: 'background',
@@ -2079,7 +2080,7 @@ test('gate:settings:generated-asset-actions-rollback-on-persist-and-service-fail
             { alert: () => {} },
             () => { persistCount += 1; return { ok: true }; },
             {
-                getRecord: () => ({ imageId: 'temp-image', type: 'background', name: '临时景' }),
+                readRecord: async () => ({ imageId: 'temp-image', type: 'background', name: '临时景' }),
                 setStatus: async () => ({ ok: false, reason: 'status-failed' }),
             },
         ));
@@ -2483,6 +2484,98 @@ test('gate:igs-ui:scene-assets-keeps-sprite-with-existing-background', () => {
     assert.equal(opened.snapshot.styles['#igs-sprite'].display, 'block');
 
     host.destroy();
+});
+
+test('gate:igs-ui:generated-sprite-arrival-only-warms-that-sprite', () => {
+    let notify = () => {};
+    const calls = [];
+    const timers = [];
+    const pictures = new Map();
+    const host = createIgsReaderHost({
+        global: { setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout: () => {} },
+        onGeneratedAssetUpdated: (handler) => { notify = handler; return () => {}; },
+        generatedAssets: { resolveUrl: (ref) => { calls.push(ref); return pictures.get(ref) || ''; } },
+        getUnifiedSettings: () => ({
+            version: '0.36.45',
+            bridge: {
+                openMode: 'pc',
+                sceneAssets: {
+                    enabled: true,
+                    scenes: {},
+                    characters: { Alice: { 默认: 'igs-gen:first' }, Bob: { 默认: 'igs-gen:second' } },
+                    characterAliases: {},
+                    characterOutfits: {},
+                },
+            },
+            readerMode: 'pc',
+            readerSettings: {},
+        }),
+        saveUnifiedSettings: () => ({ ok: true }),
+    });
+    try {
+        const source = [
+            '[igs-char:Alice|平和|你好]',
+            '开场。',
+            '[igs-char:Bob|平和|再见]',
+        ].join('\n');
+        const opened = host.openReader({ raw: source, message: { text: source } }, { mode: 'pc' });
+        assert.equal(opened.snapshot.content.pendingSpriteRef, 'igs-gen:first', '首屏未就绪的立绘应留下等待标记');
+        assert.equal(opened.snapshot.content.spriteImage, null);
+        assert.ok(calls.includes('igs-gen:first'));
+        assert.ok(calls.includes('igs-gen:second'));
+        calls.length = 0;
+        pictures.set('igs-gen:first', 'data:image/png;base64,QQ==');
+        notify({ reason: 'image-loaded', imageId: 'first' });
+        assert.ok(calls.includes('igs-gen:first'));
+        assert.ok(!calls.includes('igs-gen:second'), '异步到达立绘不应重新遍历其他立绘');
+        assert.equal(timers.length, 1, '保留原有合并重绘调度，不新增重绘');
+        calls.length = 0;
+        notify({ reason: 'image-loaded', imageId: 'unrelated' });
+        assert.ok(calls.includes('igs-gen:first'));
+        assert.ok(calls.includes('igs-gen:second'), '非立绘事件仍走原有整楼预热路径');
+        assert.equal(timers.length, 1, '多个图片事件仍沿用合并重绘');
+    } finally {
+        host.destroy();
+    }
+});
+
+test('gate:igs-ui:sprite-text-wait-is-bounded-and-released-without-rerender', () => {
+    const current = {}, text = { style: { visibility: '' } };
+    const timers = new Map();
+    let nextId = 0, scheduled = 0;
+    const schedule = (fn, ms) => {
+        assert.equal(ms, 160);
+        const id = ++nextId;
+        timers.set(id, fn);
+        scheduled += 1;
+        return id;
+    };
+    const cancel = (id) => timers.delete(id);
+    const sync = (page, pending) => syncSpriteTextWait(current, text, { page, pending, schedule, cancel });
+    sync('floor:0', false);
+    assert.equal(scheduled, 0, '没有待加载立绘不额外唤醒');
+    sync('floor:0', true);
+    assert.equal(text.style.visibility, 'hidden');
+    sync('floor:0', true);
+    assert.equal(scheduled, 1, '同页更新不重复安排定时器');
+    sync('floor:0', false);
+    assert.equal(text.style.visibility, '', '立绘先到立即放开文字');
+    assert.equal(timers.size, 0);
+    sync('floor:0', true);
+    assert.equal(scheduled, 1, '同页不再次隐藏已显示文字');
+    sync('floor:1', true);
+    assert.equal(scheduled, 2);
+    const timeout = timers.values().next().value;
+    timers.clear();
+    timeout();
+    assert.equal(text.style.visibility, '', '到时先让读者看见文字');
+    sync('floor:1', true);
+    assert.equal(scheduled, 2, '超时后本页不重复等待');
+    sync('floor:2', true);
+    assert.equal(scheduled, 3);
+    current.spriteTextWait.release();
+    assert.equal(text.style.visibility, '', '关闭阅读器时可释放文字和计时器');
+    assert.equal(timers.size, 0);
 });
 
 test('gate:igs-ui:settings-repaints-thumbs-when-generated-images-arrive', () => {

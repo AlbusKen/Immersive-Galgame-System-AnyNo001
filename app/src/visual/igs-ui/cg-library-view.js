@@ -36,7 +36,13 @@ export function createCgLibraryView(library, options = {}) {
         entries: [],
     };
     // 这里只持资源键和任务状态，像素与对象 URL 归中央缓存。
-    const cache = requireMediaCache(options.mediaCache || library?.mediaCache, 'cg-view', library?.mediaCache);
+    // library 为 null 且无显式 mediaCache 时：直接返回 'CG 库不可用' 状态，不需要真实缓存。
+    const rawCache = options.mediaCache || library?.mediaCache;
+    if (!rawCache) {
+        const unavailState = { phase: 'error', sync: null, syncNote: '', notice: '', error: 'CG 库不可用', filters: { favoritesOnly: false, showHidden: false, chatId: '', oldestFirst: readOldestFirst(options.storage) }, all: [], list: [], page: 0, pages: 1, entries: [] };
+        return { state: unavailState, open: () => Promise.resolve(), goto: () => {}, setFilters: () => {}, retry: () => {}, removeKeys: () => {}, patchEntry: () => {}, tileOf: () => ({ state: 'loading', url: '', reason: '' }), statusText: () => 'CG 库不可用', setNotice: () => {}, find: () => null, readFull: () => Promise.resolve(null), whenIdle: () => Promise.resolve(), dispose: () => {} };
+    }
+    const cache = requireMediaCache(rawCache, 'cg-view', library?.mediaCache);
     const thumbKey = key => `thumb:cg:${key}:${String(state.all.find(entry => entry.key === key)?.updatedAt || '')}`;
     const thumbs = { get: key => cache.peek(thumbKey(key)), has: key => Boolean(cache.peek(thumbKey(key))), set: (key, url) => cache.remember(thumbKey(key), url), delete: key => cache.forget(thumbKey(key)) };
     const leases = createMediaLeaseScope(cache);

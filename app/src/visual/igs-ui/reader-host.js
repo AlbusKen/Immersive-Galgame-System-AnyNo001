@@ -425,7 +425,7 @@ export function createIgsReaderHost(options = {}) {
     // 否则 N 张图触发 N 次整页重绘、每次又带上已到的全部 dataUrl，开销随张数平方增长。
     const IMAGE_REFRESH_BATCH_MS = 120;
     let imageRefreshTimer = 0;
-    let floorAssetPlan = { key: '', urls: [] };
+    let floorAssetPlan = { key: '', reader: null, urls: [], spriteUrls: new Set() };
     let readerImageRefreshPending = false;
     let settingsImageRefreshPending = false;
     // 设置面板全屏盖住阅读器时不重绘后面的舞台，记一笔，关面板时补一次。
@@ -461,7 +461,7 @@ export function createIgsReaderHost(options = {}) {
             const settings = state.activeSettings;
             const imageLoaded = Boolean(detail && detail.reason === 'image-loaded');
             if (state.activeReader) {
-                if (imageLoaded) warmActiveFloorImages();
+                if (imageLoaded) warmActiveFloorImages(null, detail.imageId);
                 if (settings) readerStaleBehindSettings = true;
                 else if (imageLoaded) scheduleImageRefresh({ reader: true });
                 else rerenderActiveReader();
@@ -896,7 +896,7 @@ export function createIgsReaderHost(options = {}) {
         return model;
     }
 
-    function warmActiveFloorImages(mountedSnapshot) {
+    function warmActiveFloorImages(mountedSnapshot, loadedImageId = '') {
         const current = state.activeReader;
         const payload = current && current.payload;
         const snapshot = mountedSnapshot || (current && current.snapshot);
@@ -906,17 +906,22 @@ export function createIgsReaderHost(options = {}) {
         const source = String(payload.raw || (typeof liveMessage === 'string' ? liveMessage : '') || '');
         const slots = snapshot.content && Array.isArray(snapshot.content.imageSlots) ? snapshot.content.imageSlots : [];
         const key = `${firstDefined(payload.messageId, payload.message && payload.message.id, '')}:${source.length}:${slots.map((slot) => (slot && slot.url) || '').join('|')}`;
-        if (floorAssetPlan.key !== key) {
+        const planChanged = floorAssetPlan.key !== key || floorAssetPlan.reader !== current;
+        if (planChanged) {
             const sceneAssets = readerSettings._sceneAssets || null;
             const generatedAssets = options.generatedAssets || null;
+            const spriteUrls = new Set();
             floorAssetPlan = {
                 key,
+                reader: current,
+                spriteUrls,
                 urls: collectFloorAssetUrls({
                     source,
                     sceneAssets,
                     inheritedOutfits: payload.inheritedOutfits,
                     inheritedScene: payload.inheritedSceneState,
                     imageSlots: slots,
+                    onSpriteUrl: (url) => { if (isGeneratedAssetUrl(url)) spriteUrls.add(url); },
                     systemRole: readerSettings.systemRole,
                     readClues: (names) => collectOutfitClues(readStatusHudTablesSafe(), names),
                     assetMatchCtx: {
@@ -929,6 +934,13 @@ export function createIgsReaderHost(options = {}) {
                     },
                 }),
             };
+        }
+        // 立绘像素读回后只预热这张图；背景、CG 和首屏仍沿用完整预热。
+        const spriteRef = loadedImageId ? `igs-gen:${loadedImageId}` : '';
+        if (!planChanged && spriteRef && floorAssetPlan.spriteUrls.has(spriteRef)) {
+            const ready = concreteReaderAssetUrl(spriteRef);
+            if (ready) imageResourceCache.load(ready);
+            return;
         }
         for (const url of floorAssetPlan.urls) {
             const concrete = concreteReaderAssetUrl(url);
@@ -982,6 +994,7 @@ export function createIgsReaderHost(options = {}) {
         stopTts();
         clearReaderToast(current);
         cancelTypewriter(current.dom && current.dom.text, { finish: false });
+        current.spriteTextWait?.release();
         const stageMotion = current.dom && current.dom.overlay && current.dom.overlay.querySelector
             ? current.dom.overlay.querySelector('#igs-stage-motion')
             : null;
@@ -1005,6 +1018,7 @@ export function createIgsReaderHost(options = {}) {
             exitDocumentFullscreen(getRootDocument(options.global));
         }
         current.assetLeases?.releaseAll();
+        if (floorAssetPlan.reader === current) floorAssetPlan = { key: '', reader: null, urls: [], spriteUrls: new Set() };
         current.imagePollToken += 1;
         streamObserver.stop();
         stopEmbeddedStoryWatch();
@@ -1368,6 +1382,7 @@ export function createIgsReaderHost(options = {}) {
         if (waitStage.isGameActive()) waitStage.replyArrived();
         else waitStage.close();
         if (current.dom && current.dom.root && current.dom.root.style) current.dom.root.style.display = '';
+        if (current.deferredReviewKey) syncAssetReviewAfterRender(current, current.snapshot);
     }
 
     function remountEmbeddedReader(current, message) {
@@ -3396,6 +3411,7 @@ export function createIgsReaderHost(options = {}) {
         let finalBackgroundTimed = false;
         const hideSpriteOnNsfw = !normalizeStatusHudSettings(readerSettings && readerSettings.statusHud).showSpriteOnNsfw;
         let spriteImage = null;
+        let pendingSpriteRef = '';
         let resolvedSpeaker = scene.speaker || '';
         let spriteCharacter = '';
         let spriteOutfit = '';
@@ -3824,6 +3840,7 @@ export function createIgsReaderHost(options = {}) {
                 if (spriteChar) spriteMatch = { character: spriteChar, mood: spriteMood || '', outfit: wantedOutfit || '', source: spriteHit.source, quality: spriteHit.quality || '', slot: spriteHit.slot || '', ...outfitWhy };
                 if (spriteChar) noteUnlistedMood(spriteHit, spriteMood, sceneAssets);
                 spriteImage = spriteChar ? resolveGenerated(spriteHit.url) || null : null;
+                if (!spriteImage && spriteChar && isGeneratedAssetUrl(spriteHit.url)) pendingSpriteRef = spriteHit.url;
                 if (spriteImage) {
                     spriteCharacter = spriteHit.character || spriteChar;
                     spriteOutfit = spriteHit.outfit || '';
@@ -3978,6 +3995,7 @@ export function createIgsReaderHost(options = {}) {
                 backgroundImage: finalBackgroundImage,
                 backgroundTimed: finalBackgroundTimed,
                 spriteImage,
+                pendingSpriteRef,
                 spriteMatch,
                 backgroundMatch,
                 castSprites,
@@ -4703,10 +4721,22 @@ export function createIgsReaderHost(options = {}) {
         if (!overlay || !overlay.querySelector || !service || typeof service.listReview !== 'function') return;
         let container = overlay.querySelector('#igs-asset-review');
         const floorKey = currentFloorKey(current);
+        // 没读完就重 roll：流式期间不弹，记下旧楼，等新回复载入完在最后一页一并补问。
+        if (current.streamPhase === 'streaming') {
+            if (floorKey && !current.deferredReviewKey && service.listReview(floorKey).length) current.deferredReviewKey = floorKey;
+            if (container) container.setAttribute('hidden', '');
+            return;
+        }
         const lastPage = isReaderLastPage(snapshot);
-        const items = floorKey && lastPage
+        let items = floorKey && lastPage
             ? service.listReview(floorKey)
             : [];
+        const deferredKey = current.deferredReviewKey;
+        if (deferredKey && deferredKey !== floorKey) {
+            const deferred = service.listReview(deferredKey);
+            if (!deferred.length) current.deferredReviewKey = '';
+            else if (lastPage) items = deferred.concat(items);
+        } else if (deferredKey) current.deferredReviewKey = '';
         const outfitAsks = lastPage ? pendingOutfitAsks : [];
         if (!items.length && !outfitAsks.length) {
             if (container) container.setAttribute('hidden', '');

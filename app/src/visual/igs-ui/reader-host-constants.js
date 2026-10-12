@@ -136,6 +136,7 @@ export const READER_REQUIRED_SETTINGS_PATHS = Object.freeze([
     'readerSettings.gradientVeil.heightPercent',
     'readerSettings.gradientVeil.opacity',
     'readerSettings.gradientVeil.speakerStyle',
+    'readerSettings.xianxiaSpeaker',
     'readerSettings.classicDialogWidthPercent',
     'readerSettings.skinDialogScale',
     'readerSettings.magicHouse',

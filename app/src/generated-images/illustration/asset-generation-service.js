@@ -677,9 +677,18 @@ export function createAssetGenerationService(deps) {
         return job;
     }
 
+    // 写记录会把整组页索引作废，而本函数是同步读：页索引不在时退回缓存里已有的单条记录，
+    // 否则刚生成完的素材当帧读回来是空的，要等下一次异步 query 才显示。
     function reviewPage(floorKey) {
         const chatId = currentChat();
-        return chatId && floorKey && !stopped ? tempCache.peekQuery({ chatId, floorKey, types: ['background', 'sprite'], statuses: ['review'], limit: 24 }) : null;
+        if (!chatId || !floorKey || stopped) return null;
+        const options = { chatId, floorKey, types: ['background', 'sprite'], statuses: ['review'], limit: 24 };
+        const page = tempCache.peekQuery(options);
+        if (page) return page;
+        const records = tempCache.values()
+            .filter((record) => record.chatId === chatId && record.floorKey === floorKey && record.status === 'review')
+            .slice(0, options.limit);
+        return { records, total: records.length, hasNext: false, hasPrevious: false };
     }
     function listReview(floorKey) {
         return (reviewPage(floorKey)?.records || []).map(record => ({ ...record, url: tempUrl(record) }));
@@ -689,8 +698,14 @@ export function createAssetGenerationService(deps) {
     }
     function tempPage() {
         if (stopped || !messageHost.getChatId()) return { records: [], total: 0, hasNext: false, hasPrevious: false };
-        const page = tempCache.peekQuery(tempPageOptions());
-        return { ...(page || { records: [], total: 0 }), loading: !page && tempCache.status().pending, error: tempCache.status().error };
+        const options = tempPageOptions();
+        const page = tempCache.peekQuery(options);
+        if (page) return { ...page, loading: false, error: tempCache.status().error };
+        // 页索引会被写记录作废，而本函数是同步读：退回缓存里已有的单条记录，
+        // 否则刚生成完的素材当帧读回来是空的。翻过页时不兜底，避免把整批记录当第一页。
+        const paged = tempCursor.afterKey || tempCursor.beforeKey;
+        const records = paged ? [] : tempCache.values().filter((record) => ACTIVE_TEMP_STATUSES.has(record.status)).slice(0, options.limit);
+        return { records, total: records.length, hasNext: false, hasPrevious: false, loading: tempCache.status().pending, error: tempCache.status().error };
     }
     function listTemp() { return tempPage().records.map(record => ({ ...record, url: tempUrl(record) })); }
     async function changeTempPage(direction) {

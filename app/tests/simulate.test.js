@@ -2462,7 +2462,7 @@ test('gate:simulation:igs-ui-enter-sends-and-shift-enter-does-not', async () => 
     vn.destroy();
 });
 
-test('gate:simulation:igs-ui-background-click-pages-forward-dialog-click-still-pages', async () => {
+test('gate:simulation:igs-ui-background-left-half-pages-back-right-half-forward-dialog-still-pages', async () => {
     const document = createFakeDocument();
     const latestMessage = {
         id: 44,
@@ -2477,24 +2477,35 @@ test('gate:simulation:igs-ui-background-click-pages-forward-dialog-click-still-p
         },
     });
 
+    try {
     const opened = await vn.openLatestAvailable('pc');
     const overlay = document.getElementById('igs-overlay');
     const clickLayer = overlay.querySelector('#igs-click-layer');
     const dialog = overlay.querySelector('#igs-dialog');
+    overlay.getBoundingClientRect = () => ({ left: 100, width: 800 });
 
     assert.equal(opened.reader.snapshot.content.progress, '1 / 3');
-    // 单击对话框以外的画面推进到下一页。
-    clickLayer.click();
+    // 背景空白区左半回退，正中线及右半推进。
+    clickLayer.dispatchEvent({ type: 'click', target: clickLayer, clientX: 700 });
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '2 / 3');
+    clickLayer.dispatchEvent({ type: 'click', target: clickLayer, clientX: 280 });
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '1 / 3');
+    clickLayer.dispatchEvent({ type: 'click', target: clickLayer, clientX: 500 });
     assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '2 / 3');
 
     // 点对话框仍照常翻页（第一下可能先放完打字机）。
     dialog.style.left = '0px';
     dialog.style.width = '200px';
+    dialog.getBoundingClientRect = () => ({ left: 0, width: 200 });
     dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 160 });
     if (vn.getState().igsUi.activeReader.snapshot.content.progress !== '3 / 3') dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 160 });
     assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '3 / 3');
-
+    dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 40 });
+    if (vn.getState().igsUi.activeReader.snapshot.content.progress !== '2 / 3') dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 40 });
+    assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '2 / 3', '对话框左半边仍回上一页');
+    } finally {
     vn.destroy();
+    }
 });
 
 test('gate:simulation:right-click-hides-outside-the-dialog-only', async () => {

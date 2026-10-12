@@ -284,6 +284,8 @@ export function normalizeReaderSettings(settings, legacyTheme) {
     // DLC 演出开关只记关掉的；对应 DLC 这次没加载也保留，下次加载照旧关着。
     normalized.dlcFx = normalizeDlcFxSettings(normalized.dlcFx);
     normalized.gradientVeil = normalizeGradientVeil(normalized.gradientVeil);
+    // 仙侠水墨的姓名排布：left（默认，左侧落款式）| center（名字+下划线居中）。
+    normalized.xianxiaSpeaker = normalized.xianxiaSpeaker === 'center' ? 'center' : 'left';
     normalized.classicDialogWidthPercent = normalizeClassicDialogWidthPercent(normalized.classicDialogWidthPercent);
     normalized.skinDialogScale = normalizeSkinDialogScale(normalized.skinDialogScale);
     normalized.magicHouse = normalizeMagicHouse(normalized.magicHouse);

@@ -359,9 +359,8 @@ export function createWaitStageRuntime(options = {}) {
         status.textContent = '出什么？';
         setNote(waitStageGameLine('start', random));
         chipRow('igs-ws-hands', RPS_HANDS.map((hand) => ({ id: hand.id, label: hand.label })), (hand) => {
-            if (gameState.done) return;
+            // 猜拳不锁局：出完结果直接再点就是下一把。
             const foe = RPS_HANDS[Math.floor(random() * RPS_HANDS.length)];
-            gameState.done = true;
             const outcome = rpsOutcome(hand.id, foe.id);
             say(status, `你出${hand.label}，对方出${foe.label}。`, rpsLineKey(outcome));
         });

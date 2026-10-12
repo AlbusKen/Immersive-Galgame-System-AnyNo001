@@ -15,6 +15,20 @@ const FALLBACK_GENERATION_EVENTS = Object.freeze({
     stopped: 'generation_stopped',
 });
 
+// 酒馆生成期间显示 #mes_stop，结束即隐藏；插件后台请求不算。
+function isHostGenerating(doc) {
+    if (isBackgroundGenerationActive()) return false;
+    const button = doc && typeof doc.getElementById === 'function' ? doc.getElementById('mes_stop') : null;
+    if (!button) return false;
+    const view = doc.defaultView;
+    try {
+        const style = view && typeof view.getComputedStyle === 'function' ? view.getComputedStyle(button) : button.style;
+        return Boolean(style) && style.display !== 'none' && style.visibility !== 'hidden';
+    } catch (error) {
+        return false;
+    }
+}
+
 export function createChatStreamObserver(opts = {}) {
     const globalObject = opts.global || globalThis;
     const onActivity = typeof opts.onActivity === 'function' ? opts.onActivity : () => {};
@@ -222,6 +236,12 @@ export function createChatStreamObserver(opts = {}) {
             } catch (error) {
                 observer = null;
             }
+        }
+        // 流式中途才打开阅读器：开始事件早已错过，按宿主的停止按钮补武装，结束事件/静默/硬超时照常收尾。
+        if (lifecycleAvailable && !generationActive && isHostGenerating(doc)) {
+            generationActive = true;
+            generationSeen = true;
+            scheduleActivity();
         }
         return { ok: true, observed: Boolean(observer), lifecycle: lifecycleAvailable };
     };

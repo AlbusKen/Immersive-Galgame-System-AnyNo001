@@ -101,11 +101,11 @@ function renderTrackRow(track) {
 }
 
 // 默认曲目折叠成一行摘要，展开才逐首列出；自己加的曲目始终逐行显示。
-function renderBgmTracks(bgm, more) {
+function renderBgmTracks(bgm, more, ownPack = '') {
     const own = bgm.tracks.filter((track) => !isDefaultBgmTrack(track));
     const pack = bgm.tracks.filter(isDefaultBgmTrack);
-    const counts = BGM_PACKS.map((id) => [BGM_PACK_LABELS[id], pack.filter((track) => track.packs && track.packs.includes(id)).length])
-        .filter(([, count]) => count).map(([label, count]) => `${label} ${count}`).join(' · ');
+    const counts = BGM_PACKS.map((id) => [id, BGM_PACK_LABELS[id], pack.filter((track) => track.packs && track.packs.includes(id)).length])
+        .filter(([, , count]) => count).map(([id, label, count]) => `${label} ${count}${id === ownPack ? '' : '（补充）'}`).join(' · ');
     const packBlock = pack.length
         ? more('bgm-pack-tracks', `默认曲目${pack.length}首（${counts}）`, `<div class="igs-bgm-tracks">${pack.map(renderTrackRow).join('')}</div>`
             + '<button type="button" class="igs-settings-action" data-action="bgm-pack-remove">移除全部默认曲目</button>'
@@ -115,7 +115,7 @@ function renderBgmTracks(bgm, more) {
     return packBlock + ownBlock;
 }
 
-function renderSoundFields(bgm, ambient, ui, master, more) {
+function renderSoundFields(bgm, ambient, ui, master, more, ownPack = '') {
     const bgmBody = featureRow(more, 'bgm', `${P}.bgm.enabled`, bgm.enabled, '背景音乐', '按情绪与地点选曲', field(`${P}.bgm.volume`, '音乐音量', rangeInput(`${P}.bgm.volume`, bgm.volume, '音乐音量'))
         + checkbox(`${P}.bgm.moodTag`, bgm.moodTag, 'AI标注配乐情绪')
         + renderBgmTracks(bgm, more)

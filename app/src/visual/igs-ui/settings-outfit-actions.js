@@ -1,6 +1,7 @@
 import { storedImageReferences } from '../../media/image-references.js';
 import { openSettingsPage } from './settings-pages.js';
 import { BUILTIN_NUDE_OUTFIT, normalizeOutfitForm, fuzzyOutfitName, isBuiltinNudeOutfit, isValidOutfitName, isValidOutfitWord, normalizeWardrobe, OUTFIT_RESET } from '../../scene/character-outfits.js';
+import { migrateOriginalOutfits, migrationRowOf, splitMigrationWords } from '../../scene/outfit-migration.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
 import { classifySceneKey } from '../../scene/scene-directives.js';
 import { clearOutfitReview, loadOutfitReview, removeOutfitReview } from '../../scene/outfit-review-store.js';
@@ -141,6 +142,108 @@ async function offerOutfitSprites(ctx, wardrobeName, dialogs) {
     }
     selectTab(settingsState, picked, wardrobeName);
     return ctx.rerun(`outfit-expression-set:${encodeURIComponent(picked)}:${encodeURIComponent(wardrobeName)}`);
+}
+
+// 原装迁移清单的行。名字 / 别名 / 说明先按已有信息预填，用户在清单里改完再迁。
+function migrateSeedRows(settingsState) {
+    const effective = draftEffectiveAssets(settingsState);
+    const characters = plain(effective.characters) || {};
+    const outfits = plain(effective.characterOutfits) || {};
+    const rows = [];
+    for (const [character, base] of Object.entries(characters)) {
+        if (BLOCKED_KEYS.has(character)) continue;
+        const info = migrationRowOf(character, base);
+        if (!info.hasSprite) continue;
+        const taken = new Set(Object.keys(plain(outfits[character]) || {}).map((name) => name.trim()));
+        const prefer = `${character}${info.whole ? '原装' : ''}`;
+        let name = '';
+        // 默认名撞上已有服装就直接留空，让用户自己填，不悄悄改名。
+        if (isValidOutfitName(prefer) && !taken.has(prefer)) name = prefer;
+        rows.push({ character, name, words: [], note: '', prompt: '', ...info });
+    }
+    return rows;
+}
+
+// 清单里的输入框就地改草稿即可（跟 DNA 输入一样，关闭设置时统一保存），不重绘、不调 AI。
+function updateMigrateRow(settingsState, character, fieldName, value) {
+    const rows = settingsState.asyncState.migrateRows;
+    const row = Array.isArray(rows) ? rows.find((item) => item.character === character) : null;
+    if (!row) return { ok: true };
+    if (fieldName === 'words') row.words = splitMigrationWords(value);
+    else if (fieldName === 'name' || fieldName === 'note') row[fieldName] = String(value || '');
+    return { ok: true };
+}
+
+// 迁移时顺手把原装默认立绘上存的那份提示词搬进新建的衣柜条目。要等接口，所以整批共用一个进度条。
+async function collectMigrationPrompts(settingsState, options, rows) {
+    const service = options.generatedAssets;
+    const effectiveRows = rows.filter((row) => row.name);
+    if (!service || typeof service.getImagePrompt !== 'function' || !effectiveRows.length) return;
+    const characters = plain(draftEffectiveAssets(settingsState).characters) || {};
+    const progress = beginSettingsProgress(() => settingsHost(options.global || globalThis), '读取原装提示词');
+    try {
+        for (const row of effectiveRows) {
+            const base = plain(characters[row.character]) || {};
+            const imageId = generatedAssetIdOf(String(base[OUTFIT_RESET] || ''));
+            if (!imageId) continue;
+            try {
+                const stored = await service.getImagePrompt(imageId);
+                const prompt = stored && typeof stored === 'object' ? String(stored.positive || '').trim() : '';
+                if (prompt) row.prompt = prompt;
+            } catch (error) { /* 取不到就留空，不打断整批 */ }
+        }
+    } finally {
+        progress.end();
+    }
+}
+
+// 一次性功能键：把已有的原装衣服整体迁成差分服装 / 衣柜。先出清单，确认后才动数据。
+async function handleMigrateOutfit(command, segs, ctx) {
+    const { settingsState, options, persistSettingsDraft, rerenderSettings } = ctx;
+    rememberAssetScope(settingsState, getSillyTavernContext(options.global || globalThis));
+    const asyncState = settingsState.asyncState;
+    // 清单一次配好整批，之后用户改输入框就地改草稿，所以这一步不做任何二次核对。
+    if (command === 'scene-migrate-outfit') {
+        asyncState.migrateRows = migrateSeedRows(settingsState);
+        return rerenderSettings();
+    }
+    if (command === 'scene-migrate-outfit-cancel') {
+        delete asyncState.migrateRows;
+        return rerenderSettings();
+    }
+    if (command === 'scene-migrate-outfit-skip') {
+        const character = decodeSeg(segs[0] || '');
+        const rows = Array.isArray(asyncState.migrateRows) ? asyncState.migrateRows : [];
+        asyncState.migrateRows = rows.filter((row) => row.character !== character);
+        return rerenderSettings();
+    }
+    const rows = Array.isArray(asyncState.migrateRows) ? asyncState.migrateRows : [];
+    if (!rows.length) return rerenderSettings();
+    if (command === 'scene-migrate-outfit-apply') await collectMigrationPrompts(settingsState, options, rows);
+    // 逐行重核一遍再报（迁移本身按「已登记角色名」一批只处理一次），逐条列清楚为什么没迁、哪一格出了情况。
+    const before = new Map(Object.entries(plain(draftEffectiveAssets(settingsState).characters) || {})
+        .map(([key, value]) => [key, migrationRowOf(key, value)]));
+    const result = migrateOriginalOutfits({
+        sceneAssets: settingsState.draft.bridge.sceneAssets,
+        readerSettings: settingsState.draft.readerSettings,
+        rows,
+    });
+    if (!result || result.ok === false) { warn(ctx, '没有可迁移的角色数据。'); return rerenderSettings(); }
+    const persisted = persistSettingsDraft();
+    if (persisted.ok === false) return persisted;
+    delete asyncState.migrateRows;
+    // 清单收起后条数少、提示词短，改成弹窗报结果，避免提示条一长就断在工具栏后面。
+    const lines = [];
+    for (const item of result.done) {
+        const base = before.get(item.character);
+        const cleared = base && base.count ? `原装 ${base.count} 张已搬走` : '原装已清空';
+        lines.push(`${item.character} → 服装「${item.name}」：搬了 ${item.moods} 格，${cleared}${item.replacedCalm ? '（原装的「平和」已在，默认那张没搬）' : ''}`);
+    }
+    for (const item of result.skipped) lines.push(`${item.character}：没迁移——${item.reason}`);
+    lines.push('', '原装不再保留。要改回原装，在这套服装上删掉即可。');
+    const dialogs = ctx.dialogs || createSettingsDialogs({ global: options.global || globalThis });
+    if (typeof dialogs.view === 'function') await dialogs.view(lines.join('\n'));
+    return rerenderSettings();
 }
 
 async function handleWardrobe(command, segs, ctx) {
@@ -440,7 +543,7 @@ function handleOutfitReview(command, segs, ctx) {
     return rerenderSettings();
 }
 
-const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots)|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt))(?::(.*))?$/;
+const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots)|scene-migrate-outfit(?:-(?:cancel|apply|skip|run))?|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt))(?::(.*))?$/;
 
 // 服装区 action：返回 null 表示不归本模块处理。位置 / 头部标定 key 随改名迁移、随删除清理。
 export function handleOutfitAction(normalizedAction, ctx) {
@@ -452,6 +555,11 @@ async function runOutfitAction(match, ctx) {
     const [, command, rest = ''] = match;
     const segs = rest.split(':');
     if (command === 'outfit-review-auto') return handleOutfitReviewAuto(segs, ctx);
+    if (command.startsWith('scene-migrate-outfit')) {
+        const state = ctx.settingsState;
+        if (!plain(state.asyncState)) state.asyncState = {};
+        return handleMigrateOutfit(command, segs, ctx);
+    }
     if (command.startsWith('outfit-review-')) return handleOutfitReview(command, segs, ctx);
     const { settingsState, options, persistSettingsDraft, rerenderSettings } = ctx;
     if (command.startsWith('wardrobe-')) return handleWardrobe(command, segs, ctx);
