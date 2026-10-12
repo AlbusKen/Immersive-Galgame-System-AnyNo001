@@ -60,6 +60,7 @@ export function createPublicApi(app) {
                 : { attached: false, reason: 'magic-wand-entry-not-mounted' };
         },
         destroy: app.destroy,
+        shutdown: app.shutdown,
         ...igsCompatApi,
     };
 }

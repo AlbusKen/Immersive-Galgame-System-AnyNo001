@@ -3,7 +3,8 @@
 // thumbs：{ key, dataUrl, stamp }，320 宽 JPEG；stamp 等于生成时条目的 updatedAt，图换了就对不上、重新生成。
 // 原图仍在 igs-illustrations / igs-photo-album 与酒馆文件里，只有看大图时才读。
 import { createIdbConnection } from './idb-connection.js';
-import { createLocalImageCache, localImageCacheFor } from './tavern-image-cache.js';
+import { localImageCacheFor } from './tavern-image-cache.js';
+import { requireMediaCache } from './media-cache-owner.js';
 
 const DB_NAME = 'igs-cg-index';
 const DB_VERSION = 2;
@@ -12,9 +13,9 @@ const THUMBS = 'thumbs';
 
 const keyOf = (value) => String(value || '');
 
-export function createMemoryCgIndexStore({ mediaCache = createLocalImageCache({}) } = {}) {
+export function createMemoryCgIndexStore({ mediaCache } = {}) {
     const entries = new Map();
-    const cache = mediaCache;
+    const cache = requireMediaCache(mediaCache, 'cg-index');
     return {
         mediaCache: cache,
         async getAll() { return Array.from(entries.values(), (e) => ({ ...e })); },

@@ -1,4 +1,4 @@
-import { createLocalImageCache } from '../../media/tavern-image-cache.js';
+import { requireMediaCache } from '../../media/media-cache-owner.js';
 import { IMAGE_FIELDS, isImageData } from '../../media/image-identity.js';
 import { numberParagraphs } from './marker-placer.js';
 import { MIN_AUTO_IMAGE_BODY_CHARS, floorBodyLength } from './floor-body-length.js';
@@ -57,9 +57,7 @@ export function createAssetGenerationService(deps) {
     const report = deps.report || (() => {});
     const newId = deps.newId || (() => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
     const locks = new Map();
-    const cache = deps.mediaCache || createLocalImageCache(deps.urlApi ? {
-        URL: deps.urlApi, Blob: deps.Blob || globalThis.Blob, atob: globalThis.atob, btoa: globalThis.btoa,
-    } : {});
+    const cache = requireMediaCache(deps.mediaCache, 'asset-generation', deps.thumbStore?.mediaCache);
     const pendingImages = new Set();
     const thumbStore = deps.thumbStore || null;
     const makeThumb = typeof deps.makeThumb === 'function' ? deps.makeThumb : null;
@@ -68,8 +66,12 @@ export function createAssetGenerationService(deps) {
     const imageKey = id => `asset:${id}`;
     const thumbKey = id => `thumb:asset:${id}`;
     const tempCache = cache.auxiliary.scopedRecords('asset-records', {
+        filter: record => record.type === 'background' || record.type === 'sprite',
         onHydrated: chatId => emit({ chatId, reason: 'hydrated' }),
         onClear: () => { pendingImages.clear(); pendingThumbs.clear(); },
+        onError: error => report('error', error.message.startsWith('media-metadata-budget:')
+            ? '当前聊天素材过多，无法完整载入；已停止自动补图，现有图片仍保留。'
+            : '当前聊天素材读取失败；已停止自动补图，请重试。'),
         pendingCount: () => pendingImages.size + pendingThumbs.size,
     });
     let offRendered = null;
@@ -120,7 +122,7 @@ export function createAssetGenerationService(deps) {
 
     function currentTempRecords() {
         const chatId = messageHost.getChatId();
-        if (!stopped) void loadTempRecords(chatId);
+        if (!stopped) void loadTempRecords(chatId).catch(() => {});
         return chatId === tempCache.scope ? tempCache.records : new Map();
     }
 

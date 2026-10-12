@@ -1,3 +1,4 @@
+import { createAssetGenerationService } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -13,7 +14,7 @@ import { buildNaiV4Request, supportsNaiTransparentBackground } from '../src/gene
 import { normalizeAutoIllustrationSettings, isStrictBackgroundMatch } from '../src/generated-images/illustration/auto-illustration-settings.js';
 import { createAlphaMatte, hasTransparentBorder, matteSolidBackground, findOpaqueBounds } from '../src/media/alpha-matte.js';
 import { createMemoryGeneratedAssetStore } from '../src/media/generated-asset-store.js';
-import { createAssetGenerationService } from '../src/generated-images/illustration/asset-generation-service.js';
+
 
 const USER_ASSETS = {
     enabled: true,
@@ -687,7 +688,7 @@ test('gate:image-backend:legacy-nai-key-merges-into-unified-settings', async () 
 });
 
 test('gate:assets:dbgen-source-skips-secondary-llm', async () => {
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const floor = { chatId: 'c', messageId: 3, swipeId: 0, isAi: true, isLatest: true, text: '[igs-scene:废弃工厂|夜晚|雨]\n雨声。' };
     let llmCalls = 0;
@@ -715,7 +716,7 @@ test('gate:assets:dbgen-source-skips-secondary-llm', async () => {
 });
 
 test('gate:assets:later-backgrounds-skip-recall-and-already-generated', async () => {
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const { addGeneratedAssetToLibrary } = await import('../src/scene/asset-match.js');
     const text = [
@@ -775,7 +776,7 @@ test('gate:assets:later-backgrounds-skip-recall-and-already-generated', async ()
 });
 
 test('gate:assets:dbgen-sprite-passes-frontend-templates', async () => {
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const floor = { chatId: 'c', messageId: 3, swipeId: 0, isAi: true, isLatest: true, text: '[igs-char:神秘少女|平静|你来了。]' };
     const caption = {
@@ -824,7 +825,7 @@ test('gate:assets:dbgen-sprite-passes-frontend-templates', async () => {
 });
 
 test('gate:assets:dbgen-sprite-white-background-when-transparent-off', async () => {
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const floor = { chatId: 'c', messageId: 3, swipeId: 0, isAi: true, isLatest: true, text: '[igs-char:神秘少女|平静|你来了。]' };
     const caption = {
@@ -865,7 +866,7 @@ test('gate:assets:dbgen-sprite-white-background-when-transparent-off', async () 
 });
 
 test('gate:assets:dbgen-sprites-write-once-then-paint-and-split-past-eight', async () => {
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const names = ['甲', '乙', '丙'];
     const floor = {
@@ -1037,7 +1038,7 @@ test('gate:alpha-matte:keeps-png-text-chunks-after-crop', async () => {
 });
 
 test('gate:generated-assets:get-image-data-url-for-download', async () => {
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const store = createMemoryGeneratedAssetStore();
     await store.putImage({ id: 'img-1', dataUrl: 'data:image/png;base64,AAAA', type: 'sprite', createdAt: 1 });
@@ -1454,7 +1455,7 @@ test('gate:assets:expression-set-splits-writes-by-nine', async () => {
             return { ok: true, dataUrl: 'data:image/png;base64,AAA', prompt: { positive: text, negative: '' } };
         },
     };
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const service = createAssetGenerationService({
         messageHost: { getChatId: () => 'c1', getUserName: () => '', readPreviousAiTexts: () => [] },
         llm: null, nai, store: createMemoryGeneratedAssetStore(), getSettings: () => ({}), events: null, matte: async (dataUrl) => dataUrl,
@@ -1855,7 +1856,7 @@ test('gate:assets:stopped-expression-set-keeps-captions-and-resume-paints-withou
             return { ok: true, dataUrl: 'data:image/png;base64,AAA', prompt: { positive: 'x', negative: '' } };
         },
     };
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const service = createAssetGenerationService({
         messageHost: { getChatId: () => 'c1', getUserName: () => '', readPreviousAiTexts: () => [] },
         llm: null, nai, store: createMemoryGeneratedAssetStore(), getSettings: () => ({}), events: null, matte: async (dataUrl) => dataUrl,

@@ -519,7 +519,7 @@ function makeFakes({ text, isLatest = true, llmReply = REPLY, naiResult, setting
 const LONG_LINE = '她靠在窗边，看着外面的雨一点点停下来，城市的灯光一盏接一盏地亮起。';
 
 test('gate:illustration:skips-auto-when-body-under-50-chars', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const reports = [];
     const fakes = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
@@ -557,7 +557,7 @@ test('gate:illustration:body-length-follows-reader-source-filter', async () => {
 });
 
 test('gate:illustration:service-disabled-makes-no-calls', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const store = createMemoryIllustrationStore();
     const fake = makeFakes({ text: NSFW_TEXT });
@@ -568,7 +568,7 @@ test('gate:illustration:service-disabled-makes-no-calls', async () => {
 });
 
 test('gate:illustration:service-skips-non-latest-floor', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, isLatest: false, settings: { nsfwEnabled: true } });
     assert.equal((await createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore() }).processMessage(5)).reason, 'not-eligible');
@@ -576,7 +576,8 @@ test('gate:illustration:service-skips-non-latest-floor', async () => {
 });
 
 test('gate:illustration:service-nsfw-generates-and-writes-marker', async () => {
-    const { createAutoIllustrationService, ILLUSTRATION_UPDATED_EVENT } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
+    const { ILLUSTRATION_UPDATED_EVENT } = await import('../src/generated-images/illustration/auto-illustration-service.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const store = createMemoryIllustrationStore();
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 } });
@@ -648,7 +649,7 @@ test('gate:illustration:cg-size-swaps-on-mobile', async () => {
 });
 
 test('gate:illustration:dbgen-cg-calls-only-the-plugin-prompt-and-generate-apis', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const calls = { llm: 0, generate: 0, floor: [], paint: [] };
     let current = NSFW_TEXT;
@@ -695,7 +696,7 @@ test('gate:illustration:dbgen-cg-calls-only-the-plugin-prompt-and-generate-apis'
 });
 
 test('gate:illustration:service-nsfw-off-never-rolls-interlude', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { interludeEnabled: true, interludeProbability: 100 } });
     await createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore(), random: () => 0 }).processMessage(5);
@@ -703,7 +704,7 @@ test('gate:illustration:service-nsfw-off-never-rolls-interlude', async () => {
 });
 
 test('gate:illustration:service-interlude-probability-gate', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     for (const [probability, selected] of [[30, false], [60, true]]) {
         const store = createMemoryIllustrationStore();
@@ -715,7 +716,7 @@ test('gate:illustration:service-interlude-probability-gate', async () => {
 });
 
 test('gate:illustration:service-decided-floor-not-replanned', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const store = createMemoryIllustrationStore();
@@ -727,7 +728,7 @@ test('gate:illustration:service-decided-floor-not-replanned', async () => {
 });
 
 test('gate:illustration:service-concurrent-calls-share-lock', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const service = createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore() });
@@ -736,7 +737,7 @@ test('gate:illustration:service-concurrent-calls-share-lock', async () => {
 });
 
 test('gate:illustration:service-llm-failure-no-write', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true }, llmReply: new Error('x') });
     const store = createMemoryIllustrationStore();
@@ -748,7 +749,7 @@ test('gate:illustration:service-llm-failure-no-write', async () => {
 });
 
 test('gate:illustration:service-stale-text-aborts', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     fake.llm.request = async () => { fake.messageHost.setText('被用户改了'); return REPLY; };
@@ -759,7 +760,7 @@ test('gate:illustration:service-stale-text-aborts', async () => {
 });
 
 test('gate:illustration:service-tail-append-during-planning-still-writes', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const tail = '\n\n<parallel>与此同时，另一边……</parallel>';
@@ -786,7 +787,7 @@ test('gate:illustration:appended-tail-only-accepts-pure-append', async () => {
 });
 
 test('gate:illustration:service-stale-when-new-floor-arrives-during-planning', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const originalReadFloor = fake.messageHost.readFloor;
@@ -802,7 +803,7 @@ test('gate:illustration:service-stale-when-new-floor-arrives-during-planning', a
 });
 
 test('gate:illustration:service-stale-during-regex-setup-skips-write-and-nai', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createIllustrationMessageHost } = await import('../src/host/illustration-message-host.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const ctx = { chatId: 'c1', chat: Array.from({ length: 5 }, () => ({ is_user: true, mes: 'user' })) };
@@ -827,7 +828,7 @@ test('gate:illustration:service-stale-during-regex-setup-skips-write-and-nai', a
 });
 
 test('gate:illustration:service-nai-failure-marks-slot-failed', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true }, naiResult: { ok: false, error: 'x' } });
     const store = createMemoryIllustrationStore();
@@ -839,7 +840,7 @@ test('gate:illustration:service-nai-failure-marks-slot-failed', async () => {
 });
 
 test('gate:illustration:get-url-hydrates-from-store', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT });
     const store = createMemoryIllustrationStore();
@@ -880,7 +881,7 @@ test('gate:illustration:settings-value-types', async () => {
 });
 
 test('gate:illustration:failed-floor-retries-and-reports-real-error', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const chat = [{ is_user: true, mes: 'hi' }, { mes: '[igs-scene:卧室|夜晚|晴|nsfw]\n她走进房间。', swipe_id: 0 }];
@@ -970,7 +971,7 @@ test('gate:illustration:nai-client-uses-custom-endpoint-or-official', async () =
 });
 
 test('gate:illustration:service-retries-database-img-marker-without-replanning', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({
         text: NSFW_TEXT.replace('[igs-scene:卧室|夜晚|晴|NSFW]\n', '[igs-scene:卧室|夜晚|晴|NSFW]\n<IMG>1</IMG>\n'),
@@ -990,7 +991,7 @@ test('gate:illustration:service-retries-database-img-marker-without-replanning',
 
 
 test('gate:illustration:failed-slot-retries-without-replanning', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 }, naiResult: { ok: false, error: 'NAI 服务端错误（HTTP 500）' } });
     const store = createMemoryIllustrationStore();
@@ -1007,7 +1008,7 @@ test('gate:illustration:failed-slot-retries-without-replanning', async () => {
 });
 
 test('gate:illustration:manual-interlude-ignores-probability', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: SFW_TEXT, settings: { interludeEnabled: true, interludeProbability: 0 } });
     const store = createMemoryIllustrationStore();
@@ -1018,7 +1019,7 @@ test('gate:illustration:manual-interlude-ignores-probability', async () => {
 });
 
 test('gate:illustration:slot-count-mismatch-still-generates', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 2 } });
     const result = await createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore() }).processMessage(5);
@@ -1062,7 +1063,7 @@ test('gate:illustration:nsfw-cg-keeps-floor-wide-behaviour', () => {
 });
 
 test('gate:illustration:dbgen-cg-does-not-splice-character-dna', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const text = '[igs-scene:卧室|夜晚|晴|NSFW]\n[igs-char:小雪|开心|一段。]\n二段。\n三段。';
     let current = text;
@@ -1115,7 +1116,7 @@ test('gate:illustration:message-host-latest-ignores-plugin-floors-after-ai', asy
 
 // 规划期间正文开头 / 中间被插了内容：标记按前后文搬到新正文，照常出图；对不上的那张丢掉。
 test('gate:illustration:service-mid-edit-during-planning-transplants-markers', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const head = '<parallel>与此同时，另一边……</parallel>\n';
@@ -1138,7 +1139,7 @@ test('gate:illustration:transplant-markers-follows-context', async () => {
 });
 
 test('gate:illustration:backfill-old-floor-only-when-enabled-and-not-yet-decided', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const off = makeFakes({ text: NSFW_TEXT, isLatest: false, settings: { nsfwEnabled: true } });
     assert.equal((await createAutoIllustrationService({ ...off, store: createMemoryIllustrationStore() }).processMessage(5, { backfill: true })).reason, 'disabled', '开关默认关');

@@ -1,13 +1,14 @@
-import { createLocalImageCache } from '../../media/tavern-image-cache.js';
+import { requireMediaCache } from '../../media/media-cache-owner.js';
 // 物品图记录与图片的按聊天缓存：只读本地存储，不联网；同步取图未命中时异步补载并发事件通知重绘。
-export function createItemRecordCache({ store, type, emit, mediaCache }) {
-    const images = mediaCache || createLocalImageCache({});
+export function createItemRecordCache({ store, type, emit, mediaCache, onError }) {
+    const images = requireMediaCache(mediaCache, 'item-records');
     const keyOf = id => `asset:${id}`;
     const pending = new Set();
     const metadata = images.auxiliary.scopedRecords('item-records', {
         filter: record => record.type === type,
         onHydrated: chatId => emit({ chatId, reason: 'hydrated' }),
         onClear: () => pending.clear(), pendingCount: () => pending.size,
+        onError,
     });
     const records = metadata.records;
 

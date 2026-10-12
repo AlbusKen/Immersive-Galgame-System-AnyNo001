@@ -1,3 +1,4 @@
+import { createAssetGenerationService, createAutoIllustrationService } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryGeneratedAssetStore } from '../src/media/generated-asset-store.js';
@@ -6,8 +7,8 @@ import { createMemoryPhotoAlbumStore } from '../src/media/photo-album.js';
 import { withTavernGeneratedAssetFiles } from '../src/media/tavern-generated-assets.js';
 import { withTavernIllustrationFiles } from '../src/media/tavern-illustrations.js';
 import { withTavernPhotoFiles } from '../src/media/tavern-photos.js';
-import { createAssetGenerationService } from '../src/generated-images/illustration/asset-generation-service.js';
-import { createAutoIllustrationService } from '../src/generated-images/illustration/auto-illustration-service.js';
+
+
 import { createLocalImageCache, localImageCacheFor } from '../src/media/tavern-image-cache.js';
 import { mediaFileGcFor } from '../src/media/media-file-gc.js';
 import { fakeMediaServer, pixel, settleMedia } from './helpers/fake-media-server.js';

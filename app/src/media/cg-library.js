@@ -1,4 +1,4 @@
-import { createLocalImageCache } from './tavern-image-cache.js';
+import { requireMediaCache } from './media-cache-owner.js';
 // CG 库服务。三层数据各管各的：
 // 1. 目录（igs-cg-index entries）：每张楼层 CG / 照片一条轻记录，打开 CG 库只读这里。
 // 2. 缩略图（igs-cg-index thumbs）：网格只放缩略图，第一次看到某张时由原图生成后留下。
@@ -152,7 +152,7 @@ export function withCgIndexSync(store, indexStore) {
 
 export function createCgLibrary(deps = {}) {
     const { illustrationStore, photoStore, marksStore, indexStore, clearIllustration } = deps;
-    const mediaCache = deps.mediaCache || deps.indexStore?.mediaCache || createLocalImageCache({});
+    const mediaCache = requireMediaCache(deps.mediaCache || deps.indexStore?.mediaCache, 'cg-library', deps.indexStore?.mediaCache);
     const thumbKey = entry => `thumb:cg:${entry.key}:${String(entry.updatedAt || '')}`;
     const timeouts = { ...CG_LIBRARY_TIMEOUTS, ...(deps.timeouts || {}) };
     const now = typeof deps.now === 'function' ? deps.now : () => new Date().toISOString();

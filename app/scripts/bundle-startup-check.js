@@ -11,8 +11,11 @@ export function checkBundleStartup(file, version) {
             if (!window.IGS || window.IGS.version !== ${JSON.stringify(version)} || typeof window.IGS.openSettings !== 'function') {
                 throw new Error('IGS startup did not create the expected public API');
             }
-            window.IGS.destroy();
-            await new Promise(resolve => setImmediate(resolve));
+            const stopped = await window.IGS.shutdown();
+            if (!stopped?.ok || window.IGS) throw new Error('IGS did not complete shutdown');
+            bundle.bootstrapIGS({ global: window, autoAttachMagicWand: false });
+            if (!window.IGS || window.IGS.version !== ${JSON.stringify(version)}) throw new Error('IGS did not restart after shutdown');
+            if (!(await window.IGS.shutdown())?.ok) throw new Error('IGS restart did not shut down');
             process.exit(0);
         `;
         const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 15000 });

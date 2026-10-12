@@ -1,6 +1,7 @@
+import { createCgLibraryView } from './helpers/media-fixtures.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createCgLibraryView } from '../src/visual/igs-ui/cg-library-view.js';
+
 import { createLocalImageCache } from '../src/media/tavern-image-cache.js';
 import { pixel, settleMedia } from './helpers/fake-media-server.js';
 

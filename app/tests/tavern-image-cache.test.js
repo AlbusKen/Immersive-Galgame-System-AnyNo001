@@ -1,11 +1,12 @@
+import { createCgLibrary } from './helpers/media-fixtures.js';
 import { createFakeIndexedDB } from './helpers/fake-idb.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createLocalImageCache, normalizeImageCacheCount, DEFAULT_IMAGE_CACHE_COUNT } from '../src/media/tavern-image-cache.js';
+import { createLocalImageCache, localImageCacheFor, normalizeImageCacheCount, DEFAULT_IMAGE_CACHE_COUNT } from '../src/media/tavern-image-cache.js';
 import { withTavernIllustrationFiles } from '../src/media/tavern-illustrations.js';
 import { createMemoryIllustrationStore } from '../src/media/illustration-store.js';
-import { createCgLibrary } from '../src/media/cg-library.js';
+
 
 test('gate:image-cache:second-read-uses-local-copy-and-drop-fetches-again', async () => {
     const indexedDB = createFakeIndexedDB();
@@ -89,7 +90,7 @@ test('gate:image-cache:cg-library-shows-a-ready-image-before-the-slow-one', asyn
     const store = createMemoryIllustrationStore();
     await store.putSlot('chat|1|0', { slot: 1, status: 'done', dataUrl: 'user/images/igs-cg/fast.png' });
     await store.putSlot('chat|2|0', { slot: 1, status: 'done', dataUrl: 'user/images/igs-cg/slow.png' });
-    const library = createCgLibrary({ illustrationStore: withTavernIllustrationFiles(store, globalObject), clearIllustration: async () => ({ ok: true }) });
+    const library = createCgLibrary({ mediaCache: localImageCacheFor(globalObject), illustrationStore: withTavernIllustrationFiles(store, globalObject), clearIllustration: async () => ({ ok: true }) });
     const synced = await library.syncIndex();
     const entries = synced.entries.sort((a, b) => a.messageId - b.messageId);
     assert.deepEqual(entries.map((e) => e.key), ['chat|1|0|1', 'chat|2|0|1']);

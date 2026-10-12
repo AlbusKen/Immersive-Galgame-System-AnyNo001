@@ -10,6 +10,7 @@ export function createMediaRuntime(globalObject, { generatedAssetStore } = {}) {
     const offReferences = gc.register(async () => [...storedImageReferences(globalObject).paths].map(dataUrl => ({ dataUrl })));
     const oldCache = globalObject.indexedDB?.deleteDatabase?.('igs-asset-thumbs');
     if (oldCache) oldCache.onerror = () => {};
+    let destroying = null;
     return {
         cache,
         clearCache: options => cache.clear(options),
@@ -28,6 +29,16 @@ export function createMediaRuntime(globalObject, { generatedAssetStore } = {}) {
         },
         flush: () => flushMediaJournals(globalObject),
         retryDeletes: () => gc.drain(),
-        destroy() { offReferences(); stopMediaJournals(globalObject); gc.stop(); disposeMapImageRepository(globalObject); void disposeLocalImageCache(globalObject); },
+        destroy() {
+            if (destroying) return destroying;
+            offReferences();
+            const settled = Promise.allSettled([stopMediaJournals(globalObject), gc.stop()]).then(results => {
+                const failed = results.find(result => result.status === 'rejected');
+                if (failed) throw failed.reason;
+            });
+            disposeMapImageRepository(globalObject);
+            destroying = disposeLocalImageCache(globalObject, { expectedCache: cache, settled });
+            return destroying;
+        },
     };
 }

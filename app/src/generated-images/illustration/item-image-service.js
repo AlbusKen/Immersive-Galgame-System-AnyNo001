@@ -59,7 +59,10 @@ export function createItemImageService(deps) {
     const report = deps.report || (() => {});
     const newId = deps.newId || (() => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
     const emit = (detail) => { if (events && typeof events.emit === 'function') events.emit(ITEM_IMAGE_UPDATED_EVENT, detail); };
-    const cache = createItemRecordCache({ store, type: ITEM_ASSET_TYPE, emit, mediaCache: deps.mediaCache });
+    const cache = createItemRecordCache({ store, type: ITEM_ASSET_TYPE, emit, mediaCache: deps.mediaCache,
+        onError: error => report('error', error.message.startsWith('media-metadata-budget:')
+            ? '当前聊天物品过多，无法完整载入；已停止自动补图，现有图片仍保留。'
+            : '当前聊天物品读取失败；已停止自动补图，请重试。') });
     const floorLocks = new Map();
     const inflight = new Map();
     let queue = Promise.resolve();
@@ -247,7 +250,7 @@ export function createItemImageService(deps) {
     // 同步取图（演出与背包格位用）：只读本地缓存，未命中时异步补载并发事件。
     function imageUrlFor(name, chatId = chatOf()) {
         if (!chatId || !normalizeItemName(name)) return '';
-        void cache.ensure(chatId);
+        void cache.ensure(chatId).catch(() => {});
         const record = recordFor(chatId, name);
         return record && record.status === 'ready' ? cache.imageUrl(record.imageId) : '';
     }
