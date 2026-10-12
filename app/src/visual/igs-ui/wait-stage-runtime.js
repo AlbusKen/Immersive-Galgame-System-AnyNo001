@@ -552,9 +552,12 @@ export function createWaitStageRuntime(options = {}) {
         isGameActive() {
             return Boolean(game);
         },
-        close: closeRoot,
-        getRoot() {
-            return root;
+        // 生成期间宿主每 150ms 报一次活动：层已经挂着就别重建，否则台词永远停在第一句、点开的小游戏会被抹掉。
+        isOpen(host) {
+            if (!root) return false;
+            if (host && root.parentNode !== host) return false;
+            return true;
         },
+        close: closeRoot,
     };
 }

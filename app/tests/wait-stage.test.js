@@ -181,3 +181,26 @@ test('gate:wait-stage:style-layer-sits-above-dialog-below-toolbar', () => {
     assert.match(WAIT_STAGE_STYLE_TEXT, /#igs-overlay \.igs-waitstage\{position:absolute;inset:0;z-index:6/);
     assert.match(WAIT_STAGE_STYLE_TEXT, /prefers-reduced-motion/);
 });
+
+test('gate:wait-stage:settings-row-is-reachable-from-the-perf-page', async () => {
+    const { renderPerformanceSettings } = await import('../src/visual/igs-ui/performance-settings-layout.js');
+    const collapsed = renderPerformanceSettings({ waitStage: { enabled: true } });
+    assert.match(collapsed, /data-switch="readerSettings\.waitStage\.enabled"/);
+    assert.match(collapsed, /等待过场/);
+    const expanded = renderPerformanceSettings(
+        { waitStage: { enabled: true, games: true, voice: true, lineSeconds: 6 } },
+        {},
+        (key) => key === 'perf-wait-stage',
+    );
+    assert.match(expanded, /waitStage\.lineSeconds/);
+    assert.match(expanded, /waitStage\.games/);
+    assert.match(expanded, /waitStage\.voice/);
+    assert.match(expanded, /每句停留/);
+});
+
+test('gate:wait-stage:memory-needs-three-unique-pictures', () => {
+    const same = [{ url: 'a' }, { url: 'a' }, { url: 'a' }];
+    assert.equal(availableWaitStageGames({ pictures: same }, []).includes('memory'), false);
+    const distinct = [{ url: 'a' }, { url: 'b' }, { url: 'c' }];
+    assert.equal(availableWaitStageGames({ pictures: distinct }, []).includes('memory'), true);
+});

@@ -1297,6 +1297,8 @@ export function createIgsReaderHost(options = {}) {
             ? (current.dom && current.dom.embeddedMount && current.dom.embeddedMount.host)
             : (current.dom && current.dom.overlay);
         if (!host) return;
+        // 层已经在等就别重建：重建会把台词轮换打回第一句，也会抹掉玩家点开的小游戏。
+        if (waitStage.isOpen(host)) return;
         const settings = (current.snapshot && current.snapshot.readerSettings && current.snapshot.readerSettings.waitStage) || null;
         waitStage.open(host, { embedded, settings, model: null });
         void refreshWaitStageModel(current);
@@ -1361,8 +1363,10 @@ export function createIgsReaderHost(options = {}) {
         const mount = current.dom && current.dom.embeddedMount;
         const host = mount && mount.host;
         if (host && host.removeAttribute) host.removeAttribute('data-igs-embedded-loading');
-        // 玩家正在玩的那局不能收：让他玩完，由 onExitReady 再换页。
-        if (!waitStage.isGameActive()) waitStage.close();
+        // 等已经结束（超时、宿主没回、切模式）但玩家还在玩：标成收场态，让他玩完这局自己收层。
+        // 不直接移除，否则正玩的一局被当场抹掉；也不能留在等待态，否则层会一直挂着不消失。
+        if (waitStage.isGameActive()) waitStage.replyArrived();
+        else waitStage.close();
         if (current.dom && current.dom.root && current.dom.root.style) current.dom.root.style.display = '';
     }
 
@@ -1370,6 +1374,8 @@ export function createIgsReaderHost(options = {}) {
         if (!current || !current.dom || !current.dom.root) return;
         const root = current.dom.root;
         const doc = resolveEmbeddedDocument(current);
+        // 换楼要换宿主节点，留在旧宿主里的层一并作废（同 syncReaderMountForMode）。
+        waitStage.close();
         teardownEmbeddedMount(current.dom.embeddedMount);
         current.dom.embeddedMount = mountEmbeddedRoot(doc, root, message, message && message.id);
         if (!current.dom.embeddedMount) {
@@ -1393,6 +1399,9 @@ export function createIgsReaderHost(options = {}) {
         if (current.dom.embeddedMount) {
             const wasStreaming = current.streamPhase === 'streaming';
             exitEmbeddedLoading();
+            // 宿主节点马上要被拆掉：层连同宿主一起消失，内部的游戏状态必须一并清掉，
+            // 否则 isGameActive() 会一直为真，之后再也关不掉。
+            waitStage.close();
             (doc.documentElement || doc.body).appendChild(root);
             teardownEmbeddedMount(current.dom.embeddedMount);
             current.dom.embeddedMount = null;

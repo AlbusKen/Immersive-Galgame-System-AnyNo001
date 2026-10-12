@@ -28,13 +28,6 @@ export const WAIT_STAGE_FALLBACK_LINES = Object.freeze([
     '正写得入神，别急…',
 ]);
 
-export const WAIT_STAGE_EXIT_LINES = Object.freeze([
-    '写好了，正在铺开…',
-    '正在把这一幕放进画面…',
-    '收个尾，马上就好…',
-    '文字已经到门口了…',
-]);
-
 export const WAIT_STAGE_GAME_LINES = Object.freeze({
     win: ['……这局算你的。', '运气不错嘛。', '好吧，你赢了。', '再来，我不信了。'],
     lose: ['承让了。', '还是我比较稳。', '再来一局？', '下次可别怪我不客气。'],
@@ -42,7 +35,6 @@ export const WAIT_STAGE_GAME_LINES = Object.freeze({
     right: ['答对了。', '没错，是我说的。', '记得挺清楚嘛。'],
     wrong: ['……不是这句。', '再想想？', '记岔了吧。'],
     start: ['闲着也是闲着，来一局？', '要不要玩点什么？', '等着的工夫，来一把？'],
-    empty: ['素材还不够，先去攒几张图吧。'],
 });
 
 export function waitStageGameLine(kind, random = Math.random) {
@@ -88,7 +80,10 @@ export const WAIT_STAGE_GAME_LABELS = Object.freeze({
 
 // 只有素材够玩时才列出对应的游戏；都不够就只剩猜拳（不需要任何素材）。
 export function availableWaitStageGames(art = {}, lines = []) {
-    const pictures = Array.isArray(art.pictures) ? art.pictures.filter((item) => item && item.url) : [];
+    // 翻牌按去重后的图算：同一张图重复只算一对，否则列出来也翻不出几手。
+    const pictures = new Set((Array.isArray(art.pictures) ? art.pictures : [])
+        .map((item) => String(item && item.url || '').trim())
+        .filter(Boolean));
     const sprites = Array.isArray(art.sprites) ? art.sprites.filter((item) => item && item.url) : [];
     const names = new Set();
     for (const line of lines) {
@@ -100,7 +95,7 @@ export function availableWaitStageGames(art = {}, lines = []) {
     return WAIT_STAGE_GAMES.filter((id) => {
         if (id === 'rps') return true;
         if (id === 'whosaid') return quotedCount >= 2 && names.size >= 2;
-        if (id === 'memory') return pictures.length >= 3;
+        if (id === 'memory') return pictures.size >= 3;
         return sprites.length >= 2 && moods.size >= 2;
     });
 }
@@ -128,7 +123,6 @@ export const WAIT_STAGE_STYLE_TEXT = `
 .igs-ws-quote::after{content:"」";opacity:.42;}
 .igs-ws-who{font-size:11px;letter-spacing:.16em;opacity:.5;}
 .igs-ws-note{color:color-mix(in srgb,var(--igs-bar-ink,#e8e5df) 62%,transparent);font-size:13px;line-height:1.7;letter-spacing:.14em;animation:igs-ws-rise .45s ease-out both;}
-.igs-ws-hint{margin-top:2px;color:color-mix(in srgb,var(--igs-bar-ink,#e8e5df) 34%,transparent);font-size:11px;letter-spacing:.18em;}
 .igs-ws-games{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;margin-top:-2px;}
 .igs-ws-chip{box-sizing:border-box;height:30px;padding:0 14px;border:0;border-radius:999px;background:color-mix(in srgb,var(--igs-bar-ink,#fff) 9%,transparent);color:inherit;font:inherit;font-size:12px;letter-spacing:.08em;cursor:pointer;transition:background .18s ease,opacity .18s ease;}
 .igs-ws-chip:hover{background:color-mix(in srgb,var(--igs-bar-ink,#fff) 18%,transparent);}

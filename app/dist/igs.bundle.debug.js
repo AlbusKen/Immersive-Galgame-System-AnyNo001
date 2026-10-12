@@ -32828,7 +32828,7 @@ function createIgsReaderHost(options = {}) {
     // 物品图到达后重绘阅读器：演出占位与背包格位据此替换为生图。
     const offItemImageUpdatedRaw = typeof options.onItemImageUpdated === 'function'
         // 物品图可能一批连着到，和生图一样按窗口合并成一次重绘。
-        ? options.onItemImageUpdated(() => { scheduleImageRefresh({ reader: Boolean(state.activeReader), settings: Boolean(state.activeSettings) }); })
+        ? options.onItemImageUpdated(() => { if (state.activeReader) scheduleImageRefresh({ reader: true }); })
         : null;
     const offItemImageUpdated = typeof offItemImageUpdatedRaw === 'function' ? offItemImageUpdatedRaw : () => {};
     // 下面几项被 return host 之后的函数引用，必须声明在 return 之前，否则压缩时会被当作死代码删掉。
@@ -33711,6 +33711,8 @@ function createIgsReaderHost(options = {}) {
             ? (current.dom && current.dom.embeddedMount && current.dom.embeddedMount.host)
             : (current.dom && current.dom.overlay);
         if (!host) return;
+        // 层已经在等就别重建：重建会把台词轮换打回第一句，也会抹掉玩家点开的小游戏。
+        if (waitStage.isOpen(host)) return;
         const settings = (current.snapshot && current.snapshot.readerSettings && current.snapshot.readerSettings.waitStage) || null;
         waitStage.open(host, { embedded, settings, model: null });
         void refreshWaitStageModel(current);
@@ -33775,8 +33777,10 @@ function createIgsReaderHost(options = {}) {
         const mount = current.dom && current.dom.embeddedMount;
         const host = mount && mount.host;
         if (host && host.removeAttribute) host.removeAttribute('data-igs-embedded-loading');
-        // 玩家正在玩的那局不能收：让他玩完，由 onExitReady 再换页。
-        if (!waitStage.isGameActive()) waitStage.close();
+        // 等已经结束（超时、宿主没回、切模式）但玩家还在玩：标成收场态，让他玩完这局自己收层。
+        // 不直接移除，否则正玩的一局被当场抹掉；也不能留在等待态，否则层会一直挂着不消失。
+        if (waitStage.isGameActive()) waitStage.replyArrived();
+        else waitStage.close();
         if (current.dom && current.dom.root && current.dom.root.style) current.dom.root.style.display = '';
     }
 
@@ -33784,6 +33788,8 @@ function createIgsReaderHost(options = {}) {
         if (!current || !current.dom || !current.dom.root) return;
         const root = current.dom.root;
         const doc = resolveEmbeddedDocument(current);
+        // 换楼要换宿主节点，留在旧宿主里的层一并作废（同 syncReaderMountForMode）。
+        waitStage.close();
         teardownEmbeddedMount(current.dom.embeddedMount);
         current.dom.embeddedMount = mountEmbeddedRoot(doc, root, message, message && message.id);
         if (!current.dom.embeddedMount) {
@@ -33807,6 +33813,9 @@ function createIgsReaderHost(options = {}) {
         if (current.dom.embeddedMount) {
             const wasStreaming = current.streamPhase === 'streaming';
             exitEmbeddedLoading();
+            // 宿主节点马上要被拆掉：层连同宿主一起消失，内部的游戏状态必须一并清掉，
+            // 否则 isGameActive() 会一直为真，之后再也关不掉。
+            waitStage.close();
             (doc.documentElement || doc.body).appendChild(root);
             teardownEmbeddedMount(current.dom.embeddedMount);
             current.dom.embeddedMount = null;
@@ -37130,8 +37139,6 @@ function createIgsReaderHost(options = {}) {
             onResolve: (item, status, name) => { void resolveGeneratedReview(item, status, name); },
             outfitAsks,
             onOutfit: (ask, picked) => resolveOutfitAsk(ask, picked),
-            hasMore: Boolean(service.reviewPage?.(floorKey)?.hasNext),
-            onMore: () => openSettings({ page: 'review', mode: current.mode || 'pc' }),
         });
     }
 
@@ -37204,10 +37211,6 @@ function createIgsReaderHost(options = {}) {
     async function resolveGeneratedReview(item, status, name) {
         const service = options.generatedAssets;
         if (!service || !item) return;
-        try {
-            item = await service.readRecord(item.key);
-            if (!item) { writeToastSafe('这份素材已不存在，请重新读取。'); return; }
-        } catch (error) { writeToastSafe('素材记录读取失败，可到素材 → 待确认中重新读取。'); return; }
         // 「加入素材库并编辑 DNA」= 先按普通入库处理，成功后再打开 DNA 候选确认；候选不自动写入。
         const withDna = status === 'library-dna' && item.type === 'sprite';
         if (status === 'library-dna') status = 'library';
@@ -37240,12 +37243,7 @@ function createIgsReaderHost(options = {}) {
             addedName = added.name;
             writeToastSafe(`已放入角色立绘「${added.name}」`);
         }
-        if (typeof service.setStatus === 'function') {
-            try {
-                const result = await service.setStatus(item.key, status);
-                if (result?.ok === false) { writeToastSafe('素材状态保存失败，请重新读取后重试。'); return; }
-            } catch (error) { writeToastSafe('素材状态保存失败，请重新读取后重试。'); return; }
-        }
+        if (typeof service.setStatus === 'function') await service.setStatus(item.key, status);
         if (state.activeReader) rerenderActiveReader();
         if (withDna && addedName) openDnaCandidate(addedName, item.tags);
     }
@@ -47248,12 +47246,6 @@ const WAIT_STAGE_FALLBACK_LINES = Object.freeze([
     '情节正往前挪…',
     '正写得入神，别急…',
 ]);
-const WAIT_STAGE_EXIT_LINES = Object.freeze([
-    '写好了，正在铺开…',
-    '正在把这一幕放进画面…',
-    '收个尾，马上就好…',
-    '文字已经到门口了…',
-]);
 const WAIT_STAGE_GAME_LINES = Object.freeze({
     win: ['……这局算你的。', '运气不错嘛。', '好吧，你赢了。', '再来，我不信了。'],
     lose: ['承让了。', '还是我比较稳。', '再来一局？', '下次可别怪我不客气。'],
@@ -47261,7 +47253,6 @@ const WAIT_STAGE_GAME_LINES = Object.freeze({
     right: ['答对了。', '没错，是我说的。', '记得挺清楚嘛。'],
     wrong: ['……不是这句。', '再想想？', '记岔了吧。'],
     start: ['闲着也是闲着，来一局？', '要不要玩点什么？', '等着的工夫，来一把？'],
-    empty: ['素材还不够，先去攒几张图吧。'],
 });
 function waitStageGameLine(kind, random = Math.random) {
     const pool = WAIT_STAGE_GAME_LINES[kind] || WAIT_STAGE_GAME_LINES.start;
@@ -47304,7 +47295,10 @@ const WAIT_STAGE_GAME_LABELS = Object.freeze({
 
 // 只有素材够玩时才列出对应的游戏；都不够就只剩猜拳（不需要任何素材）。
 function availableWaitStageGames(art = {}, lines = []) {
-    const pictures = Array.isArray(art.pictures) ? art.pictures.filter((item) => item && item.url) : [];
+    // 翻牌按去重后的图算：同一张图重复只算一对，否则列出来也翻不出几手。
+    const pictures = new Set((Array.isArray(art.pictures) ? art.pictures : [])
+        .map((item) => String(item && item.url || '').trim())
+        .filter(Boolean));
     const sprites = Array.isArray(art.sprites) ? art.sprites.filter((item) => item && item.url) : [];
     const names = new Set();
     for (const line of lines) {
@@ -47316,7 +47310,7 @@ function availableWaitStageGames(art = {}, lines = []) {
     return WAIT_STAGE_GAMES.filter((id) => {
         if (id === 'rps') return true;
         if (id === 'whosaid') return quotedCount >= 2 && names.size >= 2;
-        if (id === 'memory') return pictures.length >= 3;
+        if (id === 'memory') return pictures.size >= 3;
         return sprites.length >= 2 && moods.size >= 2;
     });
 }
@@ -47343,7 +47337,6 @@ const WAIT_STAGE_STYLE_TEXT = `
 .igs-ws-quote::after{content:"」";opacity:.42;}
 .igs-ws-who{font-size:11px;letter-spacing:.16em;opacity:.5;}
 .igs-ws-note{color:color-mix(in srgb,var(--igs-bar-ink,#e8e5df) 62%,transparent);font-size:13px;line-height:1.7;letter-spacing:.14em;animation:igs-ws-rise .45s ease-out both;}
-.igs-ws-hint{margin-top:2px;color:color-mix(in srgb,var(--igs-bar-ink,#e8e5df) 34%,transparent);font-size:11px;letter-spacing:.18em;}
 .igs-ws-games{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px;margin-top:-2px;}
 .igs-ws-chip{box-sizing:border-box;height:30px;padding:0 14px;border:0;border-radius:999px;background:color-mix(in srgb,var(--igs-bar-ink,#fff) 9%,transparent);color:inherit;font:inherit;font-size:12px;letter-spacing:.08em;cursor:pointer;transition:background .18s ease,opacity .18s ease;}
 .igs-ws-chip:hover{background:color-mix(in srgb,var(--igs-bar-ink,#fff) 18%,transparent);}
@@ -47378,7 +47371,6 @@ __igsDefine(exports, "weaveWaitStageLines", () => weaveWaitStageLines);
 __igsDefine(exports, "availableWaitStageGames", () => availableWaitStageGames);
 __igsDefine(exports, "WAIT_STAGE_DEFAULTS", () => WAIT_STAGE_DEFAULTS);
 __igsDefine(exports, "WAIT_STAGE_FALLBACK_LINES", () => WAIT_STAGE_FALLBACK_LINES);
-__igsDefine(exports, "WAIT_STAGE_EXIT_LINES", () => WAIT_STAGE_EXIT_LINES);
 __igsDefine(exports, "WAIT_STAGE_GAME_LINES", () => WAIT_STAGE_GAME_LINES);
 __igsDefine(exports, "WAIT_STAGE_GAMES", () => WAIT_STAGE_GAMES);
 __igsDefine(exports, "WAIT_STAGE_GAME_LABELS", () => WAIT_STAGE_GAME_LABELS);
@@ -71691,7 +71683,7 @@ function buildPerformanceBodies(src, extras, isOpen) {
         more,
         fx,
         bodies: {
-            text: [host('playback-speed', extras.playbackSpeed), host('typewriter', extras.typewriter, '逐字显示'), stage.clickWaitMark, stage.textFx, stage.bilingual, host('sentence-paging', extras.sentencePaging)],
+            text: [host('playback-speed', extras.playbackSpeed), host('typewriter', extras.typewriter, '逐字显示'), stage.waitStage, stage.clickWaitMark, stage.textFx, stage.bilingual, host('sentence-paging', extras.sentencePaging)],
             stage: [
                 section('镜头与环境', [stage.transition, stage.cgEntrance, stage.tint, stage.camera, host('weather', extras.weatherFx, '雨雪雾粒子'), fx.crowd, host('stage-shake', extras.stageShake, '冲击时晃屏'), renderPackFields(src, more, { ids: ['camera'] }), renderPackFields(src, more, { ids: ['places'] }), host('cinema-bars', extras.cinemaBars, '只盖背景，CG时收起'), fx.comic, renderPanelSkinField(src, more)]),
                 section('立绘', [stage.motion, stage.actions, stage.turn, stage.cast, renderPackFields(src, more, { ids: ['transform'] }), host('narration-filter', extras.narrationFilter)]),
@@ -108553,10 +108545,13 @@ function createWaitStageRuntime(options = {}) {
         isGameActive() {
             return Boolean(game);
         },
-        close: closeRoot,
-        getRoot() {
-            return root;
+        // 生成期间宿主每 150ms 报一次活动：层已经挂着就别重建，否则台词永远停在第一句、点开的小游戏会被抹掉。
+        isOpen(host) {
+            if (!root) return false;
+            if (host && root.parentNode !== host) return false;
+            return true;
         },
+        close: closeRoot,
     };
 }
 
