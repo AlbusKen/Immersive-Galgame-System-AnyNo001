@@ -63,7 +63,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.41';
+const IGS_VERSION = '0.36.42';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -301,6 +301,8 @@ export function bootstrapIGS(options = {}) {
                 : { ok: false, reason: 'public-api-not-ready' };
         },
         getAdjacentMessage: hasAdjacentMessageCapability() ? resolveAdjacentMessage : null,
+        isUserFloor: (messageId) => Boolean(hostAdapter && typeof hostAdapter.isUserFloor === 'function'
+            && hostAdapter.isUserFloor(messageId)),
         jumpToMessage: jumpToMessage,
         listTurns: hasAdjacentMessageCapability() ? listReaderTurns : null,
         openViewerFromMessage(messageId, mode, openOptions = {}) {

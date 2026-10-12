@@ -154,7 +154,7 @@ import {
 import { buildReaderSourceSignature, createReaderSourceCache } from './reader-source-cache.js';
 import { createImageResourceCache } from '../../media/resource-cache.js';
 import { collectFloorAssetUrls } from './floor-asset-prefetch.js';
-import { createChatStreamObserver } from '../../host/chat-stream-observer.js';
+import { createChatStreamObserver, isUserFloorNode } from '../../host/chat-stream-observer.js';
 import { findAcuDice, formatCheckMessage, resolveDiceCommand } from '../../choices/dice-check.js';
 import { buildResultFxPlan, normalizeResultFxSettings, resultDetailOf } from './fx-result-model.js';
 import { cancelResultFx, playResultFx } from './fx-result.js';
@@ -396,6 +396,7 @@ export function createIgsReaderHost(options = {}) {
         getDocument: () => resolveEmbeddedDocument(state.activeReader),
         onActivity: () => handleChatStreamActivity(),
         onStable: () => handleChatStreamStable(),
+        isUserFloor: (messageId) => isUserFloorId(messageId),
         // 硬超时无条件收起等待。全屏在新楼写完之前会让 onStable 返回 false，继续等。
         onTimeout: () => {
             exitEmbeddedLoading();
@@ -1113,7 +1114,14 @@ export function createIgsReaderHost(options = {}) {
         if (readHostBooleanAttribute(element, ['is_user', 'data-is-user'])) return null;
         if (readHostBooleanAttribute(element, ['is_system', 'data-is-system'])) return null;
         const messageId = readLiveMessageId(element);
-        return messageId != null ? { id: messageId, element } : null;
+        if (messageId == null || isUserFloorId(messageId)) return null;
+        return { id: messageId, element };
+    }
+
+    // 以聊天数据为准：插件改写用户楼时 DOM 的 is_user 可能丢失。
+    function isUserFloorId(messageId) {
+        if (typeof options.isUserFloor !== 'function') return false;
+        try { return options.isUserFloor(messageId) === true; } catch (error) { return false; }
     }
 
     function readHostBooleanAttribute(element, names) {
@@ -4265,6 +4273,8 @@ export function createIgsReaderHost(options = {}) {
                 const target = record && record.target;
                 // 挪出去的插件面板（状态栏、动画小部件）自己刷新不碰正文，不算外部改动，免得每次都重跑一遍藏正文。
                 if (target && target.closest && target.closest('[data-igs-internal-reader="1"], [data-igs-parallel-blocks="1"]')) return false;
+                // 插件改写用户楼不碰 AI 正文，不必重跑。
+                if (isUserFloorNode(target, isUserFloorId)) return false;
                 return true;
             });
             if (external) scheduleEmbeddedStoryHide();

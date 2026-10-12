@@ -213,7 +213,7 @@ export function createChatStreamObserver(opts = {}) {
             observer = new MutationObserverCtor((records) => {
                 // 先做廉价的生成状态判断：非生成期间（阅读器演出、HUD 更新等）直接返回，不逐条检查节点归属。
                 if (lifecycleAvailable && !generationActive && !manualArmed) return;
-                const external = Array.isArray(records) && records.some((record) => !isInternalRecord(record));
+                const external = Array.isArray(records) && records.some((record) => !isInternalRecord(record, opts.isUserFloor));
                 if (!external) return;
                 scheduleActivity();
             });
@@ -284,13 +284,28 @@ export function createChatStreamObserver(opts = {}) {
     };
 }
 
-function isInternalRecord(record) {
+// 用户楼一律不算 AI 回复：发送时新增的用户楼、插件改写用户楼（再触发后台请求）都不进载入态、不提示新楼。
+// 先看 DOM 的 is_user，插件整块重绘丢了属性时再按楼号问聊天数据（isUserFloor）。
+export function isUserFloorNode(node, isUserFloor = null) {
+    const element = node && typeof node.closest !== 'function' ? node.parentElement : node;
+    const mes = element && typeof element.closest === 'function' ? element.closest('.mes') : null;
+    if (!mes || typeof mes.getAttribute !== 'function') return false;
+    const flag = mes.getAttribute('is_user') ?? mes.getAttribute('data-is-user');
+    if (flag === 'true' || flag === '1') return true;
+    if (typeof isUserFloor !== 'function') return false;
+    const raw = mes.getAttribute('mesid') ?? mes.getAttribute('data-mesid');
+    const id = raw == null || raw === '' ? NaN : Number(raw);
+    if (!Number.isFinite(id)) return false;
+    try { return isUserFloor(id) === true; } catch (error) { return false; }
+}
+
+function isInternalRecord(record, isUserFloor) {
     const target = record && record.target;
-    if (isInternalNode(target)) return true;
+    if (isInternalNode(target) || isUserFloorNode(target, isUserFloor)) return true;
     const changed = []
         .concat(record && record.addedNodes ? Array.from(record.addedNodes) : [])
         .concat(record && record.removedNodes ? Array.from(record.removedNodes) : []);
-    return changed.length > 0 && changed.every(isInternalNode);
+    return changed.length > 0 && changed.every((node) => isInternalNode(node) || isUserFloorNode(node, isUserFloor));
 }
 
 function isInternalNode(node) {
