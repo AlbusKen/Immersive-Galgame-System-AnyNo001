@@ -15,6 +15,7 @@ import { normalizeTextFxSettings } from './text-fx.js';
 import { isPackKind } from '../../scene/fx-packs.js';
 import { BILINGUAL_DISPLAYS, BILINGUAL_DISPLAY_LABELS, BILINGUAL_FOREIGN_LABELS, BILINGUAL_LAYOUTS, BILINGUAL_LAYOUT_LABELS, BILINGUAL_TARGET_LABELS, normalizeBilingualSettings } from './bilingual-text.js';
 import { CLICK_WAIT_MARK_LABELS, normalizeClickWaitMarkSettings } from './click-wait-mark.js';
+import { normalizeWaitStageSettings } from './wait-stage.js';
 import { DAILY_FX_LABELS, normalizeDailyFxSettings } from './fx-daily-model.js';
 import { DAILY_FX_KINDS } from '../../scene/daily-fx-directives.js';
 import { FX_WORLDVIEW_ONLY } from '../../scene/fx-era.js';
@@ -63,11 +64,15 @@ function renderStageFields(s, more) {
     return { transition, tint, motion, actions, camera, cast, turn, cgEntrance };
 }
 
-function renderTextFields(textFx, clickWait, more) {
+function renderTextFields(textFx, clickWait, waitStage, more) {
     const tfx = featureRow(more, 'text-fx', `${P}.textFx.enabled`, textFx.enabled, '行内文字效果', '抖动、吼叫等字效');
     const glyphs = Object.entries(CLICK_WAIT_MARK_LABELS);
     const clickWaitMark = featureRow(more, 'click-wait', `${P}.clickWaitMark.enabled`, clickWait.enabled, '句末等待符号', '', field(`${P}.clickWaitMark.glyph`, '符号样式', selectInput(`${P}.clickWaitMark.glyph`, clickWait.glyph, glyphs)));
-    return { textFx: tfx, clickWaitMark };
+    const wait = featureRow(more, 'wait-stage', `${P}.waitStage.enabled`, waitStage.enabled, '等待过场', '等回复时给一句台词和小游戏', grid(
+        checkbox(`${P}.waitStage.games`, waitStage.games, '等的时候能玩小游戏')
+        + checkbox(`${P}.waitStage.voice`, waitStage.voice, '回放角色台词时带一声语气音'))
+        + field(`${P}.waitStage.lineSeconds`, '每句停留', segmentedInput(`${P}.waitStage.lineSeconds`, String(waitStage.lineSeconds), [['4', '4秒'], ['6', '6秒'], ['8', '8秒'], ['12', '12秒']], '每句停留')));
+    return { textFx: tfx, clickWaitMark, waitStage: wait };
 }
 
 function renderBilingualField(bilingual, more) {
@@ -147,7 +152,7 @@ export function renderStageDirectionFields(reader, more = collapsible, { worldvi
     const src = reader && typeof reader === 'object' ? reader : {};
     return {
         ...renderStageFields(normalizeStageDirectionSettings(src), more),
-        ...renderTextFields(normalizeTextFxSettings(src.textFx), normalizeClickWaitMarkSettings(src.clickWaitMark), more),
+        ...renderTextFields(normalizeTextFxSettings(src.textFx), normalizeClickWaitMarkSettings(src.clickWaitMark), normalizeWaitStageSettings(src.waitStage), more),
         bilingual: renderBilingualField(normalizeBilingualSettings(src.bilingual), more),
         daily: renderDailyField(normalizeDailyFxSettings(src.dailyFx), more, worldview),
         ...renderSoundFields(normalizeBgmSettings(src.bgm), normalizeAmbientSoundSettings(src.ambientSound), normalizeUiSoundSettings(src.uiSound), normalizeAudioMasterSettings(src.audioMaster), more),

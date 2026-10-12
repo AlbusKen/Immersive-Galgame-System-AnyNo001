@@ -8,7 +8,7 @@ import {
     normalizeSourceFilter,
     normalizeVirtualRegex,
 } from '../../scene/message-source.js';
-import { canonicalName, noteFormGender, setActiveFormGenders } from './voice-bark.js';
+import { applyVoiceBark, canonicalName, noteFormGender, setActiveFormGenders } from './voice-bark.js';
 import { createSettingsHost } from './settings-host.js';
 import { normalizeBridgeConfig, normalizeReaderSettings } from './settings-host-normalize.js';
 import { extractSceneDirectives, resolveSceneAtSourceOffset, resolveIllustrationForPage, resolveHeldSourceOffsets, locateNarrativeOffset, stripIllustrationMarkers } from '../../scene/scene-directives.js';
@@ -94,6 +94,7 @@ import {
 } from './reader-host-constants.js';
 import { eventToShortcut, findShortcutAction, resolveShortcuts } from './reader-shortcuts.js';
 import { isEmbeddedReaderMode } from '../../schemas/reader-mode.js';
+import { buildWaitStageModel, createWaitStageRuntime } from './wait-stage-runtime.js';
 import { onDlcSkinsChange } from './dlc-skin-registry.js';
 import { onDlcFxChange } from '../../scene/fx-registry.js';
 import {
@@ -402,6 +403,14 @@ export function createIgsReaderHost(options = {}) {
             exitEmbeddedLoading();
         },
     });
+    // 等待过场：五种阅读器模式共用黑屏 + 一句台词（回放角色说过的话 + 通用兜底），
+    // 回复到了就地换页；玩家在玩小游戏时就把这楼存着，玩完再换。
+    const waitStage = createWaitStageRuntime({
+        getDoc: () => resolveEmbeddedDocument(state.activeReader),
+        onVoice: (line) => playWaitStageVoice(line),
+        onExitReady: () => finishPendingWaitExit(),
+    });
+    let pendingReplyMessage = null;
     // 物品图到达后重绘阅读器：演出占位与背包格位据此替换为生图。
     const offItemImageUpdatedRaw = typeof options.onItemImageUpdated === 'function'
         // 物品图可能一批连着到，和生图一样按窗口合并成一次重绘。
@@ -999,6 +1008,9 @@ export function createIgsReaderHost(options = {}) {
         current.imagePollToken += 1;
         streamObserver.stop();
         stopEmbeddedStoryWatch();
+        // 关阅读器时把等待过场一并收掉，别留下还在轮台词的一层和等着换页的旧楼。
+        waitStage.close();
+        pendingReplyMessage = null;
         sourceCache.invalidate();
         if (current.dom && typeof current.dom.dispose === 'function') {
             current.dom.dispose();
@@ -1055,13 +1067,14 @@ export function createIgsReaderHost(options = {}) {
         return { ok: true };
     }
 
+    // 五种模式都跟宿主回复：发送后进等待过场，新回复写完原地换源。内嵌另有一套挂载路径。
     function tracksHostReply(mode) {
-        return isEmbeddedReaderMode(mode) || followsHostReply(mode);
+        return Boolean(mode);
     }
 
-    // 全屏与网页全屏：发送后在输入栏显示「正在生成」，新回复写完原地换源。
-    function followsHostReply(mode) {
-        return mode === 'fullscreen' || mode === 'web';
+    // 旧调用点按模式判定的写法保留：现在五种模式一律跟回复，统一由等待过场承接。
+    function followsHostReply() {
+        return true;
     }
 
     function handleChatStreamActivity() {
@@ -1169,7 +1182,6 @@ export function createIgsReaderHost(options = {}) {
     // 流式 token 期间不解析正文、不收集图片，避免酒馆卡顿与页面抖动。
     async function handleChatStreamStable() {
         const current = state.activeReader;
-        const embedded = Boolean(current && isEmbeddedReaderMode(current.mode));
         if (!current || !tracksHostReply(current.mode)) return true;
         if (Number(current.turnOffset) > 0 && !current.awaitingReply && current.streamPhase !== 'streaming') {
             noticeNewFloor();
@@ -1209,6 +1221,19 @@ export function createIgsReaderHost(options = {}) {
             exitEmbeddedLoading();
             return true;
         }
+        // 玩家正在等回复时玩小游戏：先把这楼存着，玩完这局再过场，别把正玩的一局截断。
+        if (!waitStage.replyArrived()) {
+            pendingReplyMessage = message;
+            return true;
+        }
+        await applyReplyMessage(current, message);
+        return true;
+    }
+
+    // 换到新写的这一楼：内嵌要先把阅读器挂到新楼层里，其余模式就地换源。
+    async function applyReplyMessage(current, message) {
+        if (!current) return;
+        const embedded = isEmbeddedReaderMode(current.mode);
         current.turnOffset = 0;
         current.mountMessageId = message.id;
         if (embedded) syncEmbeddedReaderMount(current, message);
@@ -1224,11 +1249,61 @@ export function createIgsReaderHost(options = {}) {
         } finally {
             exitEmbeddedLoading();
         }
-        return true;
+    }
+
+    // 等待过场的台词池是从最近几楼的正文里现抽的，等树跑完再补一次即可。
+    async function refreshWaitStageModel(current) {
+        if (!current) return null;
+        const turns = await listTurnsSafe();
+        const recent = turns.slice(-7);
+        const all = Array.isArray(current.payload && current.payload.turns) && current.payload.turns.length
+            ? current.payload.turns.slice(-7)
+            : recent;
+        const resolveUrl = (url) => resolveReaderAssetUrl(url, current);
+        const model = buildWaitStageModel({
+            settings: current.snapshot && current.snapshot.readerSettings && current.snapshot.readerSettings.waitStage,
+            turns: all,
+            sceneAssets: current.snapshot && current.snapshot.readerSettings && current.snapshot.readerSettings._sceneAssets,
+            resolveUrl,
+        });
+        waitStage.update(model);
+        return model;
+    }
+
+    // 语气音：回放角色自己的台词时配一声短音；通用兜底句不放。
+    function playWaitStageVoice(line) {
+        const current = state.activeReader;
+        if (!current || !line || !line.who) return;
+        const settings = current.snapshot && current.snapshot.readerSettings;
+        if (!settings) return;
+        const root = current.dom && (current.dom.overlay || (current.dom.embeddedMount && current.dom.embeddedMount.host));
+        if (!root) return;
+        try {
+            applyVoiceBark(root, {
+                key: `waitstage:${line.who}:${line.text}`,
+                textType: 'dialogue',
+                speaker: line.who,
+                mood: line.mood || '',
+                cast: [line.who],
+            }, settings.voiceBark, settings._sceneAssets);
+        } catch (error) {
+            // 语气音失败不影响过场。
+        }
+    }
+
+    // 关掉「等待过场」只收起台词与小游戏，三点等待反馈五种模式都留着（内嵌关了就是开天窗）。
+    function mountWaitStage(current, { embedded = false } = {}) {
+        const host = embedded
+            ? (current.dom && current.dom.embeddedMount && current.dom.embeddedMount.host)
+            : (current.dom && current.dom.overlay);
+        if (!host) return;
+        const settings = (current.snapshot && current.snapshot.readerSettings && current.snapshot.readerSettings.waitStage) || null;
+        waitStage.open(host, { embedded, settings, model: null });
+        void refreshWaitStageModel(current);
     }
 
     function enterReplyWait(current) {
-        if (!current || !followsHostReply(current.mode)) return;
+        if (!current) return;
         if (current.streamPhase !== 'streaming') {
             current.imagePollToken += 1;
             current.imagePolling = false;
@@ -1240,6 +1315,7 @@ export function createIgsReaderHost(options = {}) {
         current.awaitingReply = true;
         const overlay = current.dom && current.dom.overlay;
         if (overlay && overlay.classList) overlay.classList.add('igs-awaiting-reply');
+        mountWaitStage(current);
     }
 
     function enterEmbeddedLoading() {
@@ -1254,18 +1330,18 @@ export function createIgsReaderHost(options = {}) {
         }
         current.streamPhase = 'streaming';
         current.turnOffset = 0;
-        const host = mount.host;
-        host.setAttribute('data-igs-embedded-loading', '1');
+        mount.host.setAttribute('data-igs-embedded-loading', '1');
         if (current.dom.root && current.dom.root.style) current.dom.root.style.display = 'none';
-        let loading = host.querySelector && host.querySelector('.igs-embedded-loading');
-        if (!loading && host.ownerDocument && typeof host.ownerDocument.createElement === 'function') {
-            loading = host.ownerDocument.createElement('div');
-            loading.className = 'igs-embedded-loading';
-            loading.setAttribute('role', 'status');
-            loading.setAttribute('aria-live', 'polite');
-            loading.innerHTML = '<span class="igs-embedded-loading-dot"></span><span class="igs-embedded-loading-dot"></span><span class="igs-embedded-loading-dot"></span><span class="igs-embedded-loading-text">正在生成…</span>';
-            host.appendChild(loading);
-        }
+        mountWaitStage(current, { embedded: true });
+    }
+
+    // 玩家还在玩小游戏时回复就到了：先把这楼存着，玩完由 onExitReady 回调继续换页。
+    function finishPendingWaitExit() {
+        const current = state.activeReader;
+        if (!current || !pendingReplyMessage) return;
+        const message = pendingReplyMessage;
+        pendingReplyMessage = null;
+        void applyReplyMessage(current, message);
     }
 
     function exitEmbeddedLoading() {
@@ -1285,8 +1361,8 @@ export function createIgsReaderHost(options = {}) {
         const mount = current.dom && current.dom.embeddedMount;
         const host = mount && mount.host;
         if (host && host.removeAttribute) host.removeAttribute('data-igs-embedded-loading');
-        const loading = host && host.querySelector ? host.querySelector('.igs-embedded-loading') : null;
-        if (loading && typeof loading.remove === 'function') loading.remove();
+        // 玩家正在玩的那局不能收：让他玩完，由 onExitReady 再换页。
+        if (!waitStage.isGameActive()) waitStage.close();
         if (current.dom && current.dom.root && current.dom.root.style) current.dom.root.style.display = '';
     }
 
@@ -2775,6 +2851,10 @@ export function createIgsReaderHost(options = {}) {
         }
         if (state.activeReader !== current) return result;
         if (result && result.ok !== false && result.imageState) {
+            // 重画已经落定：在跑的后台轮询可能还拿着旧一版（绑定数为 0）的收集结果，
+            // 让它作废，否则签名一变就整页重绘，把刚画好的图盖回去。
+            current.imagePollToken += 1;
+            current.imagePolling = false;
             current.payload.imageState = cloneData(result.imageState);
             rerenderActiveReader();
         }
@@ -2943,6 +3023,8 @@ export function createIgsReaderHost(options = {}) {
                 requiresMessageScope: Array.isArray(context.imageState && context.imageState.slots)
                     && context.imageState.slots.length > 0,
             });
+            // 收集期间可能已经重画过：这一份是旧结果，套用会把刚画好的图盖掉。
+            if (!state.activeReader || state.activeReader !== current || current.imagePollToken !== token) return;
             if (!result || result.ok === false) continue;
             const nextBoundCount = countBoundImageSlots(result);
             const nextSignature = String(result.signature || '');

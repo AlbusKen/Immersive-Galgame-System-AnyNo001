@@ -93,6 +93,8 @@ export function normalizeSettingsValue(path, value) {
         if (path === 'readerSettings.statusHud.nsfwCgPortraitShift' || path === 'readerSettings.statusHud.nsfwCgPortraitZoom') return Number(value);
         if (/^readerSettings\.statusHud\.position\.(pc|mobile)\.[xy]$/.test(path)) return normalizeStatusHudPercent(value);
         if (path === 'readerSettings.dialogFontWeight') return [300, 400, 500, 700].includes(Number(value)) ? Number(value) : null;
+        if (/^readerSettings\.waitStage\.(enabled|games|voice)$/.test(path)) return value === true || value === 'true' || value === 1 || value === '1';
+        if (path === 'readerSettings.waitStage.lineSeconds') return Math.min(16, Math.max(3, Math.round(Number(value) || 6)));
         if (path === 'readerSettings.dialogTextEffect') return ['off', 'outline', 'shadow'].includes(value) ? value : 'off';
         if (path === 'readerSettings.dialogTextEffectColor') return /^#[0-9a-fA-F]{6}$/.test(value) ? value : '#000000';
         if (path === 'readerSettings.spriteDefaultScale') return normalizeSpriteHeight(value, 100);
