@@ -67,7 +67,7 @@ export function prepareSpriteIdentityAdoption(assets, name, imageId, record = {}
     if (record.dnaSnapshot?.version !== 1 || snapshot?.length !== 1
         || JSON.stringify(normalizeCharacterDna(snapshot[0].profile).views) !== JSON.stringify(candidate.views)) return fail('DNA_ADOPTION_INVALID');
     // 显式立绘转换可补齐旧身份的景别，但旧字段及已存在景别必须原样保留。
-    const nextDna = { ...dna, version: 2, views: structuredClone(candidate.views),
+    const nextDna = { ...dna, version: 2, views: structuredClone({ ...dna.views, ...candidate.views }),
         identityInitialized: true, identitySource: dna.identitySource || imageId };
     const binding = meta.value.characters[0];
     const outfitPatch = adoptSpriteIdentity({ ...assets, characterDna: { ...assets.characterDna, [name]: {} } },

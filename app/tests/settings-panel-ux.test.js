@@ -649,6 +649,39 @@ test('gate:page-modal:transformed-host-does-not-become-the-screen', async () => 
     assert.equal(await pending, true);
 });
 
+test('gate:page-modal:一致性完成后双图审核且不弹生成确认或进度', async () => {
+    const { runCgConsistencyAction } = await import('../src/visual/igs-ui/cg-consistency-action.js');
+    for (const accept of [true, false]) {
+        const doc = makeDoc();
+        const modal = createIgsModal({ getHost: () => doc.body, global: { document: doc } });
+        modal.confirm = modal.progress = () => { throw new Error('不应显示生成提示框'); };
+        const accepted = [], discarded = [];
+        const service = {
+            describeConsistency: () => ({ ok: true }),
+            async redrawConsistency() {
+                assert.equal(modal.isOpen(), false);
+                return { ok: true, candidateId: 'candidate', dataUrl: 'candidate-image', originalDataUrl: 'original-image' };
+            },
+            async acceptConsistency(id) { accepted.push(id); return { ok: true, reason: 'accepted' }; },
+            cancelConsistency(id) { discarded.push(id); },
+        };
+        const pending = runCgConsistencyAction({ service, query: {}, modal,
+            signal: new AbortController().signal, stillCurrent: () => true });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const comparison = doc.body.querySelector('.igs-page-modal-comparison');
+        assert.ok(comparison);
+        assert.deepEqual(comparison.querySelectorAll('img').map((i) => i.src), ['original-image', 'candidate-image']);
+        assert.deepEqual(comparison.querySelectorAll('figcaption').map((i) => i.textContent), ['本次原图', '重绘候选（尚未保存）']);
+        assert.ok(doc.body.querySelector('.igs-page-modal-card-comparison'));
+        doc.body.querySelector(`[data-igs-modal="${accept ? 'ok' : 'cancel'}"]`).dispatch('click');
+        assert.equal((await pending).reason, accept ? 'accepted' : 'cancelled');
+        assert.deepEqual(accepted, accept ? ['candidate'] : []);
+        assert.deepEqual(discarded, ['candidate']);
+        assert.equal(modal.isOpen(), false);
+    }
+});
+
+
 test('gate:settings-focus:restores-focused-field-and-caret-after-innerhtml-rebuild', () => {
     const panel = makePanel();
     const build = (overlay) => {

@@ -1,5 +1,5 @@
 // IGS 请求与模板交接边界；不依赖 DBGen 的运行时，也不改写正文。
-import { CHARACTER_DNA_VIEWS, checkDnaViews } from '../scene/character-dna.js';
+import { CHARACTER_DNA_VIEWS, CHARACTER_DNA_REQUIRED_VIEWS, checkDnaViews } from '../scene/character-dna.js';
 const plain = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const keyOk = (v) => typeof v === 'string' && v === v.trim() && v.length > 0 && v.length <= 128
     && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -132,7 +132,7 @@ export function checkDnaCandidates(raw, { task, context, recipe } = {}) {
         const source = context?.find((x) => x.characterKey === c?.characterKey);
         if (!plain(c) || !keyOk(c.characterKey) || keys.has(c.characterKey) || !source
             || !recipe?.bindings.some((b) => b.kind === 'named' && b.characterKey === c.characterKey)
-            || CHARACTER_DNA_VIEWS.every((f) => source.dna?.views?.[f]?.subject?.trim()))
+            || CHARACTER_DNA_REQUIRED_VIEWS.every((f) => source.dna?.views?.[f]?.subject?.trim()))
             return fail('DNA_TEMPLATE_BINDING', 'dnaCandidates.characters', 'mismatch', where);
         if (source.dna?.identityInitialized === true && !source.dna.identity?.trim()
             && !Object.values(source.dna.views || {}).some((v) => v.subject?.trim()))
@@ -142,6 +142,12 @@ export function checkDnaCandidates(raw, { task, context, recipe } = {}) {
             field: 'dna.views', issue: 'invalid', ...where } };
         for (const frame of CHARACTER_DNA_VIEWS) {
             const saved = source.dna?.views?.[frame];
+            if (frame === 'partial') {
+                if (checked.value[frame] !== undefined && !saved?.subject?.trim())
+                    return fail('DNA_TEMPLATE_BINDING', 'dna.views.partial', 'preserved', where);
+                if (saved?.subject?.trim() && checked.value[frame] === undefined)
+                    checked.value[frame] = { subject: saved.subject, negative: saved.negative || '' };
+            }
             if (saved?.subject?.trim() && (saved.subject !== checked.value[frame].subject
                 || (saved.negative || '') !== checked.value[frame].negative))
                 return fail('DNA_TEMPLATE_BINDING', `dna.views.${frame}`, 'preserved', where);
@@ -192,7 +198,7 @@ export function checkPromptOutput(item, task, context) {
     if (task?.purpose === 'sprite') {
         for (const b of recipe.value.bindings.filter((b) => b.kind === 'named')) {
             const dna = context?.find((c) => c.characterKey === b.characterKey)?.dna;
-            if (!CHARACTER_DNA_VIEWS.every((f) => dna?.views?.[f]?.subject?.trim())
+            if (!CHARACTER_DNA_REQUIRED_VIEWS.every((f) => dna?.views?.[f]?.subject?.trim())
                 && !candidates.value?.characters.some((c) => c.characterKey === b.characterKey))
                 return fail(dna?.identity?.trim() || Object.values(dna?.views || {}).some((v) => v.subject?.trim())
                     ? 'DNA_VIEW_MISSING' : 'DNA_MISSING', 'dnaCandidates', 'missing', { captionIndex: b.captionIndex });

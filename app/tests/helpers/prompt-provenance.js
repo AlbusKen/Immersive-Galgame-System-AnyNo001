@@ -31,7 +31,7 @@ export function provenanceFixture() {
 
 
 export function characterViewsFixture(subject = 'Alice, an adult woman with silver hair and blue eyes,') {
-    return Object.fromEntries(['full_body', 'half_body', 'portrait', 'partial']
+    return Object.fromEntries(['full_body', 'half_body', 'portrait']
         .map((frame) => [frame, { subject, negative: 'extra fingers' }]));
 }
 
@@ -50,7 +50,9 @@ export function characterWriteFixture(request, { subject, scene = 'One woman sta
             })) } },
         };
         const bindings = characters.map((c, captionIndex) => ({ kind: 'named', ...c, captionIndex }));
-        const candidates = characters.filter((c) => !request.characterContext.find((x) => x.characterKey === c.characterKey)?.dna?.views);
+        const savedViews = (c) => request.characterContext.find((x) => x.characterKey === c.characterKey)?.dna?.views;
+        const candidates = characters.filter((c) => !['full_body', 'half_body', 'portrait']
+            .every((frame) => savedViews(c)?.[frame]?.subject?.trim()));
         return { slotId, caption, promptRecipe: { version: 1, mode: 'dna_template', caption, bindings },
             characterMeta: { version: 1, characters: characters.map((c, captionIndex) => ({
                 characterKey: c.characterKey, captionIndex, identityAnchor: '', signatureDetails: '',
@@ -58,7 +60,9 @@ export function characterWriteFixture(request, { subject, scene = 'One woman sta
                 centers: [{ x: 0.5, y: 0.5 }], positionExplicit: true,
             })) },
             ...(task.purpose === 'sprite' && candidates.length && { dnaCandidates: { version: 1,
-                characters: candidates.map((c) => ({ characterKey: c.characterKey, views: characterViewsFixture(subject) })) } }),
+                characters: candidates.map((c) => ({ characterKey: c.characterKey, views: Object.fromEntries(
+                    Object.entries(characterViewsFixture(subject)).map(([frame, view]) =>
+                        [frame, savedViews(c)?.[frame]?.subject?.trim() ? savedViews(c)[frame] : view])) })) } }),
         };
     });
     return { ok: true, ...captions[0], captions };

@@ -261,8 +261,7 @@ test('gate:dna-template:dbgen-workbench-to-igs-preserves-template-and-candidate'
         'meta_outfit_description: 0 | A blue coat.',
         'meta_dna_full_body: 0 | Alice, a tall adult woman with silver hair, blue eyes and a silver ring on her left hand,',
         'meta_dna_half_body: 0 | Alice, an adult woman with silver hair, blue eyes and a silver ring on her left hand,',
-        'meta_dna_portrait: 0 | Alice, an adult woman with silver hair and blue eyes,',
-        'meta_dna_partial: 0 | Alice\'s pale left hand with a silver ring,'].join('\n');
+        'meta_dna_portrait: 0 | Alice, an adult woman with silver hair and blue eyes,'].join('\n');
     const p = buildPipeline({ llmComplete: async () => Ok({ text: reply, json: null }) });
     const requests = [];
     const api = { async generate() { assert.fail('写词交接不得调用生图'); },
@@ -278,11 +277,12 @@ test('gate:dna-template:dbgen-workbench-to-igs-preserves-template-and-candidate'
     assert.equal(written.captions[0].slotId, 6);
     assert.deepEqual(written.promptRecipe.caption, written.caption);
     assert.equal(written.promptRecipe.bindings[0].characterKey, 'Alice');
-    assert.match(written.dnaCandidates.characters[0].views.partial.subject, /left hand/);
+    assert.deepEqual(Object.keys(written.dnaCandidates.characters[0].views), ['full_body', 'half_body', 'portrait']);
+    assert.match(written.dnaCandidates.characters[0].views.half_body.subject, /silver ring/);
     assert.equal(written.caption.v4_prompt.caption.char_captions[0].centers[0].x, 0.3);
     assert.match(written.caption.v4_prompt.caption.char_captions[0].char_caption, /toward Bob/);
     assert.match(p.llmCalls[0].messages.at(-1).content, /rA7/);
-    assert.match(p.llmCalls[0].messages.at(-1).content, /meta_dna_partial/);
+    assert.match(p.llmCalls[0].messages.at(-1).content, /meta_dna_portrait/);
     assert.equal(p.llmCalls.length, 1);
     assert.equal(p.naiCalls.length, 0);
     const rejected = await backend.writeDbgenPrompt({ description: '画 Alice 的 CG', characterContext,
@@ -558,7 +558,7 @@ test('gate:dna-template:IGS 到 DBGen 直连、阅读器和局部重绘使用实
 
 function templateWritingFixture(candidate = false) {
     const subject = 'Alice, an adult woman with 1.2::silver hair:: and blue eyes,';
-    const views = Object.fromEntries(['full_body', 'half_body', 'portrait', 'partial']
+    const views = Object.fromEntries(['full_body', 'half_body', 'portrait']
         .map((frame) => [frame, { subject, negative: '' }]));
     const promptTask = { version: 1, mode: 'dna_template', purpose: candidate ? 'sprite' : 'cg',
         characters: [{ characterKey: 'Alice', token: 'rA7', framing: 'half_body' }] };

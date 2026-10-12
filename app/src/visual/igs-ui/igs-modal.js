@@ -25,6 +25,11 @@ ${IGS_HINT_THEME_STYLE_TEXT}
 .igs-page-modal-msg{margin:0;font-size:15px;line-height:1.7;letter-spacing:.04em;white-space:pre-line;word-break:break-word;}
 .igs-page-modal-card{max-height:100%;overflow:auto;}
 .igs-page-modal-preview{display:block;max-width:100%;max-height:55vh;object-fit:contain;align-self:center;}
+.igs-page-modal-card-comparison{width:min(1100px,100%);}
+.igs-page-modal-comparison{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;}
+.igs-page-modal-comparison figure{margin:0;min-width:0;display:flex;flex-direction:column;gap:10px;}
+.igs-page-modal-comparison figcaption{font-size:13px;color:var(--igs-hint-soft);text-align:center;}
+@media (max-width:640px){.igs-page-modal-comparison{grid-template-columns:1fr;}.igs-page-modal-comparison .igs-page-modal-preview{max-height:35vh;}}
 @media (pointer:coarse){.igs-page-modal-actions button{min-height:44px;}}
 .igs-page-modal-input{width:100%;box-sizing:border-box;margin:0;padding:9px 12px;border-radius:8px;border:0;outline:0;background:var(--igs-hint-field);color:inherit;font:inherit;font-size:14px;}
 .igs-page-modal-input:focus{box-shadow:inset 0 0 0 1.5px var(--igs-hint-accent);}
@@ -123,11 +128,27 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
         card.appendChild(msg);
         entry.messageEl = msg;
         if (entry.imageUrl) {
-            const image = doc.createElement('img');
-            image.className = 'igs-page-modal-preview';
-            image.src = entry.imageUrl;
-            image.setAttribute('alt', '尚未保存的一致性重绘候选');
-            card.appendChild(image);
+            const preview = (src, alt) => {
+                const image = doc.createElement('img');
+                image.className = 'igs-page-modal-preview';
+                image.src = src;
+                image.setAttribute('alt', alt);
+                return image;
+            };
+            if (entry.originalImageUrl) {
+                card.className += ' igs-page-modal-card-comparison';
+                const comparison = doc.createElement('div');
+                comparison.className = 'igs-page-modal-comparison';
+                for (const [src, label] of [[entry.originalImageUrl, '本次原图'], [entry.imageUrl, '重绘候选（尚未保存）']]) {
+                    const figure = doc.createElement('figure');
+                    const caption = doc.createElement('figcaption');
+                    caption.textContent = label;
+                    figure.appendChild(caption);
+                    figure.appendChild(preview(src, label));
+                    comparison.appendChild(figure);
+                }
+                card.appendChild(comparison);
+            } else card.appendChild(preview(entry.imageUrl, '尚未保存的一致性重绘候选'));
         }
         let input = null;
         if (entry.kind === 'prompt') {
@@ -197,6 +218,7 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
             resolve: null,
             el: null,
             imageUrl: labels.imageUrl || '',
+            originalImageUrl: labels.originalImageUrl || '',
             onCancel: labels.onCancel,
         };
         return new Promise((resolve) => {

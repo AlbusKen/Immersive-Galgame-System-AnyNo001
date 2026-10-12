@@ -4538,8 +4538,8 @@ test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async (
     const empty = renderCharacterDnaEditor('白墨', null);
     assert.ok(empty.includes('角色DNA（未填写）'));
     assert.deepEqual([...empty.matchAll(/data-dna-field="([^"]+)"/g)].map((match) => match[1]), [
-        'identity', 'defaultAppearance', 'negative', 'triggerWords',
-        ...['full_body', 'half_body', 'portrait', 'partial']
+        'defaultAppearance', 'triggerWords',
+        ...['full_body', 'half_body', 'portrait']
             .flatMap((view) => [`views.${view}.subject`, `views.${view}.negative`]),
     ]);
     // DNA 在角色那一行的 ⋯ 里（「角色设定」），点开才出编辑区。
@@ -4555,8 +4555,11 @@ test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async (
     assert.ok(html.includes('>收起角色设定<'));
     assert.ok(html.includes('data-dna-char="A.&lt;b&gt;"'));
     assert.ok(!html.includes('data-dna-char="A.<b>"'));
-    assert.ok(html.includes('data-dna-field="identity" placeholder='));
-    assert.ok(html.includes('>silver hair</textarea>'));
+    assert.ok(!html.includes('data-dna-field="identity"'));
+    assert.ok(!html.includes('data-dna-field="negative"'));
+    assert.ok(!html.includes('data-dna-field="views.partial.'));
+    assert.ok(html.includes('data-dna-field="defaultAppearance"'));
+    assert.ok(html.includes('身份（含年龄感）'));
     assert.ok(html.includes('>alice_v2</textarea>'));
     assert.ok(!html.includes('角色 DNA（未填写）'));
     assert.ok(!/data-path="[^"]*characterDna/.test(html));
@@ -5441,4 +5444,61 @@ test('gate:igs-ui:matte-editor-ai-repair-maps-selection-by-crop', async () => {
     const blocked = await noAi.aiRepair(selection, '');
     assert.equal(blocked.reason, 'image-edit-unsupported');
     assert.equal(blocked.message, '智绘姬不支持局部重绘');
+});
+
+test('character dna: three-view candidates preserve only usable historical partial', async () => {
+    const { checkDnaCandidates } = await import('../src/schemas/prompt-recipe.js');
+    const { characterViewsFixture } = await import('./helpers/prompt-provenance.js');
+    const views = characterViewsFixture();
+    const task = { purpose: 'sprite' };
+    const recipe = { bindings: [{ kind: 'named', characterKey: 'Alice' }] };
+    const check = (candidate = views, dna = {}) => checkDnaCandidates({ version: 1,
+        characters: [{ characterKey: 'Alice', views: candidate }] },
+    { task, recipe, context: [{ characterKey: 'Alice', dna }] });
+    assert.deepEqual(check().value.characters[0].views, views);
+    for (const frame of Object.keys(views)) {
+        const missing = structuredClone(views); delete missing[frame];
+        assert.equal(check(missing).reason, 'DNA_VIEW_INVALID', frame);
+    }
+    const partial = { subject: "Alice's visible hand, with light skin,", negative: 'extra fingers' };
+    assert.equal(check({ ...views, partial }).reason, 'DNA_TEMPLATE_BINDING');
+    const saved = { version: 2, views: { partial } };
+    assert.deepEqual(check(views, saved).value.characters[0].views.partial, partial);
+    assert.equal(check({ ...views, partial: { ...partial, subject: 'Another person,' } }, saved).reason, 'DNA_TEMPLATE_BINDING');
+    for (const empty of [{}, { subject: '', negative: 'legacy uc' }]) {
+        const dna = { version: 2, views: { partial: empty } };
+        assert.equal(check(views, dna).value.characters[0].views.partial, undefined);
+        assert.equal(check({ ...views, partial }, dna).reason, 'DNA_TEMPLATE_BINDING');
+    }
+    assert.equal(check(views, { identityInitialized: true }).reason, 'DNA_TEMPLATE_BINDING');
+    assert.equal(check(views, { version: 2, views }).reason, 'DNA_TEMPLATE_BINDING');
+    assert.deepEqual(saved.views.partial, partial);
+});
+
+
+test('character dna: hidden legacy fields survive editing and candidate adoption', async () => {
+    const { editCharacterDnaField, normalizeCharacterDna } = await import('../src/scene/character-dna.js');
+    const { prepareSpriteIdentityAdoption } = await import('../src/scene/character-identity.js');
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    for (const partial of [{ subject: '', negative: 'legacy uc' },
+        { subject: "Alice's visible hand, with light skin,", negative: 'extra fingers' }]) {
+        const dna = { version: 2, identity: 'legacy identity', negative: 'legacy negative',
+            defaultAppearance: 'white shirt', triggerWords: 'alice', identityInitialized: true,
+            identitySource: 'historical-image', views: { partial } };
+        const edited = editCharacterDnaField(dna, 'defaultAppearance', 'blue coat');
+        assert.equal(edited.identity, dna.identity);
+        assert.equal(edited.negative, dna.negative);
+        assert.equal(edited.identitySource, dna.identitySource);
+        assert.equal(edited.identityInitialized, true);
+        assert.deepEqual(edited.views.partial, partial);
+        const record = await spriteAdoptionFixture('Alice', dna);
+        const result = prepareSpriteIdentityAdoption({ characterDna: { Alice: dna } }, 'Alice', 'new-image', record);
+        assert.equal(result.ok, true, result.reason);
+        const saved = normalizeCharacterDna(result.patch.characterDna.Alice);
+        for (const field of ['identity', 'negative', 'defaultAppearance', 'triggerWords', 'identityInitialized', 'identitySource'])
+            assert.equal(saved[field], dna[field], field);
+        assert.deepEqual(saved.views.partial, partial);
+        assert.deepEqual(Object.keys(saved.views), ['full_body', 'half_body', 'portrait', 'partial']);
+        assert.deepEqual(dna.views, { partial });
+    }
 });

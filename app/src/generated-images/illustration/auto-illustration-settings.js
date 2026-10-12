@@ -25,6 +25,8 @@ const clampNum = (v, min, max, d) => {
 const bool = (v) => v === true || v === 'true' || v === 1 || v === '1';
 const str = (v, d = '') => (typeof v === 'string' ? v : d);
 
+export const normalizeConsistencyStrength = (value) => clampNum(value, 0, 1, 0.75);
+
 // 模板留空视为恢复内置模板；背景/立绘正向模板必须含 {tags}，否则 LLM 的内容会被丢掉。
 // 旧内置立绘模板带双手下垂，存下来的原样副本换成新内置的。
 const LEGACY_SPRITE_TEMPLATE = '{tags}, solo, cowboy shot, standing, facing viewer, looking at viewer, straight-on, arms at sides, centered, {matte}';
@@ -57,6 +59,7 @@ export function normalizeAutoIllustrationSettings(value) {
     const nai = src.nai && typeof src.nai === 'object' ? src.nai : {};
     const assets = src.assets && typeof src.assets === 'object' ? src.assets : {};
     return {
+        consistencyStrength: normalizeConsistencyStrength(src.consistencyStrength),
         nsfwEnabled: bool(src.nsfwEnabled),
         nsfwCount: clampInt(src.nsfwCount, 1, NSFW_COUNT_MAX, 1),
         interludeEnabled: bool(src.interludeEnabled),

@@ -2,6 +2,8 @@
 // 数据位于 sceneAssets.characterDna，与情绪槽映射 sceneAssets.characters 并列，互不混入。
 
 export const CHARACTER_DNA_FIELDS = Object.freeze(['identity', 'defaultAppearance', 'negative', 'triggerWords']);
+export const CHARACTER_DNA_REQUIRED_VIEWS = Object.freeze(['full_body', 'half_body', 'portrait']);
+// partial 只兼容历史资料与明确的旧任务，不参与新建完整性要求。
 export const CHARACTER_DNA_VIEWS = Object.freeze(['full_body', 'half_body', 'portrait', 'partial']);
 export const CHARACTER_DNA_EDIT_FIELDS = Object.freeze([...CHARACTER_DNA_FIELDS,
     ...CHARACTER_DNA_VIEWS.flatMap((view) => [`views.${view}.subject`, `views.${view}.negative`])]);
@@ -14,7 +16,7 @@ export function checkDnaViews(raw, { complete = false, allowEmpty = false } = {}
     const value = {};
     for (const view of CHARACTER_DNA_VIEWS) {
         const item = raw[view];
-        if (item === undefined && !complete) continue;
+        if (item === undefined && (!complete || !CHARACTER_DNA_REQUIRED_VIEWS.includes(view))) continue;
         if (!item || typeof item !== 'object' || Array.isArray(item)
             || typeof item.subject !== 'string' || (!allowEmpty && !item.subject.trim()) || item.subject.length > 4096
             || (item.negative !== undefined && (typeof item.negative !== 'string' || item.negative.length > 4096))

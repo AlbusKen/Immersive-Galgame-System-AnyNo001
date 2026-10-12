@@ -34,17 +34,12 @@ function finishPlan(width, height, rect) {
     const crop = { x: Math.max(0, rect.x - margin), y: Math.max(0, rect.y - margin),
         right: Math.min(width, rect.right + margin), bottom: Math.min(height, rect.bottom + margin) };
     crop.width = crop.right - crop.x; crop.height = crop.bottom - crop.y;
-    const redrawRect = { x: crop.x, y: crop.y, right: crop.right, bottom: crop.bottom };
-    // 内部边缘收回原区域；触及整张 CG 边缘的侧边保留扩大后的范围。
-    const compositeRect = { x: crop.x === 0 ? 0 : rect.x, y: crop.y === 0 ? 0 : rect.y,
-        right: crop.right === width ? width : rect.right,
-        bottom: crop.bottom === height ? height : rect.bottom };
     const size = clampPixelPair(Math.ceil(crop.width / 0.75), crop.height);
     const workWidth = Math.floor(size.width * 0.75);
     const scale = Math.min(workWidth / crop.width, size.height / crop.height);
     const work = { x: 0, y: 0, width: Math.max(1, Math.floor(crop.width * scale)), height: Math.max(1, Math.floor(crop.height * scale)) };
     const reference = { x: workWidth, y: 0, width: size.width - workWidth, height: size.height };
-    return { ok: true, width, height, rect, redrawRect, compositeRect, crop, size, work, reference };
+    return { ok: true, width, height, rect, crop, size, work, reference };
 }
 
 const validPixels = (image) => image && Number.isSafeInteger(image.width) && Number.isSafeInteger(image.height)
@@ -56,18 +51,16 @@ const sourcePoint = (plan, x, y) => ({
 });
 const inRect = (rect, x, y) => x >= rect.x && x < rect.right && y >= rect.y && y < rect.bottom;
 
-// 只在图内的区域边缘圆角渐变；整张 CG 边缘没有外侧接缝，不收缩或渐隐。
-function regionMaskWeight(plan, rect, x, y, featherWidth) {
+// 仅回贴使用圆角与内侧混合带；输入蒙版独立采用硬边矩形。
+function identityMaskWeight(plan, x, y, featherWidth) {
+    const { rect } = plan;
     if (!inRect(rect, x, y)) return 0;
     const width = rect.right - rect.x, height = rect.bottom - rect.y;
     const side = Math.min(width, height);
     const radius = Math.min(32, side * 0.12);
     const feather = featherWidth ?? Math.max(1, Math.min(24, side * 0.08));
-    const dx = Math.min(rect.x === 0 ? Infinity : x - rect.x,
-        rect.right === plan.width ? Infinity : rect.right - 1 - x);
-    const dy = Math.min(rect.y === 0 ? Infinity : y - rect.y,
-        rect.bottom === plan.height ? Infinity : rect.bottom - 1 - y);
-    const qx = radius - 0.5 - dx, qy = radius - 0.5 - dy;
+    const qx = Math.abs(x + 0.5 - (rect.x + rect.right) / 2) - (width / 2 - radius);
+    const qy = Math.abs(y + 0.5 - (rect.y + rect.bottom) / 2) - (height / 2 - radius);
     const distance = radius - Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
         - Math.min(Math.max(qx, qy), 0) - 0.5;
     const t = clamp(distance / feather, 0, 1);
@@ -89,7 +82,7 @@ export function buildReferencePixels(source, referenceImage, plan) {
         const to = (y * size.width + x) * 4;
         data.set(source.data.subarray(from, from + 4), to);
         if (x < work.width && y < work.height) {
-            const weight = regionMaskWeight(plan, plan.redrawRect, p.x, p.y);
+            const weight = inRect(plan.rect, p.x, p.y) ? 255 : 0;
             mask.set([weight, weight, weight, 255], to);
         }
     }
@@ -113,22 +106,20 @@ function drawIdentityReference(data, width, image, box) {
     }
 }
 
-// 从扩大后的重绘区域取内侧结果，图内回贴边缘混合新旧 RGB，原 alpha 不变。
+// 只在圆角区域内贴回；边缘宽带混合新旧 RGB，中心采用重绘图，原 alpha 不变。
 export function composeReferencePixels(source, generated, plan) {
     if (!plan?.ok || !validPixels(source) || !validPixels(generated) || source.width !== plan.width || source.height !== plan.height || generated.width !== plan.size.width || generated.height !== plan.size.height) throw new Error('cg-result-size-mismatch');
     const data = new Uint8ClampedArray(source.data);
-    const { compositeRect: rect, redrawRect, crop, work } = plan;
+    const { rect, crop, work } = plan;
     const side = Math.min(rect.right - rect.x, rect.bottom - rect.y);
     const blendFeather = Math.max(1, Math.min(96, side * 0.16));
     for (let y = rect.y; y < rect.bottom; y++) for (let x = rect.x; x < rect.right; x++) {
         const wx = clamp(Math.floor((x - crop.x + 0.5) * work.width / crop.width), 0, work.width - 1);
         const wy = clamp(Math.floor((y - crop.y + 0.5) * work.height / crop.height), 0, work.height - 1);
         const p = sourcePoint(plan, wx, wy);
-        // 蒙版过渡区不回贴；同时核对原坐标及实际采样点，隔离缩放量化的边缘像素。
-        if (regionMaskWeight(plan, redrawRect, x, y) !== 255
-            || regionMaskWeight(plan, redrawRect, p.x, p.y) !== 255) continue;
-        const blend = Math.min(regionMaskWeight(plan, rect, x, y, blendFeather),
-            regionMaskWeight(plan, rect, p.x, p.y, blendFeather)) / 255;
+        // 同时约束原像素和缩放后的采样点，防止量化把黑色边界带回 CG。
+        const blend = Math.min(identityMaskWeight(plan, x, y, blendFeather),
+            identityMaskWeight(plan, p.x, p.y, blendFeather)) / 255;
         if (!blend) continue;
         const from = (wy * generated.width + wx) * 4, to = (y * source.width + x) * 4;
         for (let k = 0; k < 3; k++) data[to + k] = Math.round(source.data[to + k] * (1 - blend) + generated.data[from + k] * blend);

@@ -407,6 +407,7 @@ export function createAutoIllustrationService(deps) {
 
     const consistency = createCgConsistencyService({
         store, nai, codec: deps.imageCodec, getSceneAssets: readSceneAssets,
+        consistencyStrength: () => settings().consistencyStrength,
         resolveReference: deps.resolveCgReference, targetStillLive, now, report,
         writingRequirements: () => {
             const snapshot = settings();

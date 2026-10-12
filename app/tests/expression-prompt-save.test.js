@@ -571,13 +571,12 @@ test('gate:dna-adoption:批量 slot 乱序回复与单图采用证据跨连接�
 test('gate:dna-compatibility:旧中文 DNA 同次转换，采用回读保留原字段', async () => {
     const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
     const { Ok } = await import('../../../nai-dbgen/src/infra/result.js');
-    const legacy = { identity: '成年女性，银发蓝眼，左手银戒', defaultAppearance: '蓝色外套',
+    const legacy = { identity: '成年女性，银发蓝眼，双黑角，长鳞尾，左侧银色发夹，珍珠耳饰，左手银戒', defaultAppearance: '蓝色外套',
         negative: '多余手指', triggerWords: '1.2::alice_tag::', identityInitialized: true, identitySource: 'old.png' };
     const views = {
-        full_body: { subject: 'Alice, 1.2::alice_tag::, an adult woman with silver hair, blue eyes and a silver ring on her left hand,' },
-        half_body: { subject: 'Alice, 1.2::alice_tag::, an adult woman with silver hair, blue eyes and a silver ring on her left hand,' },
-        portrait: { subject: 'Alice, 1.2::alice_tag::, an adult woman with silver hair and blue eyes,' },
-        partial: { subject: "Alice's visible left hand, 1.2::alice_tag::, with a silver ring," },
+        full_body: { subject: 'Alice, 1.2::alice_tag::, an adult woman with silver hair, blue eyes, two black horns, a long scaled tail, a silver hair clip on the left, pearl earrings and a silver ring on her left hand,' },
+        half_body: { subject: 'Alice, 1.2::alice_tag::, an adult woman with silver hair, blue eyes, two black horns, a scaled tail visible beside her waist, a silver hair clip on the left, pearl earrings and a silver ring on her left hand,' },
+        portrait: { subject: 'Alice, 1.2::alice_tag::, an adult woman with silver hair, blue eyes, two black horns, a silver hair clip on the left and pearl earrings,' },
     };
     const assets = { characters: { Alice: { 默认: 'old.png' } }, characterDna: { Alice: legacy } };
     const before = structuredClone(assets), saves = [];
@@ -615,10 +614,16 @@ test('gate:dna-compatibility:旧中文 DNA 同次转换，采用回读保留原�
         const message = h.pipeline.llmCalls[0].messages.at(-1).content;
         assert.ok(message.includes(legacy.identity)); assert.ok(message.includes(legacy.triggerWords));
         assert.match(message, /旧身份仅转换格式/);
+        assert.match(message, /高优先级身份锚点/);
+        assert.match(message, /不以当次半身立绘的裁切删掉尾巴或翅膀/);
         const image = await h.open().readStoredImage(assets.characters.Alice.默认.slice('igs-gen:'.length));
         assert.equal(image.dnaSnapshot.characters[0].source, 'candidate');
         assert.equal(image.prompt.caption.v4_prompt.caption.char_captions[0].char_caption,
             views.half_body.subject + ' wears a blue coat and smiles.');
+        for (const feature of ['two black horns', 'scaled tail', 'silver hair clip', 'pearl earrings']) {
+            assert.ok(image.sentPrompt.caption.v4_prompt.caption.char_captions[0].char_caption.includes(feature), feature);
+            assert.ok(assets.characterDna.Alice.views.full_body.subject.includes(feature), feature);
+        }
         assert.deepEqual(image.sentPrompt.caption.v4_prompt.caption, h.pipeline.naiCalls[0].payload.parameters.v4_prompt.caption);
         assert.deepEqual(image.dnaCandidates.characters[0].views, assets.characterDna.Alice.views);
         for (const field of Object.keys(legacy)) assert.equal(assets.characterDna.Alice[field], legacy[field], field);

@@ -2324,6 +2324,10 @@ export function createIgsReaderHost(options = {}) {
             imageNotice('warn', '当前未接入角色一致性重绘。');
             return { ok: false, reason: 'consistency-unavailable' };
         }
+        if (current.consistencyTask) {
+            current.consistencyTask.controller.abort();
+            return { ok: true, reason: 'cancelled' };
+        }
         if (current.illustrationPending) return { ok: false, reason: 'consistency-busy' };
         const identity = current.illustrationIdentity || {};
         const query = { chatId: identity.chatId,
@@ -2338,9 +2342,10 @@ export function createIgsReaderHost(options = {}) {
         const task = { controller, stillCurrent };
         current.consistencyTask = task;
         current.illustrationPending = true;
+        rerenderActiveReader();
         try {
             const result = await runCgConsistencyAction({ service, query, modal: pageModal,
-                signal: controller.signal, stillCurrent, onProgress: { stop: () => controller.abort() } });
+                signal: controller.signal, stillCurrent });
             if (state.activeReader === current && !controller.signal.aborted) {
                 if (result?.ok && result.reason === 'accepted') {
                     rerenderActiveReader();
@@ -2355,6 +2360,7 @@ export function createIgsReaderHost(options = {}) {
             controller.abort();
             if (current.consistencyTask === task) current.consistencyTask = null;
             current.illustrationPending = false;
+            if (state.activeReader === current) rerenderActiveReader();
         }
     }
 

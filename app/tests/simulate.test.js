@@ -10166,14 +10166,15 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
             describeConsistency: () => ({ ok: true }),
             async redrawConsistency(query, options) {
                 calls.push(['run', query]);
-                options.onProgress({ phase: 'consistency', done: 0, total: 2, characterKey: 'A' });
+                assert.equal(document.querySelector('.igs-page-modal'), null, '生成期间不弹模态框');
                 started();
-                if (['stop', 'close', 'switch'].includes(decision)) await new Promise((resolve) => {
+                await new Promise((resolve) => {
                     finish = resolve;
                     options.signal.addEventListener('abort', resolve, { once: true });
                 });
                 return options.signal.aborted ? { ok: false, reason: 'cancelled' }
-                    : { ok: true, candidateId: 'fixture-candidate', dataUrl: 'data:image/png;base64,bmV3' };
+                    : { ok: true, candidateId: 'fixture-candidate', dataUrl: 'data:image/png;base64,bmV3',
+                        originalDataUrl: 'data:image/png;base64,b2xk' };
             },
             async acceptConsistency(id) { calls.push(['accept', id]); displayed = 'data:image/png;base64,bmV3'; return { ok: true, reason: 'accepted' }; },
             cancelConsistency(id) { calls.push(['cancel', id]); },
@@ -10188,21 +10189,25 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
         assert.equal(button.disabled, false);
         assert.match(button.getAttribute('aria-label'), /角色一致性重绘/);
         const pending = opened.controller.invokeAction('consistency-cg');
-        assert.ok(document.querySelector('.igs-page-modal'));
-        clickModal('ok');
         await ready;
-        assert.equal((await opened.controller.invokeAction('consistency-cg')).reason, 'consistency-busy');
+        assert.equal(document.querySelector('.igs-page-modal'), null, '无前置确认或进度弹窗');
+        const stopButton = document.getElementById('igs-btn-consistency-cg');
+        assert.equal(stopButton.disabled, false);
+        assert.match(stopButton.getAttribute('aria-label'), /停止/);
         assert.equal(calls.filter(([name]) => name === 'run').length, 1);
         assert.deepEqual(calls[0][1], { chatId: 'fixture-reader', messageId: 5, swipeId: 0, slot: 7 });
-        if (decision === 'stop') clickModal('cancel');
+        if (decision === 'stop') assert.equal((await opened.controller.invokeAction('consistency-cg')).reason, 'cancelled');
         else if (decision === 'close') host.closeReader();
         else if (decision === 'switch') {
             host.replaceReader({ messageId: 6, message: { id: 6, text: raw }, raw });
         } else {
+            finish();
             for (let i = 0; i < 40 && !document.querySelector('.igs-page-modal-preview'); i++) await new Promise((resolve) => setTimeout(resolve, 0));
             const preview = document.querySelector('.igs-page-modal-preview');
             assert.ok(preview);
-            assert.equal(preview.src, 'data:image/png;base64,bmV3');
+            const previews = document.querySelectorAll('.igs-page-modal-preview');
+            assert.equal(previews.length, 2);
+            assert.deepEqual([...previews].map((image) => image.src), ['data:image/png;base64,b2xk', 'data:image/png;base64,bmV3']);
             assert.equal(displayed, 'data:image/png;base64,b2xk', '预览不改正式展示');
             clickModal(decision === 'accept' ? 'ok' : 'cancel');
         }

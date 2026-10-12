@@ -638,12 +638,10 @@ function renderCharacterSpriteHeightRow(charName, { sceneAssets, reader }) {
 }
 
 const CHARACTER_DNA_FIELD_LABELS = [
-    ['identity', '固定身份', '发色、瞳色、脸型、体型、年龄感、标志特征'],
-    ['defaultAppearance', '默认外观', '默认发型、服装、饰品；剧情明确换装时可被覆盖'],
-    ['negative', '负面词', '防漂移与禁止增加的特征'],
+    ['defaultAppearance', '默认外观服装', '默认服装的颜色、款式、材质与配饰；剧情明确换装时必须覆盖此默认值'],
     ['triggerWords', '触发词', '模型token / LoRA触发词等纯文本'],
-    ...[['full_body', '全身'], ['half_body', '半身'], ['portrait', '头像'], ['partial', '局部／背面']].flatMap(([view, label]) => [
-        [`views.${view}.subject`, `${label}身份`, '英文身份主语片段；固定特征与其他景别一致，不含衣装或动作'],
+    ...[['full_body', '全身'], ['half_body', '半身'], ['portrait', '头像']].flatMap(([view, label]) => [
+        [`views.${view}.subject`, `${label}身份（含年龄感）`, '英文身份主语片段；核对有依据的年龄感、角、尾巴、非人耳及标志饰品。全身保留已知身体特征，头像保留头颈锚点；三景别同一身份，不含普通服装、动作或临时表情'],
         [`views.${view}.negative`, `${label}身份负面词`, '该景别固定身份的排除词，可留空'],
     ]),
 ];

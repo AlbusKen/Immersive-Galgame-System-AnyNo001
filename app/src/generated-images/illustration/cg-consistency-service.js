@@ -3,12 +3,13 @@ import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { normalizeCharacterDna } from '../../scene/character-dna.js';
 import { consistencyPromptTask, checkConsistencyCaptions } from './cg-consistency-prompt.js';
 import { promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
+import { normalizeConsistencyStrength } from './auto-illustration-settings.js';
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const failure = (reason, error = '一致性重绘未保存，原图保持不变') => ({ ok: false, reason, error });
 let serial = 0;
 
-// 单任务、逐角色、内存候选。文件和目录的提交由注入的存储适配器负责。
+// 单任务、同基线并发、固定顺序合成的内存候选。提交由存储适配器负责。
 export function createCgConsistencyService(deps) {
     const { store, nai, codec, getSceneAssets, resolveReference, targetStillLive, onAccepted } = deps;
     const now = deps.now || (() => new Date().toISOString());
@@ -31,15 +32,19 @@ export function createCgConsistencyService(deps) {
         'dna.views', 'promptTask', 'captions.length', 'captions.slotId', 'promptRecipe.bindings.length',
         'binding.token', 'binding.kind', 'binding.characterKey', 'binding.framing', 'binding.captionIndex',
         'characterMeta', 'characterMeta.binding', 'dnaCandidates', 'promptRecipe', 'outfit.name',
-        'outfit.description', 'promptTask.slotId', 'scene.caption']);
+        'outfit.description', 'promptTask.slotId', 'scene.caption', 'meta_fields', 'meta_rows',
+        'meta_kind', 'meta_key', 'meta_token', 'meta_frame', 'meta_identity', 'meta_signature',
+        'meta_outfit_name', 'meta_outfit_description', 'meta_region', 'prompt_mode']);
     // 外部错误正文可能含模型回复或凭据；日志只接受受控码、字段路径和数值索引。
     const reportFailure = (task, result) => {
         const reason = reasonCodes.has(result?.reason) ? result.reason : 'consistency-failed';
-        const d = result?.diagnostics;
+        const d = result?.diagnostics || result?.diagnostic;
         const details = [Number.isInteger(task.roundId) ? `slotid ${task.roundId}` : '',
+            ['prompt-input', 'prompt-parse', 'prompt-output', 'prompt-write', 'igs-prompt-input', 'igs-prompt-output'].includes(d?.stage) ? d.stage : '',
             diagnosticFields.has(d?.field) ? d.field : '',
-            Number.isInteger(d?.slotId) ? `slotid ${d.slotId}` : '',
-            Number.isInteger(d?.captionIndex) ? `Char ${d.captionIndex}` : '',
+            ['invalid', 'missing', 'mismatch', 'duplicate', 'placeholder', 'preserved', 'locked'].includes(d?.issue) ? d.issue : '',
+            Number.isInteger(d?.slotId) && d.slotId >= 1 && d.slotId <= 9999 ? `slotid ${d.slotId}` : '',
+            Number.isInteger(d?.captionIndex) && d.captionIndex >= 0 && d.captionIndex < 16 ? `Char ${d.captionIndex}` : '',
             Number.isInteger(d?.expectedCount) && Number.isInteger(d?.actualCount)
                 ? `预期 ${d.expectedCount} 份，实际 ${d.actualCount} 份` : ''].filter(Boolean).join('；');
         report(task, reason === 'cancelled' ? 'info' : 'error',
@@ -55,7 +60,9 @@ export function createCgConsistencyService(deps) {
             === JSON.stringify(c.dna));
     const requirementsUnchanged = (task) => !deps.writingRequirements
         || JSON.stringify(deps.writingRequirements()) === JSON.stringify(task.writingRequirements);
-    const canStart = (task) => live(task) && dnaUnchanged(task) && requirementsUnchanged(task);
+    const strength = () => normalizeConsistencyStrength(deps.consistencyStrength?.());
+    const strengthUnchanged = (task) => strength() === task.strength;
+    const canStart = (task) => !task.failed && live(task) && dnaUnchanged(task) && requirementsUnchanged(task) && strengthUnchanged(task) && configCurrent(task);
     const configCurrent = (task) => task.configIsCurrent?.() === true;
     const unchanged = async (task) => {
         guard(task);
@@ -64,7 +71,7 @@ export function createCgConsistencyService(deps) {
         if (!record || (record.revision || 0) !== (task.record.revision || 0)
             || record.revisionToken !== task.record.revisionToken) throw new Error('stale-revision');
         if (!dnaUnchanged(task)) throw new Error('stale-dna');
-        if (!requirementsUnchanged(task)) throw new Error('stale-config');
+        if (!requirementsUnchanged(task) || !strengthUnchanged(task)) throw new Error('stale-config');
         const config = await wait(task, nai.getEditConfig({ imageKind: 'cg', promptKind: 'cg' }));
         guard(task);
         if (!config?.ok || config.configToken !== task.editConfig.configToken
@@ -72,7 +79,7 @@ export function createCgConsistencyService(deps) {
             || !configCurrent(task))
             throw new Error('stale-config');
         if (!dnaUnchanged(task)) throw new Error('stale-dna');
-        if (!requirementsUnchanged(task)) throw new Error('stale-config');
+        if (!requirementsUnchanged(task) || !strengthUnchanged(task)) throw new Error('stale-config');
     };
     const capability = () => {
         const cap = nai?.describeEdit?.();
@@ -100,6 +107,7 @@ export function createCgConsistencyService(deps) {
         task.assets = assets;
         task.characters = chars.slice().sort((a, b) => a.captionIndex - b.captionIndex);
         if (deps.writingRequirements) task.writingRequirements = clone(deps.writingRequirements());
+        task.strength = strength();
         const config = await wait(task, nai.getEditConfig({ imageKind: 'cg', promptKind: 'cg' }));
         guard(task);
         if (!config?.ok) return config || failure('generation-config-unavailable');
@@ -118,14 +126,48 @@ export function createCgConsistencyService(deps) {
         task.bundle = bundle;
         await unchanged(task);
         task.phase = 'write';
-        report(task, 'info', `开始一次批量写词：${bundle.expected.length} 份模板`);
-        const written = await wait(task, nai.writeDbgenPrompt({ description: bundle.description,
-            promptTask: bundle.promptTask, characterContext: bundle.characterContext,
-            ...(task.writingRequirements && { writingRequirements: clone(task.writingRequirements) }),
-            signal: task.controller.signal, shouldStart: () => canStart(task) }));
+        report(task, 'info', `开始并发写词：${bundle.expected.length} 份独立模板`);
+        const written = await collect(task, bundle.expected.map(async (expected) => {
+            const slot = bundle.promptTask.slots.find((s) => s.slotId === expected.slotId);
+            const promptTask = { ...bundle.promptTask,
+                characters: bundle.promptTask.characters.filter((c) => slot.tokens.includes(c.token)), slots: [slot] };
+            const characterContext = bundle.characterContext.filter((c) =>
+                promptTask.characters.some((b) => b.characterKey === c.characterKey));
+            const output = { slotId: expected.slotId, size: expected.size || task.record.originalSize,
+                rows: expected.rows.map((row, captionIndex) => ({ captionIndex, kind: row.kind,
+                    characterKey: row.characterKey, token: row.token, framing: row.framing,
+                    centers: row.centers, outfit: row.kind === 'reference'
+                        ? { name: '', description: '' }
+                        : characterContext.find((c) => c.characterKey === row.characterKey).outfit })) };
+            await unchanged(task);
+            if (!canStart(task)) throw new Error('stale-config');
+            const result = await wait(task, nai.writeDbgenPrompt({
+                description: bundle.description
+                    + `\n本次只输出 slotid ${expected.slotId}，共 ${output.rows.length} 个 Char。其他轮次由独立请求完成。`
+                    + '\n本次输出清单（captionIndex 是本图连续零基索引，每个字段只写一次）：\n'
+                    + JSON.stringify(output),
+                promptTask, characterContext: clone(characterContext),
+                ...(task.writingRequirements && { writingRequirements: clone(task.writingRequirements) }),
+                signal: task.controller.signal, shouldStart: () => canStart(task) }));
+            await unchanged(task);
+            if (!result?.ok) return result ? { ...result, diagnostics: {
+                ...result.diagnostic, ...result.diagnostics, phase: 'write', slotId: expected.slotId,
+            } } : { ...failure('consistency-write-failed'),
+                diagnostics: { phase: 'write', slotId: expected.slotId } };
+            const actualCount = Array.isArray(result.captions) ? result.captions.length : 0;
+            const field = actualCount !== 1 ? 'captions.length'
+                : result.captions[0]?.slotId !== expected.slotId ? 'captions.slotId' : '';
+            if (field) return {
+                ...failure('DNA_TEMPLATE_BINDING', `一致性绑定校验失败：slotid ${expected.slotId} ${field} 不符合本次任务；原图保持不变`),
+                diagnostics: { phase: 'binding', field, slotId: expected.slotId,
+                    expectedCount: 1, actualCount },
+            };
+            return result;
+        }));
+        if (!written.ok) return written;
         await unchanged(task);
         task.phase = 'binding';
-        const checked = checkConsistencyCaptions(written, bundle, task.characters);
+        const checked = checkConsistencyCaptions({ ok: true, captions: written.values.flatMap((r) => r.captions) }, bundle, task.characters);
         if (!checked.ok) return checked;
         task.scene = checked.scene;
         task.rounds = checked.rounds;
@@ -141,11 +183,26 @@ export function createCgConsistencyService(deps) {
         signal.addEventListener('abort', abort, { once: true });
         Promise.resolve(promise).then((value) => { cleanup(); resolve(value); }, (error) => { cleanup(); reject(error); });
     });
+    // 等所有本地分支收敛；失败后禁止排队分支开始，不提交部分成功。
+    async function collect(task, jobs) {
+        const settled = await Promise.allSettled(jobs.map((job) => Promise.resolve(job).then((result) => {
+            if (!result?.ok) task.failed = true;
+            return result;
+        }, (error) => { task.failed = true; throw error; })));
+        guard(task);
+        // 保留实际分支失败，不让同组停发产生的派生错误掩盖诊断。
+        const failed = settled.find((r) => r.status === 'fulfilled' && !r.value?.ok);
+        if (failed) return failed.value || failure('consistency-failed');
+        const rejected = settled.find((r) => r.status === 'rejected');
+        if (rejected) throw rejected.reason;
+        return { ok: true, values: settled.map((r) => r.value) };
+    }
     function release(task) {
         task.detach?.();
         task.references = null;
         task.pixels = null;
         task.dataUrl = '';
+        task.originalDataUrl = '';
         if (active === task) active = null;
     }
     async function generate(task) {
@@ -155,6 +212,7 @@ export function createCgConsistencyService(deps) {
             task.phase = 'reference';
             const hydrated = store.hydrateSlot ? await wait(task, store.hydrateSlot(task.record)) : task.record;
             let pixels = await wait(task, codec.decodeImage(hydrated.dataUrl, { signal: task.controller.signal }));
+            task.originalDataUrl = hydrated.dataUrl;
             guard(task);
             const size = task.record.originalSize;
             if (size && (size.width !== pixels.width || size.height !== pixels.height)) throw new Error('cg-size-mismatch');
@@ -172,39 +230,44 @@ export function createCgConsistencyService(deps) {
             }
             const templates = await writeTemplates(task);
             if (!templates.ok) return templates;
-            for (let i = 0; i < task.characters.length; i++) {
+            const baseline = pixels;
+            task.phase = 'edit';
+            let completed = 0;
+            const edited = await collect(task, task.characters.map(async (binding, i) => {
                 await unchanged(task);
-                const binding = task.characters[i], plan = task.plans[i];
-                task.phase = 'edit';
-                task.roundId = task.rounds[i].slotId;
-                report(task, 'info', `开始局部重绘 ${i + 1}/${task.characters.length}；slotid ${task.roundId}`);
-                task.options.onProgress?.({ phase: 'consistency', done: i, total: task.characters.length, characterKey: binding.characterKey });
-                const work = buildReferencePixels(pixels, task.references[i], plan);
+                const plan = task.plans[i], round = task.rounds[i];
+                report(task, 'info', `开始局部重绘 ${i + 1}/${task.characters.length}；slotid ${round.slotId}`);
+                const work = buildReferencePixels(baseline, task.references[i], plan);
                 const sourceDataUrl = await wait(task, codec.encodePixels(work.image));
                 const maskDataUrl = await wait(task, codec.encodePixels(work.mask));
                 await unchanged(task);
-                const result = await wait(task, nai.edit({ ...task.rounds[i], sourceDataUrl, maskDataUrl,
-                    width: plan.size.width, height: plan.size.height, strength: 0.35, imageKind: 'cg', promptKind: 'cg',
+                if (!canStart(task)) throw new Error('stale-config');
+                const result = await wait(task, nai.edit({ ...round, sourceDataUrl, maskDataUrl,
+                    width: plan.size.width, height: plan.size.height, strength: task.strength, imageKind: 'cg', promptKind: 'cg',
                     artist: task.editConfig.artist, expectedConfigToken: task.editConfig.configToken,
                     signal: task.controller.signal, shouldStart: () => canStart(task) }));
                 await unchanged(task);
                 if (!result?.ok || !result.dataUrl) return failure(result?.reason || 'edit-failed', result?.error);
                 if (!result.promptRecipe || !result.dnaSnapshot || !result.sentPrompt)
                     return failure('PROMPT_MODE_CONFLICT', '重绘结果缺少实际发送来源，原图保持不变');
-                task.audit.push({ slotId: task.rounds[i].slotId, characterKey: binding.characterKey,
-                    ...promptProvenance(result) });
                 const generated = await wait(task, codec.decodeImage(result.dataUrl, { signal: task.controller.signal }));
                 guard(task);
-                pixels = composeReferencePixels(pixels, generated, plan);
-            }
+                task.options.onProgress?.({ phase: 'consistency', done: ++completed, total: task.characters.length, characterKey: binding.characterKey });
+                return { ok: true, generated, audit: { slotId: round.slotId, characterKey: binding.characterKey, ...promptProvenance(result) } };
+            }));
+            if (!edited.ok) return edited;
             task.phase = 'compose';
-            delete task.roundId;
+            // 结果到达顺序不影响回贴；重叠支撑区按原 captionIndex 顺序混合。
+            for (const [i, result] of edited.values.entries()) {
+                pixels = composeReferencePixels(pixels, result.generated, task.plans[i]);
+                task.audit.push(result.audit);
+            }
             task.dataUrl = await wait(task, codec.encodePixels(pixels));
             await unchanged(task);
             task.state = 'candidate';
             report(task, 'info', '候选已生成，尚未保存；请在预览中接受或取消');
             return { ok: true, reason: 'candidate', candidateId: task.id, dataUrl: task.dataUrl,
-                width: pixels.width, height: pixels.height };
+                originalDataUrl: task.originalDataUrl, width: pixels.width, height: pixels.height };
         } catch (error) {
             return failure(task.controller.signal.aborted ? 'cancelled' : (error?.message || 'consistency-failed'));
         } finally {
@@ -252,7 +315,7 @@ export function createCgConsistencyService(deps) {
                     shouldCommit: () => canStart(task) && configCurrent(task) });
             if (!result?.ok) {
                 const rejected = failure(!dnaUnchanged(task) ? 'stale-dna'
-                : !requirementsUnchanged(task) || !configCurrent(task) ? 'stale-config'
+                : !requirementsUnchanged(task) || !strengthUnchanged(task) || !configCurrent(task) ? 'stale-config'
                 : result?.reason || 'slot-update-failed');
                 reportFailure(task, rejected);
                 return rejected;
