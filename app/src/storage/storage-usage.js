@@ -42,5 +42,10 @@ export function describeMediaUsage(stats) {
     const cache = stats.cache, lifecycle = stats.lifecycle || {};
     const mb = value => `${(Math.max(0, Number(value) || 0) / 1024 / 1024).toFixed(1)} MB`;
     const pending = (stats.records || []).reduce((sum, row) => sum + (row.dirty || 0), 0);
-    return `内存 ${cache.memoryCount} 张 / ${mb(cache.memoryBytes)}（上限 ${mb(cache.memoryBudget)}）；本地 ${cache.diskCount} 张 / ${mb(cache.diskBytes)}（上限 ${mb(cache.diskBudget)}）；正在加载 ${cache.pending} 张；待备份 ${pending} 条；待回收 ${lifecycle.pendingDeletes || 0} 个文件（共享引用保护 ${lifecycle.protectedDeletes || 0}，失败待重试 ${lifecycle.failedDeletes || 0}）`;
+    const disk = cache.persistent ? `IndexedDB ${cache.diskCount} 张 / ${mb(cache.diskBytes)}（上限 ${mb(cache.diskBudget)}）`
+        : cache.backend === 'memory-adapter' || cache.backend === 'custom' ? `临时存储 ${cache.diskCount} 张 / ${mb(cache.diskBytes)}（不跨会话保存）`
+        : `跨会话缓存未启用${cache.backend === 'unavailable' ? '（IndexedDB 不可用）' : '（仅使用中央内存）'}`;
+    const auxiliary = cache.auxiliary?.owners || [];
+    const metadata = auxiliary.map(row => `${row.purpose} ${row.count || 0}${row.maxEntries ? `/${row.maxEntries}` : `（${row.activeScopes || 0}/${row.maxScopes} 个范围）`}`).join('、');
+    return `图片编码字节 ${cache.memoryCount} 张 / ${mb(cache.memoryBytes)}（上限 ${mb(cache.memoryBudget)}）；${disk}；正在加载 ${cache.pending} 张；辅助缓存 ${auxiliary.length} 个${metadata ? `：${metadata}` : ''}；待备份 ${pending} 条；待回收 ${lifecycle.pendingDeletes || 0} 个文件（共享引用保护 ${lifecycle.protectedDeletes || 0}，失败待重试 ${lifecycle.failedDeletes || 0}）`;
 }

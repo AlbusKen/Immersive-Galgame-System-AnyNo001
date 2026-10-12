@@ -233,6 +233,12 @@ test('gate:map-gen:clear-cancels-encoding-and-a-late-callback-cannot-drop-the-re
     assert.equal(mediaCache.peek(`map:${input.key}:lights`), url);
     assert.equal((await mediaCache.stats()).activeCount, 1);
     assert.deepEqual(revoked, []);
+    // 同一个资源键换了句柄，结果索引也必须重新解析，不能继续提供撤销的旧 URL。
+    mediaCache.forget(`map:${input.key}:lights`);
+    const refreshed = mediaCache.remember(`map:${input.key}:lights`, new Blob(['refreshed'], { type: 'image/webp' }));
+    assert.notEqual(refreshed, url);
+    assert.equal(generator.peek(input.key).result.lightsUrl, refreshed);
+    assert.deepEqual(revoked, [url]);
     generator.dispose(); await mediaCache.destroy();
 });
 

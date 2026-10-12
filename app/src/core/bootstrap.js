@@ -63,7 +63,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.40';
+const IGS_VERSION = '0.36.41';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -253,7 +253,6 @@ export function bootstrapIGS(options = {}) {
         extensionPanel: null,
     };
     const offMediaClear = media.cache.onClear(() => {
-        illustrationService.clearCache?.(); assetGenerationService.clearCache?.(); itemCg.itemImages.clearCache?.(); readerImageService.clearCache?.();
         events.emit('igs:media-cache-cleared');
     });
     let publicApi = null;

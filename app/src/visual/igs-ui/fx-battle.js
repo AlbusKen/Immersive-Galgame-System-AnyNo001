@@ -235,7 +235,7 @@ function placeImpact(node, event, motion, sprite) {
         impact.style.left = `${point.x}px`;
         impact.style.top = `${point.y}px`;
     };
-    const probed = peekSpriteHead(sprite.url);
+    const probed = peekSpriteHead(sprite.url, motion.ownerDocument);
     const manual = sprite.head && Number(sprite.head.w) > 0;
     if (probed || manual || !motion || !motion.ownerDocument) {
         apply(probed);

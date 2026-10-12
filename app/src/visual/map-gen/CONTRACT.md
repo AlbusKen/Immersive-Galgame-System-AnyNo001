@@ -14,6 +14,7 @@
   - `request(input)` 返回共享的任务条目 `{ status: pending|ready|failed, result: { url, lightsUrl, width, height }, error, promise }`；同一 `key` 不会重复开工。
   - 工作按 `budgetMs`（默认 10ms）切片、通过 `schedule` 交还宿主事件循环；超过 `timeoutMs`（默认 8s）判失败。不依赖 Worker，酒馆 CSP 下也能运行。
   - 任务元数据 LRU 保留最近 `cacheSize`（默认 4）项；底图/灯光像素和对象 URL 交给注入的中央 `mediaCache`，不另存字节。当前底图与灯光分别持租约，换图、关闭与 `dispose()` 释放；清缓存世代失效后按输入重建。
+  - v0.36.41：任务索引通过中央 `auxiliary` 管理容量、清理、统计和销毁，失败结果 30 秒过期；淘汰仍取消旧任务并释放对应资源。`dispose()` 解除所有者登记。
 - `generateCityScene(input)` / `generateCitySteps(input)`：几何生成，输出纯数据 `MapScene`，可 `JSON.stringify`：
   - 水系 `sea / rivers / lakes / ponds`；道路 `mainRoads`（`kind: arterial | link`）、`streets`、`lanes`（田间小路）、`paths`（园路）、`rails`、`bridges`；
   - 用地 `ground { cols, rows, zone[], urban[] }`（8px 一格：水、沙滩、公园、神社林、野林、城区、郊区、村落、田野），以及 `fields / parking / courts`；

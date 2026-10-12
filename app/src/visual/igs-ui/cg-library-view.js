@@ -39,7 +39,7 @@ export function createCgLibraryView(library, options = {}) {
     const thumbKey = key => `thumb:cg:${key}:${String(state.all.find(entry => entry.key === key)?.updatedAt || '')}`;
     const thumbs = { get: key => cache.peek(thumbKey(key)), has: key => Boolean(cache.peek(thumbKey(key))), set: (key, url) => cache.remember(thumbKey(key), url), delete: key => cache.forget(thumbKey(key)) };
     const leases = createMediaLeaseScope(cache);
-    const failed = new Map();
+    const failed = cache.auxiliary.createMap('cg-failures');
     const batching = new Map();
     const working = new Map();
     let openGen = 0;
@@ -47,9 +47,19 @@ export function createCgLibraryView(library, options = {}) {
     let queue = [];
     let opening = null;
     let disposed = false;
+    let opened = false;
     let waiters = [];
     const resetThumbWork = () => { thumbGeneration += 1; failed.clear(); queue = []; batching.clear(); working.clear(); };
-    const offClear = cache.onClear(() => { resetThumbWork(); if (!disposed) { emit('list'); void loadPageThumbs(); } });
+    const owner = cache.auxiliary.register('cg-catalogue', {
+        clear() {
+            openGen += 1; resetThumbWork(); opening = null;
+            state.all = []; state.list = []; state.entries = []; state.phase = 'idle'; state.sync = null;
+            leases.releaseAll(); wake();
+        },
+        destroy() { disposed = true; onChange = () => {}; },
+        stats: () => ({ count: state.all.length, activeScopes: opened ? 1 : 0, pending: Number(Boolean(opening)) + batching.size + working.size + queue.length }),
+    });
+    const offClear = cache.onClear(() => { if (!disposed && opened) void open(); });
 
     const emit = (type, key) => {
         try { onChange(type, key); } catch (error) { console.warn('[IGS] CG 库界面刷新失败', type, error); }
@@ -197,6 +207,8 @@ export function createCgLibraryView(library, options = {}) {
     }
 
     function open(filters) {
+        if (disposed) return Promise.resolve();
+        opened = true;
         if (filters) state.filters = { ...state.filters, ...filters };
         const gen = ++openGen;
         resetThumbWork();
@@ -308,10 +320,7 @@ export function createCgLibraryView(library, options = {}) {
         readFull: (entry) => library.readFull(entry),
         whenIdle: () => (busy() ? new Promise((resolve) => { waiters.push(resolve); }) : Promise.resolve()),
         dispose() {
-            openGen += 1;
-            disposed = true; offClear(); leases.releaseAll();
-            resetThumbWork(); opening = null; wake();
-            onChange = () => {};
+            disposed = true; offClear(); owner.destroy(); failed.destroy();
         },
     };
 }

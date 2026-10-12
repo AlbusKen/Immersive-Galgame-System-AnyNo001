@@ -26,15 +26,15 @@ export function createResourceCache(store = new Map()) {
 
 export function createImageResourceCache(globalObject = globalThis, { limit = 96 } = {}) {
     const cache = localImageCacheFor(globalObject);
-    const sources = new Set();
+    const sources = cache.auxiliary.createMap('reader-sources', { maxEntries: limit,
+        onRemove: (_value, key, reason) => { if (reason === 'clear' || reason === 'destroy') cache.forget(key); } });
     const files = createTavernImageFiles(globalObject, 'igs-media');
     const keyOf = source => isImagePath(source) ? normalizeImagePath(source) : /^(data:|blob:)/i.test(source) ? `display:${imageFingerprint(source)}` : `url:${source}`;
     function load(url) {
         const source = String(url || '').trim();
         if (!source) return Promise.resolve('');
         const key = keyOf(source);
-        sources.delete(key); sources.add(key);
-        while (sources.size > limit) sources.delete(sources.values().next().value);
+        sources.set(key, true);
         const ready = cache.peek(key);
         if (ready) return Promise.resolve(ready);
         if (isImagePath(source)) return files.read(source).then(value => value ? cache.peek(key) || value : '');
@@ -51,6 +51,6 @@ export function createImageResourceCache(globalObject = globalThis, { limit = 96
         }, { persist: false, timeoutMs: 15000 }).then(value => value ? cache.peek(key) || source : '').catch(() => source);
     }
     return { load, get: url => cache.peek(keyOf(String(url || '').trim())),
-        clear() { for (const key of sources) cache.forget(key); sources.clear(); },
-        size: () => [...sources].filter(key => cache.peek(key)).length };
+        clear() { sources.clear(); }, destroy() { sources.destroy(); },
+        size: () => [...sources.keys()].filter(key => cache.peek(key)).length };
 }

@@ -67,9 +67,11 @@ export function createAssetGenerationService(deps) {
     const pendingThumbs = new Set();
     const imageKey = id => `asset:${id}`;
     const thumbKey = id => `thumb:asset:${id}`;
-    let tempChatId = '';
-    let tempRecords = new Map();
-    let tempLoading = null;
+    const tempCache = cache.auxiliary.scopedRecords('asset-records', {
+        onHydrated: chatId => emit({ chatId, reason: 'hydrated' }),
+        onClear: () => { pendingImages.clear(); pendingThumbs.clear(); },
+        pendingCount: () => pendingImages.size + pendingThumbs.size,
+    });
     let offRendered = null;
     let stopped = false;
 
@@ -107,30 +109,19 @@ export function createAssetGenerationService(deps) {
 
     async function persistTempRecord(record) {
         const old = typeof store.getAssetsByChat === 'function'
-            ? (await store.getAssetsByChat(record.chatId)).find(value => value.key === record.key) : tempRecords.get(record.key);
+            ? (await store.getAssetsByChat(record.chatId)).find(value => value.key === record.key) : tempCache.records.get(record.key);
         try { await store.putAsset(record); }
         catch (error) { if (record.imageId && record.imageId !== old?.imageId) await deleteImagesImpl([record.imageId]); throw error; }
         if (old?.imageId && old.imageId !== record.imageId) await deleteImagesImpl([old.imageId]);
     }
     function loadTempRecords(chatId) {
-        if (!chatId) return Promise.resolve();
-        if (chatId === tempChatId && !tempLoading) return Promise.resolve();
-        if (chatId === tempChatId && tempLoading) return tempLoading;
-        tempChatId = chatId;
-        tempRecords = new Map();
-        tempLoading = store.getAssetsByChat(chatId).then((list) => {
-            if (tempChatId !== chatId) return;
-            for (const record of list || []) tempRecords.set(record.key, record);
-            tempLoading = null;
-            if (tempRecords.size) emit({ chatId, reason: 'hydrated' });
-        }).catch(() => { tempLoading = null; });
-        return tempLoading;
+        return tempCache.ensure(chatId, target => store.getAssetsByChat(target));
     }
 
     function currentTempRecords() {
         const chatId = messageHost.getChatId();
-        if (chatId !== tempChatId) void loadTempRecords(chatId);
-        return chatId === tempChatId ? tempRecords : new Map();
+        if (!stopped) void loadTempRecords(chatId);
+        return chatId === tempCache.scope ? tempCache.records : new Map();
     }
 
     function tempUrl(record) {
@@ -140,7 +131,7 @@ export function createAssetGenerationService(deps) {
 
     function tempBackground(scene, time) {
         const records = currentTempRecords();
-        const exact = records.get(tempAssetKeyOf(tempChatId, { type: 'background', name: scene, time }));
+        const exact = records.get(tempAssetKeyOf(tempCache.scope, { type: 'background', name: scene, time }));
         if (tempUrl(exact)) return tempUrl(exact);
         for (const record of records.values()) {
             if (record.type === 'background' && record.name === scene && tempUrl(record)) return tempUrl(record);
@@ -149,12 +140,12 @@ export function createAssetGenerationService(deps) {
     }
 
     function tempSceneTime(scene, time) {
-        const record = currentTempRecords().get(tempAssetKeyOf(tempChatId, { type: 'background', name: scene, time }));
+        const record = currentTempRecords().get(tempAssetKeyOf(tempCache.scope, { type: 'background', name: scene, time }));
         return record ? { url: tempUrl(record) } : null;
     }
 
     function tempSprite(name) {
-        return tempUrl(currentTempRecords().get(tempAssetKeyOf(tempChatId, { type: 'sprite', name })));
+        return tempUrl(currentTempRecords().get(tempAssetKeyOf(tempCache.scope, { type: 'sprite', name })));
     }
 
     // 待确认 / 仅本聊天使用的立绘生成时写的 tag（第一个通常是 1girl / 1boy）：{ 角色名: tags }。
@@ -174,16 +165,17 @@ export function createAssetGenerationService(deps) {
         if (hit) return hit;
         if (!pendingImages.has(id)) {
             pendingImages.add(id);
+            const generation = tempCache.epoch();
             const stamp = cache.token(key);
             cache.load(key, async () => (await store.getImage(id, { fields: ['dataUrl'] }))?.dataUrl || '', { persist: false })
-                .then(value => { if (value && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' }); })
-                .catch(() => {}).finally(() => pendingImages.delete(id));
+                .then(value => { if (value && tempCache.epoch() === generation && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' }); })
+                .catch(() => {}).finally(() => { if (tempCache.epoch() === generation) pendingImages.delete(id); });
         }
         return '';
     }
 
     async function loadSmallThumb(id) {
-        const key = thumbKey(id), stamp = cache.token(key);
+        const key = thumbKey(id), stamp = cache.token(key), generation = tempCache.epoch();
         const value = await cache.load(key, async () => {
             let dataUrl = await thumbStore.get(id).catch(() => '');
             if (dataUrl) return dataUrl;
@@ -193,7 +185,7 @@ export function createAssetGenerationService(deps) {
             if (small && cache.token(key) === stamp) await thumbStore.put(id, small, stamp);
             return small || full;
         });
-        if (value && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' });
+        if (value && tempCache.epoch() === generation && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' });
     }
 
     function thumbSourceId(url) {
@@ -207,7 +199,8 @@ export function createAssetGenerationService(deps) {
         if (ready) return ready;
         if (!pendingThumbs.has(id)) {
             pendingThumbs.add(id);
-            loadSmallThumb(id).catch(() => {}).finally(() => pendingThumbs.delete(id));
+            const generation = tempCache.epoch();
+            loadSmallThumb(id).catch(() => {}).finally(() => { if (tempCache.epoch() === generation) pendingThumbs.delete(id); });
         }
         return '';
     }
@@ -309,7 +302,7 @@ export function createAssetGenerationService(deps) {
             report('error', `素材「${item.need.name}」生成失败：${record.error}`);
         }
         await persistTempRecord(record);
-        if (tempChatId === floor.chatId) tempRecords.set(key, record);
+        if (tempCache.scope === floor.chatId) tempCache.records.set(key, record);
         emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
         return record;
     }
@@ -349,7 +342,7 @@ export function createAssetGenerationService(deps) {
             }
         }
         await persistTempRecord(record);
-        if (tempChatId === floor.chatId) tempRecords.set(key, record);
+        if (tempCache.scope === floor.chatId) tempCache.records.set(key, record);
         if (record.status !== 'skipped') emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
         return record;
     }
@@ -410,7 +403,7 @@ export function createAssetGenerationService(deps) {
                 report('error', `素材「${item.need.name}」生成失败：${record.error}`);
             }
             await persistTempRecord(record);
-            if (tempChatId === floor.chatId) tempRecords.set(key, record);
+            if (tempCache.scope === floor.chatId) tempCache.records.set(key, record);
             emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
             records.push(record);
         }
@@ -443,7 +436,7 @@ export function createAssetGenerationService(deps) {
                 report('error', `素材「${item.need.name}」生成失败：${record.error}`);
             }
             await persistTempRecord(record);
-            if (tempChatId === floor.chatId) tempRecords.set(key, record);
+            if (tempCache.scope === floor.chatId) tempCache.records.set(key, record);
             emit({ chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, key, reason: 'generated' });
             return record;
         };
@@ -673,7 +666,7 @@ export function createAssetGenerationService(deps) {
         const next = { ...record, status, updatedAt: now() };
         if (status === 'discarded') next.imageId = '';
         await store.putAsset(next);
-        tempRecords.set(key, next);
+        if (tempCache.scope === next.chatId && !stopped) tempCache.records.set(key, next);
         if (status === 'discarded' && record.imageId) {
             const deleted = await store.deleteImage(record.imageId);
             if (!deleted?.retained?.length) { forgetImage(record.imageId); invalidateThumb(record.imageId); }
@@ -1134,10 +1127,10 @@ export function createAssetGenerationService(deps) {
                 void processMessage(Number(messageId));
             });
         },
-        clearCache() { pendingImages.clear(); pendingThumbs.clear(); },
+        clearCache() { tempCache.clear(); },
         stop() {
             stopped = true;
-            pendingImages.clear(); pendingThumbs.clear();
+            tempCache.clear();
             if (offRendered) { offRendered(); offRendered = null; }
         },
     };

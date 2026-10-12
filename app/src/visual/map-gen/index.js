@@ -46,7 +46,6 @@ export function createMapBasemapGenerator(options = {}) {
     const view = doc?.defaultView || globalThis;
     const budget = options.budgetMs ?? 10;
     const timeout = options.timeoutMs ?? 8000;
-    const limit = options.cacheSize ?? 4;
     const now = options.now || (() => (view.performance || globalThis.performance || Date).now());
     const schedule = options.schedule || (fn => (view.setTimeout || setTimeout)(fn, 0));
     const createCanvas = options.createCanvas || ((w, h) => {
@@ -57,13 +56,11 @@ export function createMapBasemapGenerator(options = {}) {
         return canvas;
     });
     const renderScale = options.scale ?? ((view.devicePixelRatio || 1) >= 1.5 ? 2 : 1.5);
-    const cache = new Map();
     const media = options.mediaCache || localImageCacheFor(view);
     const leases = createMediaLeaseScope(media);
     let activeKey = '';
     let generation = 0;
     let disposed = false;
-    const offClear = media.onClear(() => { generation += 1; for (const entry of cache.values()) entry.cancelled = true; cache.clear(); });
 
     const revoke = entry => {
         if (entry?.key === activeKey) { leases.releaseAll(); activeKey = ''; }
@@ -71,12 +68,14 @@ export function createMapBasemapGenerator(options = {}) {
         entry.cancelled = true;
         for (const key of entry.resourceKeys || []) media.forget(key);
     };
+    const cache = media.auxiliary.createMap('maps', {
+        maxEntries: options.cacheSize,
+        onRemove: revoke,
+        onClear: () => { generation += 1; leases.releaseAll(); activeKey = ''; },
+        onDestroy: () => { disposed = true; },
+    });
     const remember = (key, entry) => {
-        cache.delete(key); cache.set(key, entry);
-        while (cache.size > limit) {
-            const [oldKey, old] = cache.entries().next().value;
-            cache.delete(oldKey); revoke(old);
-        }
+        cache.set(key, entry);
     };
 
     // 按时间预算推进生成器：每片不超过 budget 毫秒，其余交回宿主事件循环。
@@ -129,13 +128,16 @@ export function createMapBasemapGenerator(options = {}) {
     function peek(key) {
         const entry = cache.get(key);
         if (!entry) return null;
-        if (entry.status === 'ready' && entry.resourceKeys.some(resourceKey => !media.peek(resourceKey))) { cache.delete(key); revoke(entry); return null; }
-        cache.delete(key);
-        cache.set(key, entry);
+        if (entry.status === 'ready') {
+            const current = new Map(entry.resourceKeys.map(resourceKey => [resourceKey, media.peek(resourceKey)]));
+            if ([...current.values()].some(url => !url)) { cache.delete(key); return null; }
+            entry.result = { ...entry.result, url: current.get(`map:${key}:base`) || '', lightsUrl: current.get(`map:${key}:lights`) || '' };
+        }
         return entry;
     }
 
     function request(input) {
+        if (disposed) return { key: input.key, status: 'failed', error: 'disposed', result: null };
         const existing = peek(input.key);
         if (input.key !== activeKey) { leases.releaseAll(); activeKey = input.key; }
         leases.begin();
@@ -162,6 +164,7 @@ export function createMapBasemapGenerator(options = {}) {
                 if (cache.get(input.key) === entry) revoke(entry);
                 entry.status = 'failed';
                 entry.error = String(error?.message || error);
+                if (cache.get(input.key) === entry) cache.set(input.key, entry);
                 return entry;
             });
         remember(input.key, entry);
@@ -169,9 +172,7 @@ export function createMapBasemapGenerator(options = {}) {
     }
 
     function dispose() {
-        disposed = true; offClear(); leases.releaseAll();
-        for (const entry of cache.values()) revoke(entry);
-        cache.clear();
+        cache.destroy();
     }
 
     return { request, peek, dispose, releaseActive() { leases.releaseAll(); activeKey = ''; } };

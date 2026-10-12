@@ -61,7 +61,7 @@ function avatar(env, name, className) {
     wrap.setAttribute('aria-hidden', 'true');
     const sprite = spriteOn(env, name);
     if (sprite && String(name || '').trim()) {
-        const crop = resolveRegionCrop({ url: urlOfImage(sprite.style && sprite.style.backgroundImage) }, 'face', 1);
+        const crop = resolveRegionCrop({ url: urlOfImage(sprite.style && sprite.style.backgroundImage) }, 'face', 1, sprite.ownerDocument);
         const face = cloneSpriteLayer(env.root, name, { speaker: env.speaker, crop });
         if (face) {
             wrap.appendChild(face);

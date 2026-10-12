@@ -4,6 +4,7 @@ export function createMemoryImageCacheStore() {
     const files = new Map(), meta = new Map();
     const discard = identity => { if (![...meta.values()].some(row => row.identity === identity)) files.delete(identity); };
     return {
+        backend: 'memory-adapter', persistent: false,
         async get(path) { return files.get(meta.get(path)?.identity)?.data || ''; },
         async put(path, data, usedAt, bytes, identity = path) {
             const old = meta.get(path)?.identity;
@@ -33,6 +34,7 @@ export function createIdbImageCacheStore(idb) {
         return () => undefined;
     });
     return {
+        backend: 'indexeddb', persistent: true,
         close: conn.close,
         async get(path) {
             let data = '';

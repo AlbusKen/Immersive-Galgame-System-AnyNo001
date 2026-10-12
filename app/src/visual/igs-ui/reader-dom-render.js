@@ -1529,7 +1529,7 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
                 ...heightMeta(m.character, m.mood, m.outfit, layout),
             }, m.character, m.outfit, m.slotIndex);
         }).filter((m) => m.url),
-        peek: peekSpriteHead,
+        peek: url => peekSpriteHead(url, root.ownerDocument),
     } : null;
     // 站位姿态（castStage）只作用于多人布局：收成单人或槽位编辑时 castPlanInput 为空，姿态自然暂停。
     const castPlan = castPlanInput ? resolveCastPosePlan(snapshot, planCastLayouts(castPlanInput), castSpeakerKey) : null;
@@ -1575,7 +1575,7 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
             if (backFallback) layout.scale = Math.round(Number(layout.scale) * SPRITE_BACK_SCALE * 100) / 100;
             stageSprite = { url: spriteAssetUrl, key: spriteKey, posX: Number(layout.posX) };
             fxSprite = { url: spriteAssetUrl, posX: Number(layout.posX), posY: Number(layout.posY), scale: Number(layout.scale), head: resolveSpriteHead(snapshot.readerSettings.spriteHeads, spriteKey, spriteMood, spriteOutfit), multi: Boolean(castPlan && castPlan.members.length), flip: visualFlip };
-            const probed = peekSpriteHead(spriteAssetUrl);
+            const probed = peekSpriteHead(spriteAssetUrl, root.ownerDocument);
             speakerBack = speakerPose.back ? speakerPose.backText || BACK_HINT_DEFAULT : null;
             spritePose = { layout, flip: fxSprite.flip, back: backFallback, turn: backArt ? '' : speakerPose.turn, widthPct: spriteWidthPercent(stageW, stageH, { ...layout, naturalW: probed && probed.naturalW, naturalH: probed && probed.naturalH }), spriteKey, spriteMood, spriteOutfit };
         }

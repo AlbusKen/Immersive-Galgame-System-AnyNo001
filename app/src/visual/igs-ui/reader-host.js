@@ -1,5 +1,5 @@
 import { createMediaLeaseScope } from '../../media/media-lease-scope.js';
-import { clearSpriteHeadCache } from './fx-anchor.js';
+import { bindImageCacheDocument } from '../../media/tavern-image-cache.js';
 import { narrationKeepsSprite, narrationCastLeft, otherNamesOf } from '../../scene/narration-sprite.js';
 import {
     buildIgsTextPayload,
@@ -289,6 +289,7 @@ function normalizeReaderSettingsCached(settings, legacyTheme) {
 }
 
 export function createIgsReaderHost(options = {}) {
+    bindImageCacheDocument(getRootDocument(options.global), options.media?.cache);
     let statusHudClient = null;
     let statusHudCallback = null;
     let statusHudTimer = 0;
@@ -375,7 +376,6 @@ export function createIgsReaderHost(options = {}) {
     const imageResourceCache = createImageResourceCache(options.global || globalThis, { limit: 96 });
     let mediaHostDisposed = false;
     const offMediaClear = options.media?.cache?.onClear(() => {
-        clearSpriteHeadCache();
         state.activeReader?.assetLoadRequests?.clear();
         queueMicrotask(() => {
             if (mediaHostDisposed) return;
@@ -1050,7 +1050,7 @@ export function createIgsReaderHost(options = {}) {
         closeReader();
         disarmEditReopen();
         streamObserver.stop();
-        imageResourceCache.clear();
+        imageResourceCache.destroy();
         return { ok: true };
     }
 
@@ -4004,6 +4004,7 @@ export function createIgsReaderHost(options = {}) {
             && payload.message.element.ownerDocument;
         const doc = messageDoc || rootDoc;
         if (!doc) return null;
+        bindImageCacheDocument(doc, options.media?.cache);
         ensureStyleTag(doc, 'igs-overlay-style', getOriginalReaderStyleText());
         const existing = doc.getElementById('igs-overlay');
         if (existing) existing.remove();

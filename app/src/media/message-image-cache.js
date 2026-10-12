@@ -2,19 +2,26 @@ import { createLocalImageCache } from './tavern-image-cache.js';
 import { imageFingerprint, isImageData } from './image-identity.js';
 export function createMessageImageCache(store = new Map(), options = {}) {
     const media = options.mediaCache || createLocalImageCache({});
-    const limit = options.limit || 128;
     let epoch = 0;
+    const records = media.auxiliary.createMap('messages', { store, maxEntries: options.limit, onClear: () => { epoch += 1; } });
     const keyOf = (id, scope = {}) => JSON.stringify([String(scope.chatId || ''), id, Number(scope.swipeId) || 0, String(scope.revision || '')]);
-    const offClear = media.onClear(() => { epoch += 1; store.clear(); });
+    function resolve(entry) {
+        if (!entry) return null;
+        const images = entry.images.map(image => {
+            const { resourceKey, ...metadata } = image;
+            return { ...metadata, url: resourceKey ? media.peek(resourceKey) : image.url };
+        });
+        // 元数据只保存稳定资源键；像素被淘汰后重新向消息/provider 取图，不能返回旧 Blob URL。
+        if (images.some(image => !image.url)) return null;
+        return { ...cloneData(entry), images, count: images.length };
+    }
     return {
         epoch: () => epoch,
-        destroy() { offClear(); store.clear(); epoch += 1; },
+        destroy() { records.destroy(); },
         get(messageId, scope) {
             const normalizedId = normalizeMessageId(messageId);
             if (normalizedId == null) return null;
-            const key = keyOf(normalizedId, scope), entry = store.get(key);
-            if (entry) { store.delete(key); store.set(key, entry); }
-            return cloneData(entry || null);
+            return resolve(records.get(keyOf(normalizedId, scope)));
         },
 
         remember(messageId, images, options = {}) {
@@ -23,25 +30,31 @@ export function createMessageImageCache(store = new Map(), options = {}) {
                 return { ok: false, reason: 'invalid-message-id', messageId };
             }
             const key = keyOf(normalizedId, options.scope);
-            const nextImages = normalizeImages(images).map(image => isImageData(image.url) ? { ...image, url: media.remember(`external:${imageFingerprint(image.url)}`, image.url) } : image);
-            const current = store.get(key);
+            const nextImages = normalizeImages(images).map(image => {
+                let resourceKey = media.sourceId(image.url);
+                if (isImageData(image.url)) {
+                    resourceKey = `external:${imageFingerprint(image.url)}:${image.url.length}`;
+                    media.remember(resourceKey, image.url);
+                }
+                return resourceKey ? { ...image, url: '', resourceKey } : image;
+            });
+            const current = records.get(key);
             const merged = options.merge === true && current
                 ? uniqueImages([...(current.images || []), ...nextImages])
                 : nextImages;
             const entry = createEntry(normalizedId, merged);
-            store.set(key, entry);
-            while (store.size > limit) store.delete(store.keys().next().value);
-            return { ok: true, entry: cloneData(entry) };
+            records.set(key, entry);
+            return { ok: true, entry: resolve(entry) || createEntry(normalizedId, []) };
         },
 
         clearMessage(messageId, scope) {
             const normalizedId = normalizeMessageId(messageId);
             if (normalizedId == null) return { ok: false, reason: 'invalid-message-id', messageId };
-            return { ok: store.delete(keyOf(normalizedId, scope)), messageId: normalizedId };
+            return { ok: records.delete(keyOf(normalizedId, scope)), messageId: normalizedId };
         },
 
         clear() {
-            epoch += 1; store.clear();
+            records.clear();
             return { ok: true };
         },
     };
@@ -62,9 +75,11 @@ function normalizeImages(images) {
     return uniqueImages(source.map((image) => {
         if (!image || typeof image !== 'object') return null;
         const url = String(image.url || '').trim();
-        if (!url) return null;
+        const resourceKey = String(image.resourceKey || '');
+        if (!url && !resourceKey) return null;
         return {
             url,
+            ...(resourceKey ? { resourceKey } : {}),
             providerId: String(image.providerId || '').trim(),
             source: String(image.source || '').trim(),
             filename: String(image.filename || '').trim(),
@@ -82,9 +97,11 @@ function uniqueImages(images) {
     const seen = new Map();
     for (const image of Array.isArray(images) ? images : []) {
         const url = String(image && image.url || '').trim();
-        if (!url) continue;
+        const resourceKey = String(image && image.resourceKey || '');
+        if (!url && !resourceKey) continue;
         const nextImage = {
             url,
+            ...(resourceKey ? { resourceKey } : {}),
             providerId: String(image.providerId || '').trim(),
             source: String(image.source || '').trim(),
             filename: String(image.filename || '').trim(),
@@ -94,9 +111,10 @@ function uniqueImages(images) {
             buttonIndex: normalizeOptionalIndex(image.buttonIndex),
             order: normalizeOptionalIndex(image.order),
         };
-        const existingIndex = seen.get(url);
+        const identity = resourceKey || url;
+        const existingIndex = seen.get(identity);
         if (existingIndex == null) {
-            seen.set(url, output.length);
+            seen.set(identity, output.length);
             output.push(nextImage);
             continue;
         }
@@ -106,7 +124,7 @@ function uniqueImages(images) {
 }
 
 function createImageSignature(images) {
-    return imageFingerprint(uniqueImages(images).map((image) => image.url).join('\n'));
+    return imageFingerprint(uniqueImages(images).map((image) => image.resourceKey || image.url).join('\n'));
 }
 
 function normalizeMessageId(value) {

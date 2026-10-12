@@ -174,7 +174,7 @@ export function createAutoIllustrationService(deps) {
     const sourceFilter = typeof deps.getSourceFilter === 'function' ? deps.getSourceFilter : () => undefined;
     const locks = new Map();
     const cache = deps.mediaCache || createLocalImageCache({});
-    const states = new Map();
+    const states = cache.auxiliary.createMap('cg-states');
     const resourceKey = key => `cg:${key}`;
     let offRendered = null;
     let stopped = false;
@@ -192,8 +192,7 @@ export function createAutoIllustrationService(deps) {
 
     function remember(key, value, { metadataOnly = false } = {}) {
         if (stopped) return;
-        states.delete(key); states.set(key, { status: value.status, hasImage: Boolean(value.dataUrl), usedAt: Date.now() });
-        while (states.size > 320) states.delete(states.keys().next().value);
+        states.set(key, { status: value.status, hasImage: Boolean(value.dataUrl) });
         if (metadataOnly) return;
         if (value.dataUrl) cache.forget(resourceKey(key));
         if (/^(data:image\/|blob:|https?:)/i.test(String(value.dataUrl || ''))) cache.remember(resourceKey(key), value.dataUrl);
@@ -632,19 +631,19 @@ export function createAutoIllustrationService(deps) {
         const hit = cache.peek(resource);
         if (hit) return hit;
         const known = states.get(slotKey);
-        if (known && !known.hasImage && Date.now() - known.usedAt < 1000) return '';
+        if (known && !known.hasImage) return '';
         if (stopped) return '';
-        const stamp = cache.token(resource);
+        const stamp = cache.token(resource), generation = states.epoch();
         void cache.load(resource, async () => {
             let record = typeof store.getSlotRecord === 'function' ? await store.getSlotRecord(slotKey)
                 : (await store.getSlots(key, { deferImages: true })).find(item => Number(item.slot) === Number(slot));
-            if (stopped || cache.token(resource) !== stamp) return '';
+            if (stopped || states.epoch() !== generation || cache.token(resource) !== stamp) return '';
             if (record && store.hydrateSlot && !/^(data:image\/|blob:|https?:)/i.test(String(record.dataUrl || ''))) record = await store.hydrateSlot(record);
-            if (stopped || cache.token(resource) !== stamp) return '';
+            if (stopped || states.epoch() !== generation || cache.token(resource) !== stamp) return '';
             if (record) remember(slotKey, record, { metadataOnly: true });
             else remember(slotKey, { status: 'missing', dataUrl: '' }, { metadataOnly: true });
             return record?.dataUrl || '';
-        }, { persist: false, timeoutMs: 45000 }).then(value => { if (value && !stopped && cache.token(resource) === stamp) emit(floor, slot); }).catch(() => {});
+        }, { persist: false, timeoutMs: 45000 }).then(value => { if (value && !stopped && states.epoch() === generation && cache.token(resource) === stamp) emit(floor, slot); }).catch(() => {});
         return '';
     }
 

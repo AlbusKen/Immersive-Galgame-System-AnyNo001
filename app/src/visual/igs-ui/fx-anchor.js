@@ -1,11 +1,11 @@
 import { spriteIdentity } from '../../scene/character-outfits.js';
 import { imageFingerprint } from '../../media/image-identity.js';
 import { decodeImage } from '../../media/image-decode.js';
+import { imageCacheForDocument } from '../../media/tavern-image-cache.js';
 
 
 // 漫画符号定位：按立绘在舞台里的实际绘制矩形（background-size 高度百分比 + background-position）
 // 与立绘透明通道探测出的头部位置换算落点，电脑/窄屏/全屏/内嵌各模式统一按真实像素计算。
-const HEAD_CACHE_LIMIT = 48;
 const PROBE_W = 48;
 const ALPHA_MIN = 40;
 const PROBE_TIMEOUT_MS = 160;
@@ -53,11 +53,14 @@ export const SYMBOL_OFFSETS = Object.freeze({
     nosebleed: { dx: 0.02, dy: 0.66, size: 0.28 },
 });
 
-const headCache = new Map();
-const pending = new Map();
-// 加载失败的地址也记下来，避免每次渲染都重新下载一张打不开的立绘。
-const failed = new Map();
-let probeGeneration = 0;
+function probeCaches(doc) {
+    const registry = imageCacheForDocument(doc).auxiliary;
+    return {
+        headCache: registry.sharedMap('sprite-geometry'),
+        failed: registry.sharedMap('sprite-failures'),
+        pending: registry.sharedMap('sprite-probes', { onRemove: entry => entry.controller?.abort() }),
+    };
+}
 const probeKey = url => /^(data:|blob:)/i.test(url) ? imageFingerprint(url) : url;
 
 function finite(value, fallback) {
@@ -240,16 +243,14 @@ export function scanFeetFromAlpha(data, width, height) {
     return (bottom + 1) / height;
 }
 
-function remember(url, info) {
+function remember(url, info, headCache) {
     const key = probeKey(url);
-    headCache.delete(key);
     headCache.set(key, info);
-    while (headCache.size > HEAD_CACHE_LIMIT) headCache.delete(headCache.keys().next().value);
     return info;
 }
 
-export function peekSpriteHead(url) {
-    return url ? headCache.get(probeKey(url)) || null : null;
+export function peekSpriteHead(url, doc) {
+    return url ? probeCaches(doc).headCache.get(probeKey(url)) || null : null;
 }
 
 function readAlpha(img, doc) {
@@ -279,10 +280,11 @@ function isCrossOrigin(url, doc) {
 // 每个立绘地址只探测一次；跨域图片先按 CORS 读像素，读不到就只取尺寸、头位用默认值。
 export function probeSpriteHead(url, doc) {
     if (!url || !doc) return Promise.resolve(null);
-    const key = probeKey(url), stamp = probeGeneration;
+    const { headCache, pending, failed } = probeCaches(doc);
+    const key = probeKey(url), stamp = pending.epoch();
     const cached = headCache.get(key);
     if (cached) return Promise.resolve(cached);
-    if ((failed.get(key) || 0) > Date.now()) return Promise.resolve(null);
+    if (failed.has(key)) return Promise.resolve(null);
     if (pending.has(key)) return pending.get(key).promise;
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const load = cors => decodeImage(doc.defaultView, url, { crossOrigin: cors ? 'anonymous' : '', signal: controller?.signal });
@@ -295,21 +297,20 @@ export function probeSpriteHead(url, doc) {
         } else if (cross) {
             img = await load(false);
         }
-        if (stamp !== probeGeneration) return null;
+        if (stamp !== pending.epoch() || controller?.signal.aborted) return null;
         if (!img) {
-            failed.set(key, Date.now() + 30000);
-            if (failed.size > HEAD_CACHE_LIMIT) failed.delete(failed.keys().next().value);
+            failed.set(key, true);
             return null;
         }
         const feet = metrics && Number(metrics.feet) > 0 ? Number(metrics.feet) : 1;
-        return remember(url, { naturalW: img.naturalWidth, naturalH: img.naturalHeight, head: (metrics && metrics.head) || FALLBACK_HEAD, feet });
+        return remember(url, { naturalW: img.naturalWidth, naturalH: img.naturalHeight, head: (metrics && metrics.head) || FALLBACK_HEAD, feet }, headCache);
     })().finally(() => { if (pending.get(key)?.promise === job) pending.delete(key); });
-    pending.set(key, { promise: job, controller });
+    pending.set(key, { status: 'pending', promise: job, controller });
     return job;
 }
 
 export function waitSpriteHead(url, doc, schedule) {
-    const cached = peekSpriteHead(url);
+    const cached = peekSpriteHead(url, doc);
     if (cached || !url) return Promise.resolve(cached);
     return new Promise((resolve) => {
         let done = false;
@@ -319,9 +320,8 @@ export function waitSpriteHead(url, doc, schedule) {
     });
 }
 
-export function clearSpriteHeadCache() {
-    probeGeneration += 1;
-    for (const entry of pending.values()) entry.controller?.abort();
+export function clearSpriteHeadCache(doc) {
+    const { headCache, pending, failed } = probeCaches(doc);
     headCache.clear();
     pending.clear();
     failed.clear();

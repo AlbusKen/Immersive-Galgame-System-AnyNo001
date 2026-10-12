@@ -6,7 +6,6 @@ import { mediaFileGcFor } from './media-file-gc.js';
 export const IMAGE_PROVENANCE = Symbol('igs-image-provenance');
 
 const uploads = new WeakMap();
-const listings = new WeakMap();
 const IMAGE_LEASES = Symbol('igs-image-write-leases');
 const sameRecord = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const slug = value => String(value || '').replace(/[^\w-]/g, '_').slice(0, 80);
@@ -15,8 +14,7 @@ export function createTavernImageFiles(globalObject, legacyDir) {
     const cache = localImageCacheFor(globalObject), gc = mediaFileGcFor(globalObject);
     if (!uploads.has(globalObject)) uploads.set(globalObject, new Map());
     const flights = uploads.get(globalObject);
-    if (!listings.has(globalObject)) listings.set(globalObject, new Map());
-    const directories = listings.get(globalObject);
+    const directories = cache.auxiliary.sharedMap('directories', { onRemove: entry => entry.controller?.abort() });
     async function upload(dataUrl, hash) {
         if (flights.has(hash)) return flights.get(hash);
         const job = (async () => {
@@ -82,16 +80,20 @@ export function createTavernImageFiles(globalObject, legacyDir) {
     async function listFiles() {
         if (!tavernHeaders(globalObject)) return [];
         const current = directories.get(legacyDir);
-        if (current && (current.pending || current.expiresAt > Date.now())) return current.promise;
-        const entry = { pending: true, expiresAt: 0, promise: null };
+        if (current) return current.promise;
+        const Abort = globalObject.AbortController || globalThis.AbortController;
+        const entry = { status: 'pending', controller: Abort ? new Abort() : null, promise: null };
+        const generation = directories.epoch();
         entry.promise = (async () => {
-            const response = await mediaRequest(globalObject, '/api/images/list', { method: 'POST', headers: tavernHeaders(globalObject), body: JSON.stringify({ folder: legacyDir, sortField: 'date', sortOrder: 'asc' }) });
+            const response = await mediaRequest(globalObject, '/api/images/list', { method: 'POST', headers: tavernHeaders(globalObject), signal: entry.controller?.signal, body: JSON.stringify({ folder: legacyDir, sortField: 'date', sortOrder: 'asc' }) });
             if (!response?.ok) throw new Error('image-list-failed');
             const names = await response.json();
-            entry.expiresAt = Date.now() + 2000;
+            if (generation !== directories.epoch() || directories.get(legacyDir) !== entry) return [];
+            entry.status = 'ready';
+            directories.set(legacyDir, entry);
             return Array.isArray(names) ? names.map(String) : [];
-        })().catch(error => { directories.delete(legacyDir); throw error; }).finally(() => { entry.pending = false; });
-        directories.set(legacyDir, entry);
+        })().catch(error => { if (directories.get(legacyDir) === entry) directories.delete(legacyDir); throw error; });
+        directories.set(legacyDir, entry, { ttlMs: 0 });
         return entry.promise;
     }
     const recover = createLegacyImageRecovery(globalObject, { dir: legacyDir, listFiles, read, slug });
