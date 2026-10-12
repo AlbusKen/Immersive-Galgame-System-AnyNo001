@@ -6,6 +6,33 @@ const DB_VERSION = 1;
 
 const clone = (v) => (v == null ? null : JSON.parse(JSON.stringify(v)));
 
+// 查询只保留一页；数量预算属于缓存，不能变成聊天持久记录的数量上限。
+function assetQuery(options = {}) {
+    if (!options.chatId && !options.floorKey) throw new Error('asset-query-scope-required');
+    const limit = Math.max(1, Math.min(100, Math.trunc(Number(options.limit)) || 24));
+    const reverse = Boolean(options.beforeKey);
+    return { ...options, limit, reverse };
+}
+function matchesAsset(record, query) {
+    return (!query.chatId || record.chatId === query.chatId)
+        && (!query.floorKey || record.floorKey === query.floorKey)
+        && (!query.types?.length || query.types.includes(record.type))
+        && (query.name == null || record.name === query.name)
+        && (!query.requireImage || Boolean(record.imageId))
+        && (!query.statuses?.length || query.statuses.includes(record.status));
+}
+function assetFields(record, fields) {
+    if (!record) return null;
+    return Array.isArray(fields) ? Object.fromEntries(['key', ...fields].filter(key => Object.hasOwn(record, key)).map(key => [key, record[key]])) : record;
+}
+function assetPage(records, query, hasMore, total) {
+    if (query.reverse) records.reverse();
+    return { records, hasNext: query.reverse ? true : hasMore,
+        hasPrevious: query.reverse ? hasMore : Boolean(query.afterKey),
+        firstKey: records[0]?.key || '', lastKey: records.at(-1)?.key || '',
+        ...(query.includeTotal ? { total } : {}) };
+}
+
 export const GENERATED_IMAGE_SCHEMA_VERSION = 2;
 
 // 旧记录只有 dataUrl：视为 legacy，不能恢复已丢失像素；不伪造 originalDataUrl。
@@ -67,6 +94,21 @@ export function createMemoryGeneratedAssetStore() {
         async listImages() { return Array.from(images.values(), clone); },
         async listAssets() { return Array.from(assets.values(), clone); },
         async listFloors() { return Array.from(floors.values(), clone); },
+        async getAsset(key, options = {}) { return clone(assetFields(assets.get(key), options.fields)); },
+        async queryAssets(options) {
+            const query = assetQuery(options), selected = [];
+            let total = 0, eligible = 0;
+            for (const record of assets.values()) {
+                if (!matchesAsset(record, query)) continue;
+                total += 1;
+                if (query.afterKey && record.key <= query.afterKey || query.beforeKey && record.key >= query.beforeKey) continue;
+                eligible += 1;
+                const index = selected.findIndex(value => query.reverse ? value.key < record.key : value.key > record.key);
+                selected.splice(index < 0 ? selected.length : index, 0, record);
+                if (selected.length > query.limit) selected.pop();
+            }
+            return assetPage(selected.map(record => clone(assetFields(record, query.fields))), query, eligible > query.limit, total);
+        },
         async deleteAsset(key) { assets.delete(key); },
         async deleteFloor(key) { floors.delete(key); },
         async patchImageMetadata(id, patch) {
@@ -135,6 +177,31 @@ export function createIndexedDbGeneratedAssetStore(globalObject = globalThis) {
         async listImages() { return await run('images', 'readonly', s => s.getAll()) || []; },
         async listAssets() { return await run('assets', 'readonly', s => s.getAll()) || []; },
         async listFloors() { return await run('floors', 'readonly', s => s.getAll()) || []; },
+        async getAsset(key, options = {}) { return assetFields(await run('assets', 'readonly', s => s.get(key)), options.fields); },
+        async queryAssets(options) {
+            const query = assetQuery(options);
+            return connection.transact('assets', 'readonly', tx => {
+                const index = tx.objectStore('assets').index(query.floorKey ? 'floorKey' : 'chatId');
+                const request = index.openCursor(query.floorKey || query.chatId, query.reverse ? 'prev' : 'next');
+                const records = [];
+                let total = 0, hasMore = false;
+                request.onsuccess = () => {
+                    const cursor = request.result;
+                    if (!cursor) return;
+                    const record = cursor.value;
+                    if (matchesAsset(record, query)) {
+                        total += 1;
+                        const eligible = (!query.afterKey || record.key > query.afterKey) && (!query.beforeKey || record.key < query.beforeKey);
+                        if (eligible) {
+                            if (records.length < query.limit) records.push(assetFields(record, query.fields));
+                            else { hasMore = true; if (!query.includeTotal) return; }
+                        }
+                    }
+                    cursor.continue();
+                };
+                return () => assetPage(records, query, hasMore, total);
+            });
+        },
         async deleteAsset(key) { await run('assets', 'readwrite', s => s.delete(key)); },
         async deleteFloor(key) { await run('floors', 'readwrite', s => s.delete(key)); },
         async putImages(list) {

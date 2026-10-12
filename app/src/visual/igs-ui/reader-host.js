@@ -405,7 +405,7 @@ export function createIgsReaderHost(options = {}) {
     // 物品图到达后重绘阅读器：演出占位与背包格位据此替换为生图。
     const offItemImageUpdatedRaw = typeof options.onItemImageUpdated === 'function'
         // 物品图可能一批连着到，和生图一样按窗口合并成一次重绘。
-        ? options.onItemImageUpdated(() => { if (state.activeReader) scheduleImageRefresh({ reader: true }); })
+        ? options.onItemImageUpdated(() => { scheduleImageRefresh({ reader: Boolean(state.activeReader), settings: Boolean(state.activeSettings) }); })
         : null;
     const offItemImageUpdated = typeof offItemImageUpdatedRaw === 'function' ? offItemImageUpdatedRaw : () => {};
     // 下面几项被 return host 之后的函数引用，必须声明在 return 之前，否则压缩时会被当作死代码删掉。
@@ -4634,6 +4634,8 @@ export function createIgsReaderHost(options = {}) {
             onResolve: (item, status, name) => { void resolveGeneratedReview(item, status, name); },
             outfitAsks,
             onOutfit: (ask, picked) => resolveOutfitAsk(ask, picked),
+            hasMore: Boolean(service.reviewPage?.(floorKey)?.hasNext),
+            onMore: () => openSettings({ page: 'review', mode: current.mode || 'pc' }),
         });
     }
 
@@ -4706,6 +4708,10 @@ export function createIgsReaderHost(options = {}) {
     async function resolveGeneratedReview(item, status, name) {
         const service = options.generatedAssets;
         if (!service || !item) return;
+        try {
+            item = await service.readRecord(item.key);
+            if (!item) { writeToastSafe('这份素材已不存在，请重新读取。'); return; }
+        } catch (error) { writeToastSafe('素材记录读取失败，可到素材 → 待确认中重新读取。'); return; }
         // 「加入素材库并编辑 DNA」= 先按普通入库处理，成功后再打开 DNA 候选确认；候选不自动写入。
         const withDna = status === 'library-dna' && item.type === 'sprite';
         if (status === 'library-dna') status = 'library';
@@ -4738,7 +4744,12 @@ export function createIgsReaderHost(options = {}) {
             addedName = added.name;
             writeToastSafe(`已放入角色立绘「${added.name}」`);
         }
-        if (typeof service.setStatus === 'function') await service.setStatus(item.key, status);
+        if (typeof service.setStatus === 'function') {
+            try {
+                const result = await service.setStatus(item.key, status);
+                if (result?.ok === false) { writeToastSafe('素材状态保存失败，请重新读取后重试。'); return; }
+            } catch (error) { writeToastSafe('素材状态保存失败，请重新读取后重试。'); return; }
+        }
         if (state.activeReader) rerenderActiveReader();
         if (withDna && addedName) openDnaCandidate(addedName, item.tags);
     }

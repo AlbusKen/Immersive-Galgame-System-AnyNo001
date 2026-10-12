@@ -481,6 +481,8 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
                 temp: !idx && generatedService && typeof generatedService.listTemp === 'function' ? generatedService.listTemp() : [],
                 resolveUrl: resolveGenerated,
                 moodGroups: sceneAssets.moodGroups || [],
+                tempPage: !idx && generatedService?.tempPage ? generatedService.tempPage() : null,
+                readError: asyncState.genRecordsError || options.itemImages?.metadataStatus?.().error || '',
             };
             // 待确认：AI 写出但没登记的服装词、词库外的情绪词、生成了还没入库的图。索引模式和不在角色分类时不读。
             const reviewData = memo(() => {

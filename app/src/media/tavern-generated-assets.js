@@ -15,7 +15,7 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
     ];
     const journal = createMediaRecordJournal(globalObject, {
         fileName: 'igs-asset-records.json', list,
-        get: key => key.startsWith('image:') ? store.getImage(key.slice(6)) : key.startsWith('floor:') ? store.getFloor(key.slice(6)) : null,
+        get: key => key.startsWith('image:') ? store.getImage(key.slice(6)) : key.startsWith('floor:') ? store.getFloor(key.slice(6)) : store.getAsset(key.slice(6)),
         onApply: (key, old, next, previous) => key.startsWith('image:') ? files.acceptRemote(old, next, [`asset:${key.slice(6)}`, `thumb:asset:${key.slice(6)}`], [], previous) : undefined,
         async beforeFlush() { return retryInlineMedia((await store.listImages()).map(record => [record.id, record]), files, (_key, record) => saveImage(record, record)); },
         put: (key, record) => key.startsWith('image:') ? store.putImage(record)
@@ -99,6 +99,8 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
         async putFloor(key, record) { return journal.write(`floor:${key}`, { ...record, recordKey: key }, () => store.putFloor(key, record)); },
         async getAssetsByChat(chatId) { await journal.restore(); return store.getAssetsByChat(chatId); },
         async getAssetsByFloor(key) { await journal.restore(); return store.getAssetsByFloor(key); },
+        async getAsset(key, options) { await journal.restore(); return store.getAsset(key, options); },
+        async queryAssets(options) { await journal.restore(); return store.queryAssets(options); },
         async getFloor(key) { await journal.restore(); return store.getFloor(key); },
         async deleteAsset(key) { return journal.write(`asset:${key}`, null, () => store.deleteAsset(key)); },
         async deleteFloor(key) { return journal.write(`floor:${key}`, null, () => store.deleteFloor(key)); },

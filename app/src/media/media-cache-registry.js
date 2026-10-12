@@ -2,8 +2,8 @@ import { MEDIA_METADATA_BUDGET, metadataBytes } from './media-metadata-size.js';
 // 可再生的元数据和任务索引统一登记；此层不导入业务模块，也不保存图片像素。
 export const MEDIA_CACHE_POLICIES = Object.freeze({
     messages: { purpose: '消息与图片的对应关系', maxEntries: 128 },
-    'asset-records': { purpose: '当前聊天临时素材记录', maxScopes: 1, retention: 'current-chat' },
-    'item-records': { purpose: '当前聊天物品记录', maxScopes: 1, retention: 'current-chat' },
+    'asset-records': { purpose: '当前聊天按需素材记录与分页索引', maxEntries: 512, maxScopes: 1, retention: 'lru' },
+    'item-records': { purpose: '当前聊天按需物品记录与分页索引', maxEntries: 512, maxScopes: 1, retention: 'lru' },
     'cg-states': { purpose: 'CG 槽位状态与短期缺图结果', maxEntries: 320, failureTtlMs: 1000, ttlFor: value => value.hasImage ? 0 : 1000 },
     maps: { purpose: '地图生成任务和结果索引', maxEntries: 4, failureTtlMs: 30000, ttlFor: value => value.status === 'failed' ? 30000 : 0 },
     'sprite-geometry': { purpose: '立绘尺寸、头部和脚底探测结果', maxEntries: 48 },
@@ -24,7 +24,7 @@ const OWNER_BYTE_BUDGETS = Object.freeze({
 
 export function createMediaCacheRegistry({ now = () => Date.now(), memoryBudget = MEDIA_METADATA_BUDGET } = {}) {
     const owners = new Map(), shared = new Map();
-    let sequence = 0, destroyed = false, lastError = '', estimatedBytes = 0, rejected = 0;
+    let sequence = 0, access = 0, destroyed = false, lastError = '', estimatedBytes = 0, rejected = 0;
     const budget = Math.max(0, Number(memoryBudget) || 0);
     const invoke = (fn, ...args) => {
         try { fn?.(...args); } catch (error) { lastError = error.message || String(error); }
@@ -37,13 +37,24 @@ export function createMediaCacheRegistry({ now = () => Date.now(), memoryBudget 
     }
     function register(name, options = {}) {
         const policy = policyFor(name, options), id = `${name}:${++sequence}`;
-        const entry = { id, name, policy, ...options, estimatedBytes: 0 };
+        const entry = { id, name, policy, ...options, estimatedBytes: 0, accessedAt: ++access };
         let disposed = false;
         const handle = {
             policy,
+            touch() { entry.accessedAt = ++access; },
             reserve(bytes) {
                 if (disposed || destroyed) return false;
                 const next = Math.max(0, Number(bytes) || 0);
+                if (Number.isFinite(next) && next <= policy.maxBytes && next > entry.estimatedBytes) {
+                    // 总预算有压力时先淘汰其他最久未使用的可再生条目，让当前查询有驻留空间。
+                    const peers = [...owners.values()].filter(peer => peer !== entry && peer.evict).sort((a, b) => a.accessedAt - b.accessedAt);
+                    for (const peer of peers) {
+                        while (estimatedBytes - entry.estimatedBytes + next > budget && peer.estimatedBytes > 0) {
+                            if (!peer.evict()) break;
+                        }
+                        if (estimatedBytes - entry.estimatedBytes + next <= budget) break;
+                    }
+                }
                 if (!Number.isFinite(next) || next > policy.maxBytes || estimatedBytes - entry.estimatedBytes + next > budget) {
                     rejected += 1; lastError = `media-metadata-budget:${name}`; return false;
                 }
@@ -81,11 +92,12 @@ export function createMediaCacheRegistry({ now = () => Date.now(), memoryBudget 
             for (const key of [...records.keys()]) remove(key, reason);
             invoke(options.onClear, reason);
         };
-        handle = register(name, { ...options, clear, destroy: () => { disposed = true; invoke(options.onDestroy); },
-            stats: () => { prune(); return { count: records.size, pending: [...records.values()].filter(value => value?.status === 'pending').length }; } });
+        handle = register(name, { ...options, clear, evict: () => records.size > 0 && remove(records.keys().next().value, 'capacity'), destroy: () => { disposed = true; invoke(options.onDestroy); },
+            stats: () => { prune(); return { count: records.size, pending: [...records.values()].filter(value => value?.status === 'pending').length, ...options.stats?.() }; } });
         const api = {
             get size() { prune(); return records.size; },
             get(key) {
+                handle.touch();
                 prune();
                 if (!records.has(key)) return undefined;
                 const value = records.get(key); records.delete(key); records.set(key, value);
@@ -94,12 +106,14 @@ export function createMediaCacheRegistry({ now = () => Date.now(), memoryBudget 
             has(key) { prune(); return records.has(key); },
             set(key, value, { ttlMs = policy.ttlFor?.(value) ?? policy.ttlMs } = {}) {
                 if (disposed) return api;
+                handle.touch();
                 prune();
                 const size = metadataBytes(key) + metadataBytes(value) + 32;
                 if (!Number.isFinite(size) || size > policy.maxBytes) {
                     rejected += 1; lastError = `media-metadata-budget:${name}`;
-                    if (records.get(key) === value) remove(key, 'capacity');
-                    else invoke(options.onRemove, value, key, 'capacity');
+                    const same = records.get(key) === value;
+                    remove(key, 'capacity');
+                    if (!same) invoke(options.onRemove, value, key, 'capacity');
                     return api;
                 }
                 if (records.has(key) && records.get(key) !== value) remove(key, 'replaced');
@@ -127,77 +141,8 @@ export function createMediaCacheRegistry({ now = () => Date.now(), memoryBudget 
         if (!shared.has(name)) shared.set(name, createMap(name, options));
         return shared.get(name);
     }
-    // 单个聊天的完整元数据快照：不能按行随意淘汰，否则会误判已有素材为缺图并重复生图。
-    function scopedRecords(name, { filter = () => true, onHydrated, onClear, onError, pendingCount = () => 0 } = {}) {
-        const records = new Map();
-        let scope = '', generation = 0, loading = null, loaded = false, disposed = false, bytes = 0, failure = null, retryAt = 0, handle;
-        const sizes = new Map();
-        const clear = () => { generation += 1; records.clear(); sizes.clear(); bytes = 0; handle?.reserve(0); scope = ''; loading = null; loaded = false; failure = null; retryAt = 0; invoke(onClear); };
-        handle = register(name, { clear, destroy: () => { disposed = true; },
-            stats: () => ({ count: records.size, activeScopes: scope ? 1 : 0, pending: (loading ? 1 : 0) + pendingCount(), complete: loaded, error: failure?.message || '' }) });
-        const fail = error => {
-            const changed = failure?.message !== error.message;
-            failure = error; loaded = false; retryAt = now() + 1000; lastError = error.message || String(error);
-            if (changed) invoke(onError, error);
-        };
-        const view = {
-            get: key => records.get(key), has: key => records.has(key),
-            get size() { return records.size; },
-            values: () => records.values(), entries: () => records.entries(),
-            [Symbol.iterator]: () => records[Symbol.iterator](),
-            set(key, value) {
-                if (disposed) return view;
-                const size = metadataBytes(key) + metadataBytes(value) + 32, next = bytes - (sizes.get(key) || 0) + size;
-                if (!handle.reserve(next)) {
-                    fail(new Error(`media-metadata-budget:${name}`));
-                    return view;
-                }
-                bytes = next; sizes.set(key, size); records.set(key, value); return view;
-            },
-        };
-        return {
-            records: view,
-            get scope() { return scope; },
-            epoch: () => generation,
-            clear, destroy: handle.destroy,
-            ensure(nextScope, loader) {
-                if (disposed) return Promise.reject(new Error('media-cache-disposed'));
-                if (nextScope !== scope) { clear(); scope = nextScope; }
-                if (loaded || !nextScope) return Promise.resolve();
-                if (loading) return loading;
-                if (failure && now() < retryAt) return Promise.reject(failure);
-                const stamp = generation, baseline = new Map(records), previousFailure = failure;
-                const job = Promise.resolve().then(() => loader(nextScope)).then(list => {
-                    if (disposed || stamp !== generation) throw new Error('media-metadata-stale');
-                    if (failure && failure !== previousFailure) throw failure;
-                    const staged = new Map(), stagedSizes = new Map();
-                    let nextBytes = 0;
-                    const stage = (key, record) => {
-                        const size = metadataBytes(key) + metadataBytes(record) + 32;
-                        nextBytes += size - (stagedSizes.get(key) || 0);
-                        if (nextBytes > handle.policy.maxBytes) throw new Error(`media-metadata-budget:${name}`);
-                        staged.set(key, record); stagedSizes.set(key, size);
-                    };
-                    for (const record of list || []) if (record && filter(record)) {
-                        const current = records.get(record.key);
-                        stage(record.key, current && current !== baseline.get(record.key) ? current : record);
-                    }
-                    for (const [key, record] of records) if (record !== baseline.get(key)) stage(key, record);
-                    if (!handle.reserve(nextBytes)) throw new Error(`media-metadata-budget:${name}`);
-                    const changed = staged.size !== records.size || [...staged].some(([key, record]) => records.get(key) !== record);
-                    records.clear(); sizes.clear();
-                    for (const [key, record] of staged) records.set(key, record);
-                    for (const [key, size] of stagedSizes) sizes.set(key, size);
-                    bytes = nextBytes; loaded = true; failure = null;
-                    if (changed) invoke(onHydrated, nextScope);
-                }).catch(error => { if (!disposed && stamp === generation) fail(error); throw error; }).finally(() => { if (loading === job) loading = null; });
-                loading = job;
-                return job;
-            },
-        };
-    }
     return {
-        register, createMap, sharedMap, scopedRecords,
+        register, createMap, sharedMap,
         clear() { for (const owner of [...owners.values()]) owner.handle.clear(); },
         destroy() { destroyed = true; for (const owner of [...owners.values()]) owner.handle.destroy(); shared.clear(); },
         stats() {

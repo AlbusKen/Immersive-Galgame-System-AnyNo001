@@ -1074,13 +1074,32 @@ export async function handleSettingsAction(action, ctx) {
         return rerenderSettings();
     }
 
+    if (normalizedAction === 'gen-records-retry' || normalizedAction.startsWith('gen-temp-page:')) {
+        const service = options.generatedAssets;
+        try {
+            settingsState.asyncState.genRecordsError = '';
+            if (normalizedAction === 'gen-records-retry') {
+                const results = await Promise.allSettled([service?.retryMetadata?.(), options.itemImages?.retryMetadata?.()]);
+                if (results.some(result => result.status === 'rejected' || result.value?.ok === false)) throw new Error('asset-record-read-failed');
+            } else if (service?.changeTempPage) {
+                await service.changeTempPage(normalizedAction.slice('gen-temp-page:'.length));
+            }
+        } catch (error) { settingsState.asyncState.genRecordsError = error.message || '素材记录读取失败'; }
+        return rerenderSettings();
+    }
+
     if (normalizedAction.startsWith('gen-temp-accept:')) {
         const key = decodeSeg(normalizedAction.slice('gen-temp-accept:'.length));
         const service = options.generatedAssets;
-        if (!service || typeof service.getRecord !== 'function' || typeof service.setStatus !== 'function') {
+        if (!service || typeof service.readRecord !== 'function' || typeof service.setStatus !== 'function') {
             return { ok: false, reason: 'generated-assets-unavailable' };
         }
-        const record = service.getRecord(key);
+        let record;
+        try { record = await service.readRecord(key); }
+        catch (error) {
+            settingsState.asyncState.genRecordsError = error.message || '素材记录读取失败';
+            return rerenderSettings();
+        }
         if (!record || !record.imageId) return rerenderSettings();
         const globalObj = options.global || globalThis;
         const suggestedName = String(record.name || '').trim();
