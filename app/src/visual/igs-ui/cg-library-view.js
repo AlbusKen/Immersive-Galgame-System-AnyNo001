@@ -1,5 +1,6 @@
 import { createMediaLeaseScope } from '../../media/media-lease-scope.js';
-import { createLocalImageCache } from '../../media/tavern-image-cache.js';
+import { requireMediaCache } from '../../media/media-cache-owner.js';
+import { metadataBytes } from '../../media/media-metadata-size.js';
 // CG 库界面状态（不碰 DOM），工具栏面板和设置页共用。
 // 打开：先读目录（每张一条轻记录）马上出列表；随后后台对账，只有真有新图 / 删图时才动列表。
 // 翻页：只为当前页取缩略图，最多 3 张同时读；每张单独通知（onChange('thumb', key)），界面只换那一格。
@@ -19,7 +20,7 @@ function writeOldestFirst(storage, on) {
 }
 
 export function createCgLibraryView(library, options = {}) {
-    const pageSize = Number(options.pageSize) > 0 ? Number(options.pageSize) : CG_PAGE_SIZE;
+    const pageSize = Number(options.pageSize) > 0 ? Math.max(1, Math.min(200, Math.floor(Number(options.pageSize)))) : CG_PAGE_SIZE;
     let onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
     const state = {
         phase: 'idle',
@@ -35,7 +36,7 @@ export function createCgLibraryView(library, options = {}) {
         entries: [],
     };
     // 这里只持资源键和任务状态，像素与对象 URL 归中央缓存。
-    const cache = options.mediaCache || library?.mediaCache || createLocalImageCache({});
+    const cache = requireMediaCache(options.mediaCache || library?.mediaCache, 'cg-view', library?.mediaCache);
     const thumbKey = key => `thumb:cg:${key}:${String(state.all.find(entry => entry.key === key)?.updatedAt || '')}`;
     const thumbs = { get: key => cache.peek(thumbKey(key)), has: key => Boolean(cache.peek(thumbKey(key))), set: (key, url) => cache.remember(thumbKey(key), url), delete: key => cache.forget(thumbKey(key)) };
     const leases = createMediaLeaseScope(cache);
@@ -72,15 +73,22 @@ export function createCgLibraryView(library, options = {}) {
         for (const resolve of list) resolve();
     };
 
-    function recompute() {
-        state.list = filterCgEntries(state.all, state.filters);
-        const sliced = cgPageSlice(state.list, state.page, pageSize);
+    function recompute(all = state.all) {
+        const list = filterCgEntries(all, state.filters);
+        const sliced = cgPageSlice(list, state.page, pageSize);
+        if (!owner.reserve(metadataBytes({ all, list, entries: sliced.items }) + pageSize * 256)) {
+            resetThumbWork(); state.sync = null; state.phase = 'error';
+            state.error = 'CG 目录过大，无法完整载入；全部图片仍保留。';
+            emit('list'); return false;
+        }
+        state.all = all; state.list = list;
         state.page = sliced.page;
         state.pages = sliced.pages;
         state.entries = sliced.items;
         leases.begin();
         for (const entry of state.entries) leases.use(thumbKey(entry.key));
         leases.end();
+        return true;
     }
 
     const pageKeys = () => state.entries.map((e) => e.key).join('\n');
@@ -95,9 +103,8 @@ export function createCgLibraryView(library, options = {}) {
     }
 
     function dropEntry(key) {
-        state.all = state.all.map((e) => (e.key === key ? { ...e, ready: false } : e));
         const before = pageKeys();
-        recompute();
+        if (!recompute(state.all.map((e) => (e.key === key ? { ...e, ready: false } : e)))) return;
         if (before !== pageKeys()) { emit('list'); loadPageThumbs(); }
     }
 
@@ -170,8 +177,7 @@ export function createCgLibraryView(library, options = {}) {
         if (gen !== openGen) return;
         const fromIndex = index.ok && index.entries.length > 0;
         if (fromIndex) {
-            state.all = index.entries;
-            recompute();
+            if (!recompute(index.entries)) return;
             state.phase = 'ready';
             emit('list');
             loadPageThumbs();
@@ -194,8 +200,7 @@ export function createCgLibraryView(library, options = {}) {
         state.syncNote = synced.ok ? '' : `部分内容未能读取：${cgReasonText(synced.reason)}。已显示可读取的部分，请点击「刷新」重试。`;
         const before = pageKeys();
         const total = state.list.length;
-        state.all = synced.entries;
-        recompute();
+        if (!recompute(synced.entries)) return;
         if (!fromIndex || before !== pageKeys() || total !== state.list.length) {
             state.phase = 'ready';
             emit('list');
@@ -228,7 +233,7 @@ export function createCgLibraryView(library, options = {}) {
 
     function goto(page) {
         state.page = Math.max(0, Number(page) || 0);
-        recompute();
+        if (!recompute()) return;
         emit('list');
         loadPageThumbs();
     }
@@ -237,7 +242,7 @@ export function createCgLibraryView(library, options = {}) {
         state.filters = { ...state.filters, ...patch };
         if (patch && Object.hasOwn(patch, 'oldestFirst')) writeOldestFirst(options.storage, state.filters.oldestFirst);
         state.page = 0;
-        recompute();
+        if (!recompute()) return;
         emit('list');
         loadPageThumbs();
     }
@@ -256,17 +261,15 @@ export function createCgLibraryView(library, options = {}) {
     function removeKeys(keys) {
         const gone = new Set(keys || []);
         if (!gone.size) return;
-        state.all = state.all.filter((e) => !gone.has(e.key));
         for (const key of gone) { thumbs.delete(key); failed.delete(key); }
         queue = queue.filter((e) => !gone.has(e.key));
-        recompute();
+        if (!recompute(state.all.filter((e) => !gone.has(e.key)))) return;
         emit('list');
         loadPageThumbs();
     }
 
     function patchEntry(key, fields) {
-        state.all = state.all.map((e) => (e.key === key ? { ...e, ...fields } : e));
-        recompute();
+        if (!recompute(state.all.map((e) => (e.key === key ? { ...e, ...fields } : e)))) return;
         emit('list');
         loadPageThumbs();
     }

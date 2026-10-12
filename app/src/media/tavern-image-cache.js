@@ -13,6 +13,8 @@ export function normalizeImageCacheCount(value) {
 }
 const caches = new WeakMap();
 const documents = new WeakMap();
+const boundDocuments = new WeakMap();
+const retirements = new WeakMap();
 const diskUsage = rows => {
     const unique = new Map();
     for (const row of rows.values()) unique.set(row.identity || row.path, Math.max(0, Number(row.bytes) || 0));
@@ -23,7 +25,7 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
     const now = options.now || (() => Date.now());
     // 无 IndexedDB 时只保留中央内存层，禁止用第二个内存库冒充磁盘缓存。
     const store = options.store || (globalObject.indexedDB ? createIdbImageCacheStore(globalObject.indexedDB) : null);
-    const auxiliary = createMediaCacheRegistry({ now });
+    const auxiliary = createMediaCacheRegistry({ now, memoryBudget: options.metadataBytes });
     const memory = new Map();
     const aliases = new Map();
     const flights = new Map();
@@ -41,7 +43,7 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
     let epoch = 0;
     let serial = Promise.resolve();
     let lastError = '';
-    let destroyed = false, nextVersion = 0;
+    let destroyed = false, nextVersion = 0, destroying = null;
     const channel = typeof globalObject.BroadcastChannel === 'function' ? new globalObject.BroadcastChannel('igs-media-cache-v3') : null;
     channel?.unref?.();
     if (channel) channel.onmessage = event => {
@@ -55,6 +57,7 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
         return result;
     };
     function token(key) {
+        if (destroyed) return `${epoch}:destroyed`;
         if (!versions.has(key)) versions.set(key, ++nextVersion);
         const version = versions.get(key);
         for (const candidate of versions.keys()) {
@@ -174,8 +177,8 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
             (await metadata()).set(key, { path: key, identity, usedAt: now(), bytes });
             await trimDisk();
         });
-        channel?.postMessage({ type: 'drop', key });
-        return token(key) === expectedToken;
+        if (!destroyed) channel?.postMessage({ type: 'drop', key });
+        return !destroyed && token(key) === expectedToken;
     }
     async function load(path, loader, { persist = true, timeoutMs = 30000, download = false } = {}) {
         if (destroyed) return '';
@@ -207,6 +210,7 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
         return pending.promise;
     }
     function forget(path) {
+        if (destroyed) return;
         const key = normalizeImagePath(path);
         versions.set(key, ++nextVersion);
         flights.get(key)?.cancel(); flights.delete(key);
@@ -214,6 +218,7 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
         if (identity && ![...aliases.values()].includes(identity)) evict(identity);
     }
     async function clear({ memoryOnly = false, broadcast = true, notify = true } = {}) {
+        if (destroyed && !memoryOnly) return destroying;
         epoch += 1;
         readController?.abort(); readController = Abort && !destroyed ? new Abort() : null;
         for (const pending of flights.values()) pending.cancel();
@@ -224,16 +229,18 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
         const cleared = !memoryOnly ? enqueue(async () => { await store?.clear(); meta = new Map(); }) : Promise.resolve();
         if (notify) for (const listener of listeners) { try { listener(epoch); } catch (error) { lastError = error.message || String(error); } }
         await cleared;
-        if (broadcast) channel?.postMessage({ type: 'clear' });
+        if (broadcast && !destroyed) channel?.postMessage({ type: 'clear' });
     }
-    return {
+    const api = {
+        get destroyed() { return destroyed; },
         get, put, load, peek, remember, forget, auxiliary, token: path => token(normalizeImagePath(path)),
         sourceId: url => { const identity = urlOwners.get(url); const matches = [...aliases].filter(([, id]) => id === identity).map(([key]) => key); return matches.find(key => key.startsWith('thumb:asset:')) || matches.find(key => key.startsWith('asset:')) || matches[0] || ''; },
-        async drop(path) { const key = normalizeImagePath(path); forget(key); channel?.postMessage({ type: 'drop', key }); await enqueue(async () => { await store?.delete(key); (await metadata()).delete(key); }); },
+        async drop(path) { if (destroyed) return; const key = normalizeImagePath(path); forget(key); channel?.postMessage({ type: 'drop', key }); await enqueue(async () => { if (!destroyed) { await store?.delete(key); (await metadata()).delete(key); } }); },
         async dropPrefix(prefix) {
+            if (destroyed) return;
             const keys = new Set([...aliases.keys()].filter(key => key.startsWith(prefix)));
             for (const key of (await enqueue(metadata)).keys()) if (key.startsWith(prefix)) keys.add(key);
-            for (const key of keys) { forget(key); await enqueue(async () => { await store?.delete(key); (await metadata()).delete(key); }); channel?.postMessage({ type: 'drop', key }); }
+            for (const key of keys) { if (destroyed) return; forget(key); await enqueue(async () => { if (!destroyed) { await store?.delete(key); (await metadata()).delete(key); } }); if (!destroyed) channel?.postMessage({ type: 'drop', key }); }
         },
         clear,
         pin(path) {
@@ -242,39 +249,63 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
             let released = false;
             return () => { if (released) return; released = true; const count = (pins.get(key) || 0) - 1; if (count > 0) pins.set(key, count); else pins.delete(key); trimMemory(); };
         },
-        async destroy() { destroyed = true; auxiliary.destroy(); pins.clear(); listeners.clear(); channel?.close(); await clear({ memoryOnly: true, broadcast: false, notify: false }); await serial; await store?.close?.(); },
-        async setMaxCount(value) { maxCount = normalizeImageCacheCount(value); trimMemory(); await enqueue(trimDisk).catch(() => {}); return maxCount; },
-        onClear(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+        destroy() {
+            if (destroying) return destroying;
+            destroyed = true; auxiliary.destroy(); pins.clear(); listeners.clear(); channel?.close();
+            for (const doc of boundDocuments.get(api) || []) if (documents.get(doc) === api) documents.delete(doc);
+            boundDocuments.delete(api);
+            destroying = clear({ memoryOnly: true, broadcast: false, notify: false }).then(async () => { await serial; meta = null; await store?.close?.(); });
+            return destroying;
+        },
+        async setMaxCount(value) { if (destroyed) return maxCount; maxCount = normalizeImageCacheCount(value); trimMemory(); await enqueue(trimDisk).catch(() => {}); return maxCount; },
+        onClear(listener) { if (destroyed) return () => {}; listeners.add(listener); return () => listeners.delete(listener); },
         async stats() {
             const auxiliaryStats = auxiliary.stats();
             let diskAvailable = Boolean(store);
-            const rows = await enqueue(() => metadata(true)).catch(() => { diskAvailable = false; return new Map(); });
+            const rows = destroyed ? new Map() : await enqueue(() => metadata(true)).catch(() => { diskAvailable = false; return new Map(); });
             const disk = diskUsage(rows);
             return { epoch, memoryCount: memory.size, memoryBytes: [...memory.values()].reduce((s, e) => s + e.bytes, 0),
                 diskCount: disk.count, diskBytes: disk.bytes, diskAliases: rows.size, pending: flights.size,
                 maxCount, memoryBudget: memoryBytes, diskBudget: diskAvailable ? maxBytes : 0,
                 backend: !store ? 'memory-only' : diskAvailable ? store.backend || 'custom' : 'unavailable',
-                persistent: diskAvailable && store?.persistent === true, auxiliary: auxiliaryStats,
+                persistent: diskAvailable && store?.persistent === true, destroyed, auxiliary: auxiliaryStats,
                 activeCount: new Set([...aliases].filter(([key]) => pins.has(key)).map(([, identity]) => identity)).size, downloads: downloads.stats(), lastError };
         },
         size: () => memory.size,
     };
+    return api;
 }
 
 export function localImageCacheFor(globalObject = globalThis) {
     const key = globalObject || globalThis;
     if (!caches.has(key)) caches.set(key, createLocalImageCache(key));
+    if (caches.get(key).destroyed) throw new Error('media-runtime-closing');
     return caches.get(key);
 }
 
-export function disposeLocalImageCache(globalObject) {
-    const cache = caches.get(globalObject); caches.delete(globalObject);
-    return cache?.destroy();
+export function disposeLocalImageCache(globalObject, { expectedCache, settled = Promise.resolve() } = {}) {
+    if (retirements.has(globalObject)) return retirements.get(globalObject);
+    const cache = caches.get(globalObject);
+    if (!cache || (expectedCache && cache !== expectedCache)) return Promise.resolve();
+    const closing = Promise.allSettled([cache.destroy(), settled]).then(results => {
+        const failed = results.find(result => result.status === 'rejected');
+        if (failed) throw failed.reason;
+    }).finally(() => {
+        if (caches.get(globalObject) === cache) caches.delete(globalObject);
+        if (retirements.get(globalObject) === closing) retirements.delete(globalObject);
+    });
+    retirements.set(globalObject, closing);
+    return closing;
 }
 
 // 酒馆脚本窗口与阅读器宿主 document 可能不同；二者仍必须使用同一个媒体所有者。
 export function bindImageCacheDocument(doc, cache) {
-    if (doc && cache) documents.set(doc, cache);
+    if (!doc || !cache || cache.destroyed) return;
+    const old = documents.get(doc);
+    if (old && old !== cache) boundDocuments.get(old)?.delete(doc);
+    documents.set(doc, cache);
+    if (!boundDocuments.has(cache)) boundDocuments.set(cache, new Set());
+    boundDocuments.get(cache).add(doc);
 }
 
 export function imageCacheForDocument(doc = globalThis.document) {

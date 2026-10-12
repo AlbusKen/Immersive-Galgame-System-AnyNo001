@@ -33,6 +33,8 @@ export function createMediaRecordJournal(globalObject, { fileName, legacyField =
     let retryDelay = 2000;
     let migrationFailures = [];
     let remoteExists = null;
+    const pending = new Set();
+    const track = job => { pending.add(job); job.finally(() => pending.delete(job)).catch(() => {}); return job; };
     const device = Math.random().toString(36).slice(2, 10);
     const serial = callback => {
         const job = queue.then(() => withMediaLock(globalObject, 'commit', callback));
@@ -67,11 +69,12 @@ export function createMediaRecordJournal(globalObject, { fileName, legacyField =
         if (stopped || timer || !tavernHeaders(globalObject)) return;
         timer = (globalObject.setTimeout || setTimeout)(() => {
             timer = null;
-            void flush().then(result => { if (!result.ok) { retryDelay = Math.min(60000, retryDelay * 2); schedule(); } }).catch(() => { retryDelay = Math.min(60000, retryDelay * 2); schedule(); });
+            void track(flush()).then(result => { if (!result.ok) { retryDelay = Math.min(60000, retryDelay * 2); schedule(); } }).catch(() => { retryDelay = Math.min(60000, retryDelay * 2); schedule(); });
         }, retryDelay);
         timer?.unref?.();
     }
     async function restore() {
+        if (stopped) throw new Error('media-stopped');
         if (restored) return;
         if (restoring) return restoring;
         restoring = serial(async () => {
@@ -154,9 +157,9 @@ export function createMediaRecordJournal(globalObject, { fileName, legacyField =
             return { ok: !Object.values(local).some(row => row.localOnly), reason: Object.values(local).some(row => row.localOnly) ? 'media-pixels-pending-upload' : '' };
         });
     }
-    const journal = { restore, write, flush, remoteExists: () => remoteExists, async deleted(key) { return Boolean((await state.get(prefix + key))?.deleted); },
+    const journal = { restore: () => track(restore()), write: (...args) => track(write(...args)), flush: () => track(flush()), remoteExists: () => remoteExists, async deleted(key) { return Boolean((await state.get(prefix + key))?.deleted); },
         async diagnostics() { const rows = await localRows(); return { fileName, records: Object.values(rows).filter(row => !row.deleted).length, tombstones: Object.values(rows).filter(row => row.deleted).length, dirty: Object.values(rows).filter(row => row.dirty).length, pendingPixelUploads: Object.values(rows).filter(row => row.localOnly).length, migrationFailures, lastError }; },
-        stop() { stopped = true; (globalObject.clearTimeout || clearTimeout)(timer); timer = null; },
+        stop() { stopped = true; (globalObject.clearTimeout || clearTimeout)(timer); timer = null; return Promise.allSettled([...pending, queue]); },
     };
     let group = journals.get(globalObject);
     if (!group) { group = new Set(); journals.set(globalObject, group); }
@@ -171,8 +174,9 @@ export async function flushMediaJournals(globalObject) {
 }
 
 export function stopMediaJournals(globalObject) {
-    for (const journal of journals.get(globalObject) || []) journal.stop();
+    const stopped = [...(journals.get(globalObject) || [])].map(journal => journal.stop());
     journals.delete(globalObject);
+    return Promise.all(stopped);
 }
 
 export async function mediaJournalDiagnostics(globalObject) {

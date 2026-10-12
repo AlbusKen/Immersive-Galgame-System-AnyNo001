@@ -1,27 +1,20 @@
-import { createLocalImageCache } from '../../media/tavern-image-cache.js';
+import { requireMediaCache } from '../../media/media-cache-owner.js';
+import { createAssetRecordCache } from '../../media/asset-record-cache.js';
 // 物品图记录与图片的按聊天缓存：只读本地存储，不联网；同步取图未命中时异步补载并发事件通知重绘。
-export function createItemRecordCache({ store, type, emit, mediaCache }) {
-    const images = mediaCache || createLocalImageCache({});
+export function createItemRecordCache({ store, type, emit, mediaCache, onError }) {
+    const images = requireMediaCache(mediaCache, 'item-records');
     const keyOf = id => `asset:${id}`;
     const pending = new Set();
-    const metadata = images.auxiliary.scopedRecords('item-records', {
-        filter: record => record.type === type,
-        onHydrated: chatId => emit({ chatId, reason: 'hydrated' }),
-        onClear: () => pending.clear(), pendingCount: () => pending.size,
+    const metadata = createAssetRecordCache({ store, mediaCache: images, owner: 'item-records',
+        onChanged: chatId => emit({ chatId, reason: 'hydrated' }),
+        onClear: () => pending.clear(), pendingCount: () => pending.size, onError,
     });
-    const records = metadata.records;
-
     function rememberImage(id, dataUrl) { images.remember(keyOf(id), dataUrl); }
-
-    function ensure(nextChatId) {
-        return metadata.ensure(nextChatId, target => store.getAssetsByChat(target));
-    }
-
-    const get = (targetChatId, key) => (targetChatId === metadata.scope ? records.get(key) || null : null);
-    const list = (targetChatId) => (targetChatId === metadata.scope ? Array.from(records.values()) : []);
-    function set(record) {
-        if (record && record.chatId === metadata.scope) records.set(record.key, record);
-    }
+    function ensure(chatId) { metadata.use(chatId); }
+    const get = (chatId, key) => metadata.peek(chatId, key);
+    const read = (chatId, key) => metadata.read(chatId, key);
+    const page = (chatId, options = {}) => metadata.query({ limit: 24, ...options, chatId, types: [type] });
+    function set(record) { metadata.remember(record); }
 
     // 同步取图：命中内存直接返回，否则异步从存储补载，补完后发 image-loaded。
     function imageUrl(imageId) {
@@ -47,5 +40,5 @@ export function createItemRecordCache({ store, type, emit, mediaCache }) {
         return result;
     }
 
-    return { ensure, get, set, list, imageUrl, rememberImage, dropImage, clear: metadata.clear, destroy: metadata.destroy };
+    return { ensure, get, read, set, page, imageUrl, rememberImage, dropImage, status: metadata.status, clear: metadata.clear, destroy: metadata.destroy };
 }

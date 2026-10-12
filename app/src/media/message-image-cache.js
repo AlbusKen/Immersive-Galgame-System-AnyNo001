@@ -1,7 +1,7 @@
-import { createLocalImageCache } from './tavern-image-cache.js';
+import { requireMediaCache } from './media-cache-owner.js';
 import { imageFingerprint, isImageData } from './image-identity.js';
 export function createMessageImageCache(store = new Map(), options = {}) {
-    const media = options.mediaCache || createLocalImageCache({});
+    const media = requireMediaCache(options.mediaCache, 'messages');
     let epoch = 0;
     const records = media.auxiliary.createMap('messages', { store, maxEntries: options.limit, onClear: () => { epoch += 1; } });
     const keyOf = (id, scope = {}) => JSON.stringify([String(scope.chatId || ''), id, Number(scope.swipeId) || 0, String(scope.revision || '')]);

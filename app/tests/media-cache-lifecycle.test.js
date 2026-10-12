@@ -1,9 +1,10 @@
+import { createMessageImageCache } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createLocalImageCache } from '../src/media/tavern-image-cache.js';
 import { createFakeIndexedDB } from './helpers/fake-idb.js';
 import { pixel } from './helpers/fake-media-server.js';
-import { createMessageImageCache } from '../src/media/message-image-cache.js';
+
 import { createImageResourceCache } from '../src/media/resource-cache.js';
 
 test('gate:media:identical-bytes-share-one-resident-payload-and-object-url', async () => {

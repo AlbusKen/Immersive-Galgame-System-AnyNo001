@@ -51,3 +51,5 @@ IGS.api.promptPresets.register(preset);
 ## 媒体诊断（v0.36.39）
 
 兼容全局新增 `IGS.media`，暴露 `stats/clearCache/auditImages/auditFiles/collectImages/flush/retryDeletes`。审计只读；collect 只删除无引用的候选，并由媒体层再次复查。缓存清理与业务资产删除分离，接口不返回原始图片字节或 API Key。生命周期装配与 destroy 仍由 core 管理。
+
+v0.36.43：`destroy()` 继续返回同步结果，新增 `shutdown()` 等待同一次销毁的全部收尾。调用方需要重载时使用 `await api.shutdown()` 并检查 `ok`；失败不得继续加载新实例。`IGS.media.destroy()` 是媒体内部的幂等异步关闭，不代替完整脚本停用。

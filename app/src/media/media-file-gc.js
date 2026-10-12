@@ -135,7 +135,7 @@ export function mediaFileGcFor(globalObject = globalThis) {
                 activeWrites: rows.filter(row => row.kind === 'lease' && row.expiresAt > Date.now()).length, lastError };
         },
         start() { stopped = false; schedule(); },
-        stop() { stopped = true; generation += 1; sources.clear(); (globalObject.clearTimeout || clearTimeout)(timer); (globalObject.clearTimeout || clearTimeout)(leaseTimer); timer = null; leaseTimer = null; },
+        stop() { stopped = true; generation += 1; sources.clear(); (globalObject.clearTimeout || clearTimeout)(timer); (globalObject.clearTimeout || clearTimeout)(leaseTimer); timer = null; leaseTimer = null; return Promise.allSettled(draining ? [draining] : []); },
     };
     collectors.set(globalObject, gc);
     return gc;

@@ -27,19 +27,13 @@
         return;
     }
 
-    const existingRuntime = reconcileExistingRuntime();
     ensureQrButtonBinding();
-    if (existingRuntime.done) {
-        return;
-    }
-
-    root[INSTANCE_KEY] = {
-        repository: REPOSITORY,
-        loadedAt: Date.now(),
-    };
-    scheduleLoaderMagicWandEntry();
-
-    load().catch((error) => {
+    Promise.resolve(reconcileExistingRuntime()).then(existingRuntime => {
+        if (existingRuntime.done) return;
+        root[INSTANCE_KEY] = { repository: REPOSITORY, loadedAt: Date.now() };
+        scheduleLoaderMagicWandEntry();
+        return load();
+    }).catch((error) => {
         console.error('[IGS Loader] 启动失败。', error);
         try {
             if (typeof root.alert === 'function') root.alert(`Immersive Galgame System 启动失败：${error && error.message || String(error)}`);
@@ -594,7 +588,7 @@
         });
     }
 
-    function reconcileExistingRuntime() {
+    async function reconcileExistingRuntime() {
         const api = root.IGS || root.ImmersiveGalgameSystem;
         if (api && typeof api.ensureMagicWandEntry === 'function') {
             const result = safeEnsureMagicWandEntry(api);
@@ -613,9 +607,13 @@
         if (api) {
             console.warn('[IGS Loader] 检测到旧版 IGS 残留，准备重新加载。');
             try {
-                if (typeof api.destroy === 'function') api.destroy();
+                if (typeof api.shutdown === 'function' || typeof api.destroy === 'function') {
+                    const result = await (typeof api.shutdown === 'function' ? api.shutdown() : api.destroy());
+                    if (result?.ok === false) throw new Error(result.error || result.reason || 'media-shutdown-failed');
+                }
             } catch (error) {
-                console.warn('[IGS Loader] 旧版 IGS 销毁失败，继续清理残留。', error);
+                console.error('[IGS Loader] 旧版 IGS 尚未完成销毁，停止重新加载。', error);
+                throw error;
             }
             clearGlobalApi(api);
         }

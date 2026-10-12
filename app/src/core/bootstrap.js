@@ -63,7 +63,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.43';
+const IGS_VERSION = '0.36.45';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -93,6 +93,8 @@ export function bootstrapIGS(options = {}) {
         return sceneAssetsForContext(sceneAssets, getSillyTavernContext(globalObject));
     }
     const events = options.events || createEventBus();
+    const mediaCache = localImageCacheFor(globalObject);
+    let destroying = null;
     // getUnifiedSettingsSnapshot 的复用缓存（见该函数）；启动途中就会被调用，所以放在最前面声明。
     let unifiedCache = null;
     const hostAdapter = options.hostAdapter || createTavernHelperAdapter(globalObject);
@@ -104,7 +106,7 @@ export function bootstrapIGS(options = {}) {
     const layerController = options.layerController || createLayerController(options.layers || {});
     const renderer = options.renderer || createStageRenderer(layerController);
     const readerImageService = options.readerImageService || createReaderImageService({
-        mediaCache: localImageCacheFor(globalObject),
+        mediaCache,
         global: globalObject,
         hostAdapter,
         imageGenerator: options.imageGenerator || ((request, opts) => imageBackend.generateForReader(request, {
@@ -163,7 +165,7 @@ export function bootstrapIGS(options = {}) {
         llm: secondaryLlm,
         nai: imageBackend,
         store: illustrationStore,
-        mediaCache: localImageCacheFor(globalObject),
+        mediaCache,
         getSettings: () => readImageBridge().autoIllustration,
         getReaderMode: readerModeNow,
         getViewport: () => readCgViewport(globalObject, readerModeNow()),
@@ -180,7 +182,7 @@ export function bootstrapIGS(options = {}) {
         llm: secondaryLlm,
         nai: imageBackend,
         store: generatedAssetStore,
-        mediaCache: localImageCacheFor(globalObject),
+        mediaCache,
         matte: options.alphaMatte || createAlphaMatte(globalObject),
         getSettings: () => {
             const bridge = readImageBridge();
@@ -248,6 +250,7 @@ export function bootstrapIGS(options = {}) {
         getUnifiedSettingsSnapshot,
         saveUnifiedSettings,
         destroy,
+        shutdown,
         igsUi: null,
         magicWandEntry: null,
         extensionPanel: null,
@@ -446,7 +449,7 @@ export function bootstrapIGS(options = {}) {
         return true;
     }
     function applyImageCacheLimit(bridge) {
-        const cache = localImageCacheFor(globalObject);
+        const cache = mediaCache;
         if (cache && typeof cache.setMaxCount === 'function') {
             void cache.setMaxCount(bridge && bridge.imageCache && bridge.imageCache.maxCount);
         }
@@ -899,32 +902,43 @@ export function bootstrapIGS(options = {}) {
         if (state.destroyed) return { ok: true, reason: 'already-destroyed' };
         state.destroyed = true;
         state.status = 'destroyed';
-        clearSceneAssetsInjectionTimer();
-        detachChatChangedReinjection();
-        if (state.settingsSync) state.settingsSync.stop();
-        if (state.notesFile) state.notesFile.flush();
-        if (typeof state.metaDigestCleanup === 'function') state.metaDigestCleanup();
+        let finish;
+        destroying = new Promise(resolve => { finish = resolve; });
+        const tasks = [];
+        const close = callback => {
+            try { tasks.push(Promise.resolve(callback())); }
+            catch (error) { tasks.push(Promise.reject(error)); }
+        };
+        close(clearSceneAssetsInjectionTimer);
+        close(detachChatChangedReinjection);
+        close(() => state.settingsSync?.stop());
+        close(() => state.notesFile?.flush());
+        close(() => state.metaDigestCleanup?.());
         state.metaDigestCleanup = null;
-        promptInjector.clear();
-        illustrationService.stop();
-        assetGenerationService.stop();
-        itemCg.itemImages.stop();
-        itemCg.itemLedger.stop();
-        offMediaClear(); readerImageService.destroy?.();
-        media.destroy();
-        if (app.igsUi && typeof app.igsUi.destroy === 'function') {
-            app.igsUi.destroy();
-        }
-        if (app.magicWandEntry && typeof app.magicWandEntry.destroy === 'function') {
-            app.magicWandEntry.destroy();
-        }
-        if (app.extensionPanel && typeof app.extensionPanel.destroy === 'function') {
-            app.extensionPanel.destroy();
-        }
-        detachPublicApi(globalObject, publicApi);
-        events.emit('igs:destroy', publicApi);
-        events.clear();
+        close(() => promptInjector.clear());
+        close(() => illustrationService.stop());
+        close(() => assetGenerationService.stop());
+        close(() => itemCg.itemImages.stop());
+        close(() => itemCg.itemLedger.stop());
+        close(offMediaClear);
+        close(() => readerImageService.destroy?.());
+        close(() => app.igsUi?.destroy?.());
+        close(() => app.magicWandEntry?.destroy?.());
+        close(() => app.extensionPanel?.destroy?.());
+        close(() => media.destroy());
+        close(() => detachPublicApi(globalObject, publicApi));
+        close(() => events.emit('igs:destroy', publicApi));
+        close(() => events.clear());
+        Promise.allSettled(tasks).then(results => {
+            const failed = results.find(result => result.status === 'rejected');
+            finish(failed ? { ok: false, reason: 'shutdown-failed', error: failed.reason?.message || String(failed.reason) } : { ok: true });
+        });
         return { ok: true };
+    }
+
+    function shutdown() {
+        if (!state.destroyed) destroy();
+        return destroying;
     }
 
     function ensureAlive() {

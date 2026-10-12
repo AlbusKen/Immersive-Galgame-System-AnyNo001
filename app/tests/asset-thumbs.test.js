@@ -1,7 +1,9 @@
+import { createAssetGenerationService, createMemoryAssetThumbStore } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAssetGenerationService } from '../src/generated-images/illustration/asset-generation-service.js';
-import { createMemoryAssetThumbStore } from '../src/media/asset-thumb-store.js';
+import { createLocalImageCache } from '../src/media/tavern-image-cache.js';
+
+
 
 function setup() {
     const records = new Map([['a', { id: 'a', type: 'sprite', dataUrl: 'data:image/png;base64,QUJDREVGR0g=', revision: 1 }]]);
@@ -11,18 +13,18 @@ function setup() {
         async putImage(record) { records.set(record.id, record); },
         async deleteImage(id) { records.delete(id); },
     };
-    const thumbStore = createMemoryAssetThumbStore();
     const made = [];
     let blobs = 0;
+    const mediaCache = createLocalImageCache({ URL: { createObjectURL: () => `blob:thumb-${++blobs}`, revokeObjectURL() {} }, Blob, atob, btoa });
+    const thumbStore = createMemoryAssetThumbStore({ mediaCache });
     const events = { list: [], emit(type, detail) { this.list.push(detail); } };
     const service = createAssetGenerationService({
         messageHost: { getChatId: () => '' },
         store,
         events,
         thumbStore,
+        mediaCache,
         makeThumb: async (src) => { made.push(src); return 'data:image/webp;base64,U01BTEw='; },
-        urlApi: { createObjectURL: () => `blob:thumb-${++blobs}`, revokeObjectURL() {} },
-        Blob: class { constructor(parts, opts) { this.parts = parts; this.type = opts && opts.type; } },
     });
     return { service, store, thumbStore, made, events };
 }

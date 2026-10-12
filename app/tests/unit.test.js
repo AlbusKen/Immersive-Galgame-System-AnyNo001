@@ -1,3 +1,4 @@
+import { createReaderImageService } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -40,7 +41,7 @@ import { resolveVisualMode, VISUAL_MODES } from '../src/visual/visual-mode.js';
 import { createPromptAdapter } from '../src/prompts/adapters/prompt-adapter.js';
 import { naiRequestBuilder } from '../src/generated-images/request-builders/nai-builder.js';
 import { fetchModels as fetchImageModels, generateImage as generateImageFromApi } from '../src/generated-images/image-api-client.js';
-import { createReaderImageService } from '../src/generated-images/reader-image-service.js';
+
 import { createPublicApi, attachPublicApi } from '../src/api/public-api.js';
 import { createIgsCompatApi } from '../src/api/igs-compat.js';
 import {
@@ -5202,7 +5203,7 @@ test('gate:generated-images:nai-client-edit-uses-infill-and-hides-key', async ()
 test('gate:generated-images:inpaint-transaction-preview-accept-cancel-and-stale', async () => {
     const { createInpaintTransaction, buildInpaintPrompt } = await import('../src/generated-images/illustration/inpaint-transaction.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const store = createMemoryGeneratedAssetStore();
     await store.putImage({ id: 'sp', schemaVersion: 2, type: 'sprite', originalDataUrl: 'data:image/png;base64,ORIG', workingDataUrl: '', dataUrl: 'cut0', alphaMaskDataUrl: 'mask0', revision: 1 });
     await store.putImage({ id: 'old', type: 'sprite', dataUrl: 'legacy' });

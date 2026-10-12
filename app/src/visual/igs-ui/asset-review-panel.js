@@ -28,7 +28,7 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
     }
     const title = doc.createElement('div');
     title.className = 'igs-asset-review-title';
-    title.textContent = items.length ? `本层生成了 ${items.length} 个新素材，是否入库？` : '正文出现了衣柜里没有的衣服';
+    title.textContent = items.length ? `本层待确认素材 ${items.length}${handlers.hasMore ? '+' : ''} 项，是否入库？` : '正文出现了衣柜里没有的衣服';
     container.appendChild(title);
     // 新衣服：下拉菜单选去向，确认后交给宿主；「稍后」留在素材页「待确认」里。
     for (const ask of outfitAsks) {
@@ -101,6 +101,12 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         body.append(label, input, actions);
         row.append(thumb, body);
         container.appendChild(row);
+    }
+    if (handlers.hasMore) {
+        const more = doc.createElement('button');
+        more.type = 'button'; more.textContent = '到待确认页查看其余素材';
+        more.addEventListener('click', event => { event.stopPropagation(); handlers.onMore?.(); });
+        container.appendChild(more);
     }
     container.removeAttribute('hidden');
 }

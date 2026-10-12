@@ -1,4 +1,4 @@
-import { createLocalImageCache } from '../../media/tavern-image-cache.js';
+import { requireMediaCache } from '../../media/media-cache-owner.js';
 import { floorHasEventCg } from '../../scene/event-cg.js';
 import { numberParagraphs, formatNumberedParagraphs, insertMarkers, insertMarkersAtAnchors, findAnchorInsertIndex, appendedTail, reattachTail, transplantMarkers } from './marker-placer.js';
 import { MIN_AUTO_IMAGE_BODY_CHARS, floorBodyLength } from './floor-body-length.js';
@@ -173,7 +173,7 @@ export function createAutoIllustrationService(deps) {
     const minBodyChars = Number.isFinite(Number(deps.minBodyChars)) ? Number(deps.minBodyChars) : MIN_AUTO_IMAGE_BODY_CHARS;
     const sourceFilter = typeof deps.getSourceFilter === 'function' ? deps.getSourceFilter : () => undefined;
     const locks = new Map();
-    const cache = deps.mediaCache || createLocalImageCache({});
+    const cache = requireMediaCache(deps.mediaCache, 'auto-illustrations');
     const states = cache.auxiliary.createMap('cg-states');
     const resourceKey = key => `cg:${key}`;
     let offRendered = null;

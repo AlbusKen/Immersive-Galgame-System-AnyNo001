@@ -770,7 +770,7 @@ test('gate:assets:reader-manual-generation-feedback', async () => {
 });
 
 test('gate:assets:reader-manual-retries-settled-floor', async () => {
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const document = createFakeDocument();
     const raw = '[igs-scene:废弃工厂|夜晚|雨]\n雨声很大。';

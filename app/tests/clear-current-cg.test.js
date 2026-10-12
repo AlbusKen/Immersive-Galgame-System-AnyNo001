@@ -1,7 +1,8 @@
+import { createAutoIllustrationService } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryIllustrationStore, floorKeyOf } from '../src/media/illustration-store.js';
-import { createAutoIllustrationService } from '../src/generated-images/illustration/auto-illustration-service.js';
+
 import { clearCurrentCg } from '../src/generated-images/illustration/clear-current-cg.js';
 
 const current = { identity: { chatId: 'chat-1', messageId: 8, swipeId: 2 }, slot: 1, url: 'blob:cg-1' };
