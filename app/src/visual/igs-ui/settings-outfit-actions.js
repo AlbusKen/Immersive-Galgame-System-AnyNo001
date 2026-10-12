@@ -1,7 +1,8 @@
 import { storedImageReferences } from '../../media/image-references.js';
 import { openSettingsPage } from './settings-pages.js';
 import { BUILTIN_NUDE_OUTFIT, normalizeOutfitForm, fuzzyOutfitName, isBuiltinNudeOutfit, isValidOutfitName, isValidOutfitWord, normalizeWardrobe, OUTFIT_RESET } from '../../scene/character-outfits.js';
-import { migrateOriginalOutfits, migrationRowOf, splitMigrationWords } from '../../scene/outfit-migration.js';
+import { generatedAssetIdOf } from '../../scene/asset-match.js';
+import { migrateOriginalOutfits, migrationRowOf, splitMigrationWords, promoteOutfitToOriginal } from '../../scene/outfit-migration.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
 import { classifySceneKey } from '../../scene/scene-directives.js';
 import { clearOutfitReview, loadOutfitReview, removeOutfitReview } from '../../scene/outfit-review-store.js';
@@ -202,9 +203,10 @@ async function handleMigrateOutfit(command, segs, ctx) {
     const { settingsState, options, persistSettingsDraft, rerenderSettings } = ctx;
     rememberAssetScope(settingsState, getSillyTavernContext(options.global || globalThis));
     const asyncState = settingsState.asyncState;
-    // 清单一次配好整批，之后用户改输入框就地改草稿，所以这一步不做任何二次核对。
+    // 从角色行的菜单进入：清单只包含这个角色，不能把其他角色的原装立绘一起搬走。
     if (command === 'scene-migrate-outfit') {
-        asyncState.migrateRows = migrateSeedRows(settingsState);
+        const character = decodeSeg(segs[0] || '');
+        asyncState.migrateRows = migrateSeedRows(settingsState).filter((row) => row.character === character);
         return rerenderSettings();
     }
     if (command === 'scene-migrate-outfit-cancel') {
@@ -543,7 +545,7 @@ function handleOutfitReview(command, segs, ctx) {
     return rerenderSettings();
 }
 
-const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots)|scene-migrate-outfit(?:-(?:cancel|apply|skip|run))?|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt))(?::(.*))?$/;
+const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-promote-outfit|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots)|scene-migrate-outfit(?:-(?:cancel|apply|skip|run))?|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt))(?::(.*))?$/;
 
 // 服装区 action：返回 null 表示不归本模块处理。位置 / 头部标定 key 随改名迁移、随删除清理。
 export function handleOutfitAction(normalizedAction, ctx) {
@@ -572,7 +574,8 @@ async function runOutfitAction(match, ctx) {
     if (!charName || BLOCKED_KEYS.has(charName) || !hasOwn(plain(sceneAssets.characters) || {}, charName)) return rerenderSettings();
     const outfits = outfitMapOf(sceneAssets, charName);
     const outfitName = decodeSeg(segs[1] || '');
-    const entry = outfitName ? outfitEntry(outfits, outfitName) : null;
+    // 提升前的对话可取消；不能在用户做选择前由 outfitEntry 补字段改写草稿。
+    const entry = outfitName ? (command === 'scene-promote-outfit' ? plain(outfits[outfitName]) : outfitEntry(outfits, outfitName)) : null;
     const done = () => {
         const persisted = persistSettingsDraft();
         if (persisted.ok === false) return persisted;
@@ -626,6 +629,41 @@ async function runOutfitAction(match, ctx) {
     if (!entry) return rerenderSettings();
 
     switch (command) {
+    case 'scene-promote-outfit': {
+        const base = plain((plain(sceneAssets.characters) || {})[charName]) || {};
+        const hasOld = Object.values(base).some((url) => typeof url === 'string' && url.trim());
+        let oldOriginal = 'discard';
+        let backupName = '';
+        if (hasOld) {
+            const dialogs = ctx.dialogs || createSettingsDialogs({ global: globalObj });
+            const picked = await dialogs.choose(`将「${outfitName}」设为「${charName}」的原装。旧原装立绘如何处理？`, [
+                { value: 'migrate', label: '迁移到新服装', note: '保留旧原装图片和标定' },
+                { value: 'discard', label: '丢弃旧原装', note: '删除旧原装引用和标定' },
+            ], 'migrate', { cancelLabel: '取消' });
+            if (picked !== 'migrate' && picked !== 'discard') return rerenderSettings();
+            oldOriginal = picked;
+            if (picked === 'migrate') {
+                if (String(base[OUTFIT_RESET] || '').trim() && String(base['平和'] || '').trim()) {
+                    warn(ctx, '旧原装的「默认」和「平和」都有图，迁移会覆盖其中一张。请先在原装里将其中一张移到其他情绪槽，再重试；数据未修改。');
+                    return rerenderSettings();
+                }
+                backupName = await ask(ctx, `给「${charName}」的旧原装取一个新服装名：`, '原装备份');
+                if (!backupName) return rerenderSettings();
+            }
+        }
+        const result = promoteOutfitToOriginal({ sceneAssets, readerSettings, character: charName, outfit: outfitName, oldOriginal, backupName });
+        if (!result.ok) {
+            const message = {
+                'outfit-has-no-base': '这套服装缺少「平和」立绘，请先补上图片再设为原装。',
+                'backup-name-taken': '旧原装备份的服装名无效，或与现有服装名、别名冲突。请换一个名称。',
+                'old-original-calm-conflict': '旧原装的「默认」和「平和」都有图，请先移开其中一张再重试；数据未修改。',
+            }[result.reason] || `未能设为原装：${result.reason}`;
+            warn(ctx, message);
+            return rerenderSettings();
+        }
+        selectTab(settingsState, charName, '');
+        return done();
+    }
     case 'scene-rename-outfit': {
         const name = await ask(ctx, `重命名服装「${outfitName}」为：`, outfitName);
         if (!name || name === outfitName) return rerenderSettings();

@@ -538,6 +538,7 @@ export function renderCharacterAssetList(characters, options = {}) {
             + renderRowMenu([
                 menuItem(`scene-toggle-dna:${encSeg(charName)}`, dnaOpen ? '收起角色设定' : `角色设定${characterDnaFilled(dna) ? '' : '（外貌未填）'}`),
                 folderSelect(charName, { menu: true }),
+                String((moods || {}).默认 || '').trim() ? menuItem(`scene-migrate-outfit:${encSeg(charName)}`, '原装迁成差分服装') : '',
                 menuItem(`scene-rename-char:${encSeg(charName)}`, '重命名'),
                 options && typeof options.scopeMenu === 'function' ? options.scopeMenu('characters', charName) : '',
                 menuItem(`scene-remove-char:${encSeg(charName)}`, '删除角色', ' is-danger'),

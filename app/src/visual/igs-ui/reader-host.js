@@ -403,8 +403,8 @@ export function createIgsReaderHost(options = {}) {
             exitEmbeddedLoading();
         },
     });
-    // 等待过场：五种阅读器模式共用黑屏 + 一句台词（回放角色说过的话 + 通用兜底），
-    // 回复到了就地换页；玩家在玩小游戏时就把这楼存着，玩完再换。
+    // 等待过场：五种阅读器模式共用黑屏 + 一句台词（回放角色说过的话 + 通用兜底）。
+    // 回复写完后，未在游戏中就地换页；在游戏中等这一局结算再换页。
     const waitStage = createWaitStageRuntime({
         getDoc: () => resolveEmbeddedDocument(state.activeReader),
         onVoice: (line) => playWaitStageVoice(line),
@@ -446,7 +446,8 @@ export function createIgsReaderHost(options = {}) {
             readerImageRefreshPending = false;
             settingsImageRefreshPending = false;
             if (doReader && state.activeReader) {
-                if (state.activeSettings) readerStaleBehindSettings = true;
+                if (waitStage.isOpen()) void refreshWaitStageModel(state.activeReader);
+                else if (state.activeSettings) readerStaleBehindSettings = true;
                 else rerenderActiveReader();
             }
             if (doSettings && state.activeSettings && isAssetSettingsPage(state.activeSettings)) {
@@ -463,8 +464,9 @@ export function createIgsReaderHost(options = {}) {
             if (state.activeReader) {
                 if (imageLoaded) warmActiveFloorImages(null, detail.imageId);
                 if (settings) readerStaleBehindSettings = true;
-                else if (imageLoaded) scheduleImageRefresh({ reader: true });
-                else rerenderActiveReader();
+                if (imageLoaded) {
+                    if (waitStage.isOpen() || !settings) scheduleImageRefresh({ reader: true });
+                } else if (!settings) rerenderActiveReader();
             }
             if (!settings) return;
             if (imageLoaded) {
@@ -1222,6 +1224,10 @@ export function createIgsReaderHost(options = {}) {
             const newFloor = Number(message.id) !== Number(current.contentMessageId);
             if (!streamObserver.hasGenerationSettled() || !newFloor) {
                 if (!streamObserver.hasGenerationSettled()) return false;
+                if (!waitStage.replyArrived()) {
+                    pendingReplyMessage = { reader: current, message: null };
+                    return true;
+                }
                 exitEmbeddedLoading();
                 return true;
             }
@@ -1232,12 +1238,16 @@ export function createIgsReaderHost(options = {}) {
             || nextRaw !== current.streamBaselineRaw
             || nextVisible !== current.streamBaselineVisible;
         if (!changed) {
+            if (!waitStage.replyArrived()) {
+                pendingReplyMessage = { reader: current, message: null };
+                return true;
+            }
             exitEmbeddedLoading();
             return true;
         }
-        // 玩家正在等回复时玩小游戏：先把这楼存着，玩完这局再过场，别把正玩的一局截断。
+        // 回复已写完：当前游戏只结算这一局，之后由过场回调继续换楼。
         if (!waitStage.replyArrived()) {
-            pendingReplyMessage = message;
+            pendingReplyMessage = { reader: current, message };
             return true;
         }
         await applyReplyMessage(current, message);
@@ -1265,15 +1275,22 @@ export function createIgsReaderHost(options = {}) {
         }
     }
 
+    function finishPendingWaitExit() {
+        const pending = pendingReplyMessage;
+        pendingReplyMessage = null;
+        if (!pending || state.activeReader !== pending.reader) return;
+        if (pending.message) void applyReplyMessage(pending.reader, pending.message);
+        else exitEmbeddedLoading();
+    }
+
     // 等待过场的台词池是从最近几楼的正文里现抽的，等树跑完再补一次即可。
     async function refreshWaitStageModel(current) {
         if (!current) return null;
         const turns = await listTurnsSafe();
-        const recent = turns.slice(-7);
-        const all = Array.isArray(current.payload && current.payload.turns) && current.payload.turns.length
-            ? current.payload.turns.slice(-7)
-            : recent;
-        const resolveUrl = (url) => resolveReaderAssetUrl(url, current);
+        if (state.activeReader !== current || !waitStage.isOpen()) return null;
+        const all = turns.length ? turns.slice(-7) : (Array.isArray(current.payload && current.payload.turns) ? current.payload.turns.slice(-7) : []);
+        // 等待层的牌面不是当前正文页：外链直接可显示，生成图则由图库读回事件更新候选。
+        const resolveUrl = (url) => concreteReaderAssetUrl(url);
         const model = buildWaitStageModel({
             settings: current.snapshot && current.snapshot.readerSettings && current.snapshot.readerSettings.waitStage,
             turns: all,
@@ -1351,18 +1368,10 @@ export function createIgsReaderHost(options = {}) {
         mountWaitStage(current, { embedded: true });
     }
 
-    // 玩家还在玩小游戏时回复就到了：先把这楼存着，玩完由 onExitReady 回调继续换页。
-    function finishPendingWaitExit() {
-        const current = state.activeReader;
-        if (!current || !pendingReplyMessage) return;
-        const message = pendingReplyMessage;
-        pendingReplyMessage = null;
-        void applyReplyMessage(current, message);
-    }
-
     function exitEmbeddedLoading() {
         const current = state.activeReader;
         if (!current) return;
+        pendingReplyMessage = null;
         current.streamBaselineRaw = '';
         current.streamBaselineVisible = '';
         current.streamPhase = 'idle';
@@ -1377,10 +1386,7 @@ export function createIgsReaderHost(options = {}) {
         const mount = current.dom && current.dom.embeddedMount;
         const host = mount && mount.host;
         if (host && host.removeAttribute) host.removeAttribute('data-igs-embedded-loading');
-        // 等已经结束（超时、宿主没回、切模式）但玩家还在玩：标成收场态，让他玩完这局自己收层。
-        // 不直接移除，否则正玩的一局被当场抹掉；也不能留在等待态，否则层会一直挂着不消失。
-        if (waitStage.isGameActive()) waitStage.replyArrived();
-        else waitStage.close();
+        waitStage.close();
         if (current.dom && current.dom.root && current.dom.root.style) current.dom.root.style.display = '';
         if (current.deferredReviewKey) syncAssetReviewAfterRender(current, current.snapshot);
     }
@@ -1414,8 +1420,7 @@ export function createIgsReaderHost(options = {}) {
         if (current.dom.embeddedMount) {
             const wasStreaming = current.streamPhase === 'streaming';
             exitEmbeddedLoading();
-            // 宿主节点马上要被拆掉：层连同宿主一起消失，内部的游戏状态必须一并清掉，
-            // 否则 isGameActive() 会一直为真，之后再也关不掉。
+            // 宿主节点马上要被拆掉，先清理过场层与小游戏状态。
             waitStage.close();
             (doc.documentElement || doc.body).appendChild(root);
             teardownEmbeddedMount(current.dom.embeddedMount);
@@ -4831,35 +4836,52 @@ export function createIgsReaderHost(options = {}) {
         const withDna = status === 'library-dna' && item.type === 'sprite';
         if (status === 'library-dna') status = 'library';
         let addedName = '';
-        if (status === 'library' && item.type === 'background') {
+        let previous = null;
+        if (status === 'library') {
+            const background = item.type === 'background';
             const added = mutateSceneLibrary((assets) => {
-                const bound = bindGeneratedBackground(assets, item, name || item.name);
-                if (!bound.ok) return bound;
-                assets.scenes = bound.scenes;
-                return bound;
-            });
-            if (!added || added.ok === false) {
-                writeToastSafe('加入场景素材失败：名称不能为空');
-                return;
-            }
-            addedName = added.name;
-            writeToastSafe(`已放入场景素材「${added.name}」`);
-        } else if (status === 'library') {
-            const added = mutateSceneLibrary((assets) => {
+                previous = background
+                    ? { scenes: assets.scenes }
+                    : { characters: assets.characters, characterAliases: assets.characterAliases };
+                if (background) {
+                    const bound = bindGeneratedBackground(assets, item, name || item.name);
+                    if (bound.ok) assets.scenes = bound.scenes;
+                    return bound;
+                }
                 const bound = bindGeneratedSprite(assets, name || item.name, item.imageId ? `igs-gen:${item.imageId}` : '', { replace: true });
-                if (!bound.ok) return bound;
-                assets.characters = bound.characters;
-                assets.characterAliases = bound.characterAliases;
+                if (bound.ok) {
+                    assets.characters = bound.characters;
+                    assets.characterAliases = bound.characterAliases;
+                }
                 return bound;
-            }, { character: name || item.name });
+            }, background ? {} : { character: name || item.name });
             if (!added || added.ok === false) {
-                writeToastSafe('放入角色立绘失败：名称不能为空');
+                // 设置草稿可能已被改写但保存失败；恢复该条操作前的映射，不保留未保存的假成功。
+                if (previous && state.activeSettings) {
+                    const assets = draftAssetLibrary(state.activeSettings, background ? undefined : { collections: CHARACTER_COLLECTIONS, name: name || item.name });
+                    Object.assign(assets, previous);
+                }
+                writeToastSafe('素材入库失败，请检查名称与保存状态后重试');
                 return;
             }
             addedName = added.name;
-            writeToastSafe(`已放入角色立绘「${added.name}」`);
         }
-        if (typeof service.setStatus === 'function') await service.setStatus(item.key, status);
+        let updated;
+        try { updated = typeof service.setStatus === 'function' ? await service.setStatus(item.key, status) : { ok: false }; }
+        catch (error) { updated = { ok: false }; }
+        if (!updated || updated.ok === false) {
+            if (previous && addedName) {
+                const rolled = mutateSceneLibrary((assets) => {
+                    Object.assign(assets, previous);
+                    return { ok: true };
+                }, item.type === 'background' ? {} : { character: name || item.name });
+                writeToastSafe(rolled && rolled.ok !== false
+                    ? '审核状态更新失败，素材库已恢复，请重试'
+                    : '审核状态更新失败，素材库无法恢复，请检查素材库后重试');
+            } else writeToastSafe('审核状态更新失败，请重试');
+            return;
+        }
+        if (addedName) writeToastSafe(`已放入${item.type === 'background' ? '场景素材' : '角色立绘'}「${addedName}」`);
         if (state.activeReader) rerenderActiveReader();
         if (withDna && addedName) openDnaCandidate(addedName, item.tags);
     }

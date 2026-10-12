@@ -73,6 +73,15 @@ test('gate:wait-stage:collects-short-character-lines-and-drops-narration', () =>
     assert.equal(new Set(lines.map((line) => line.text)).size, 2);
 });
 
+test('gate:wait-stage:normalized-host-turns-with-object-raw-keep-character-lines', () => {
+    const lines = collectWaitStageLines([
+        { id: 2, raw: { mes: '[igs-char:艾莉|喜悦|快来。]' }, text: '[igs-char:艾莉|喜悦|快来。]' },
+        { id: 3, raw: { mes: '[igs-char:露娜|悲伤|等我。]' }, text: '[igs-char:露娜|悲伤|等我。]' },
+    ]);
+    assert.deepEqual(new Set(lines.map((line) => line.who)), new Set(['艾莉', '露娜']));
+    assert.equal(availableWaitStageGames({}, lines).includes('whosaid'), true);
+});
+
 test('gate:wait-stage:collects-scene-directive-dialogue', () => {
     const lines = collectWaitStageLines([
         { raw: '[igs-scene:教室|白天|放学后]\n艾莉：[igs-char:艾莉|喜悦|你回来啦。]' },
@@ -163,6 +172,24 @@ test('gate:wait-stage:builds-model-with-playlist-even-when-empty', () => {
     assert.deepEqual(model.games, ['rps']);
 });
 
+test('gate:wait-stage:original-sprites-and-scene-objects-unlock-art-games', () => {
+    const model = buildWaitStageModel({
+        sceneAssets: {
+            characters: {
+                艾莉: { 默认: 'igs-gen:base-a', 喜悦: 'igs-gen:joy' },
+                露娜: { 默认: 'igs-gen:base-b', 悲伤: 'igs-gen:sad' },
+            },
+            scenes: { 教室: { url: 'igs-gen:room' } },
+        },
+        resolveUrl: (url) => `resolved:${url}`,
+    });
+    assert.deepEqual(model.games, ['rps', 'memory', 'mood']);
+    assert.equal(model.art.pictures.some((item) => item.url === 'resolved:igs-gen:room'), true);
+    assert.equal(model.art.pictures.some((item) => item.url === 'resolved:igs-gen:base-a'), true);
+    assert.equal(model.art.pictures.some((item) => item.url.includes('[object Object]')), false);
+    assert.deepEqual(new Set(model.art.sprites.map((item) => item.mood)), new Set(['喜悦', '悲伤']));
+});
+
 test('gate:wait-stage:collects-art-with-resolved-urls', () => {
     const art = collectWaitStageArt({
         characterOutfits: {
@@ -173,8 +200,19 @@ test('gate:wait-stage:collects-art-with-resolved-urls', () => {
     assert.equal(art.sprites.length, 1);
     assert.equal(art.sprites[0].url, 'resolved:sprite-a');
     assert.equal(art.sprites[0].mood, '喜悦');
-    assert.equal(art.pictures.length, 2);
+    assert.equal(art.pictures.length, 3);
     assert.equal(art.pictures.every((item) => String(item.url).startsWith('resolved:')), true);
+});
+
+test('gate:wait-stage:time-and-weather-backgrounds-unlock-memory-without-base-scene-image', () => {
+    const art = collectWaitStageArt({ scenes: {
+        教室: { url: '', times: {
+            白天: { url: 'day.png', weathers: { 雨: { url: 'rain.png' } } },
+            夜晚: { url: 'night.png', weathers: {} },
+        } },
+    } });
+    assert.deepEqual(new Set(art.pictures.map((item) => item.url)), new Set(['day.png', 'rain.png', 'night.png']));
+    assert.ok(availableWaitStageGames(art, []).includes('memory'));
 });
 
 test('gate:wait-stage:style-layer-sits-above-dialog-below-toolbar', () => {

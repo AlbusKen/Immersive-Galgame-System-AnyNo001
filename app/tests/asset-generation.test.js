@@ -351,6 +351,26 @@ test('gate:assets:service-generates-missing-assets-and-reviews', async () => {
     assert.ok(emitted.includes('generated'));
 });
 
+test('gate:assets:review-library-status-invalidates-cached-page-and-hides-card', async () => {
+    const store = createMemoryGeneratedAssetStore();
+    const record = { key: 'review-1', chatId: 'chat-1', floorKey: 'chat-1|3|0', type: 'sprite', name: '旧名', imageId: 'img-1', status: 'review' };
+    await store.putAsset(record);
+    const service = createAssetGenerationService({
+        messageHost: fakeHost(FLOOR_TEXT), store, getSettings: () => ({}),
+        llm: {}, nai: {},
+    });
+    try {
+        await service.readRecord(record.key);
+        assert.equal(service.listReview(record.floorKey).length, 1);
+        const result = await service.setStatus(record.key, 'library');
+        assert.equal(result.ok, true);
+        assert.equal(service.listReview(record.floorKey).length, 0);
+        assert.equal((await store.getAsset(record.key)).status, 'library');
+        const page = await store.queryAssets({ chatId: record.chatId, floorKey: record.floorKey, statuses: ['review'] });
+        assert.equal(page.records.length, 0);
+    } finally { service.destroy?.(); }
+});
+
 test('gate:assets:service-disabled-makes-no-requests', async () => {
     let requested = false;
     const service = createAssetGenerationService({

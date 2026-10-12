@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { migrateOriginalOutfits, migrationRowOf, splitMigrationWords } from '../src/scene/outfit-migration.js';
+import { migrateOriginalOutfits, promoteOutfitToOriginal, migrationRowOf, splitMigrationWords } from '../src/scene/outfit-migration.js';
 import { handleOutfitAction } from '../src/visual/igs-ui/settings-outfit-actions.js';
+import { renderCharacterAssetList } from '../src/visual/igs-ui/settings-fields.js';
+import { renderMigrateEntry, renderCharacterSlotTabs } from '../src/visual/igs-ui/settings-outfit-fields.js';
 
 function createCtx(assets = {}) {
     const alerts = [];
@@ -81,6 +83,15 @@ test('gate:outfits:migration-keeps-existing-calm-image-over-default', () => {
     assert.deepEqual(assets.characters.雪乃, {});
 });
 
+test('gate:outfits:migration-preserves-calm-only-old-original', () => {
+    const assets = { characters: { 雪乃: { 平和: 'igs-gen:calm' } } };
+    const rs = { spriteLayouts: { 'pc::雪乃::平和': { posX: 5 } } };
+    const result = migrateOriginalOutfits({ sceneAssets: assets, readerSettings: rs, rows: [{ character: '雪乃', name: '旧衣' }] });
+    assert.equal(result.done.length, 1);
+    assert.deepEqual(assets.characterOutfits.雪乃.旧衣.moods, { 平和: 'igs-gen:calm' });
+    assert.deepEqual(rs.spriteLayouts['pc::雪乃|旧衣::平和'], { posX: 5 });
+});
+
 test('gate:outfits:migration-only-default-still-creates-outfit-for-aliases-and-note', () => {
     const assets = { characters: { 雪乃: { 默认: 'igs-gen:base' } } };
     const result = migrateOriginalOutfits({ sceneAssets: assets, readerSettings: {}, rows: [{ character: '雪乃', name: '玩偶装', words: ['睡衣', '玩偶装'], note: '睡觉时' }] });
@@ -133,25 +144,132 @@ test('gate:outfits:migration-row-stats-distinguish-whole-from-default-only', () 
     assert.equal(migrationRowOf('a', { 默认: 'x' }).stat, '仅默认');
     assert.equal(migrationRowOf('b', { 默认: 'x', 喜悦: 'y' }).stat, '整套 2 张');
     assert.equal(migrationRowOf('c', { 喜悦: 'y' }).hasSprite, false);
-    assert.deepEqual(splitMigrationWords('睡衣、家居服, 玩偶装 睡衣'), ['睡衣', '家居服', '玩偶装']);
+    assert.deepEqual(splitMigrationWords('睡衣、家居服, 玩偶装、睡衣'), ['睡衣', '家居服', '玩偶装']);
+    assert.deepEqual(splitMigrationWords('旅行 风衣、家居服'), ['旅行 风衣', '家居服']);
 });
 
-test('gate:outfits:migration-handler-seeds-list-then-applies-in-one-pass', async () => {
+test('gate:outfits:migration-character-menu-seeds-only-selected-character-and-applies', async () => {
     const t = createCtx({ characters: { 小林海斗: { 默认: 'igs-gen:base' }, 雪乃: { 默认: 'igs-gen:b2', 喜悦: 'igs-gen:y' } } });
-    await handleOutfitAction('scene-migrate-outfit', t.ctx);
+    const html = renderCharacterAssetList(t.sa().characters);
+    assert.match(html, /data-action="scene-migrate-outfit:%E9%9B%AA%E4%B9%83"/);
+    assert.equal(renderMigrateEntry(undefined), '');
+    const requested = [];
+    t.ctx.options.generatedAssets = { getImagePrompt: async (id) => { requested.push(id); return { positive: '原装提示词' }; } };
+    await handleOutfitAction('scene-migrate-outfit:' + encodeURIComponent('雪乃'), t.ctx);
     const rows = t.ctx.state.activeSettings.asyncState.migrateRows;
-    assert.deepEqual(rows.map((row) => row.character), ['小林海斗', '雪乃']);
-    // 默认名逐角色预填，用户在清单里改；这一步不落盘。
-    assert.deepEqual(rows.map((row) => row.name), ['小林海斗', '雪乃原装']);
+    assert.deepEqual(rows.map((row) => row.character), ['雪乃']);
+    assert.deepEqual(rows.map((row) => row.name), ['雪乃原装']);
     assert.equal(t.persisted(), 0);
-    rows[1].name = '玩偶装';
-    await handleOutfitAction('scene-migrate-outfit-skip:' + encodeURIComponent('小林海斗'), t.ctx);
-    assert.deepEqual(t.ctx.state.activeSettings.asyncState.migrateRows.map((row) => row.character), ['雪乃']);
+    rows[0].name = '玩偶装';
+    rows[0].words = ['旅行 风衣'];
     const done = await handleOutfitAction('scene-migrate-outfit-apply', t.ctx);
     assert.equal(done.ok, true);
+    assert.deepEqual(requested, ['b2']);
     assert.deepEqual(t.sa().characters.雪乃, {});
+    assert.deepEqual(t.sa().characters.小林海斗, { 默认: 'igs-gen:base' });
     assert.equal(t.sa().characterOutfits.雪乃.玩偶装.wardrobe, '玩偶装');
-    // 清单用完清掉，下次点功能键重新生成。
+    assert.deepEqual(t.sa().characterOutfits.雪乃.玩偶装.words, ['旅行 风衣']);
+    assert.equal(t.sa().wardrobe.玩偶装.prompt, '原装提示词');
+    assert.equal(t.persisted(), 1);
     assert.equal(t.ctx.state.activeSettings.asyncState.migrateRows, undefined);
-    assert.match(t.alerts.join('\n'), /雪乃 → 服装「玩偶装」/);
+});
+
+test('gate:outfits:promote-to-original-keeps-old-original-as-outfit-and-isolates-keys', () => {
+    const assets = {
+        characters: { 雪乃: { 默认: 'base', 喜悦: 'base-joy' }, 雪: { 默认: 'other' } },
+        characterOutfits: { 雪乃: { 校服: { words: ['制服'], moods: { 平和: 'uniform', 喜悦: 'uniform-joy' }, wardrobe: '校服' }, 睡衣: { words: [], moods: {} } } },
+        generated: { expressionNotes: { 雪乃: { 喜悦: { caption: 'old' } }, '雪乃\u0001校服': { 喜悦: { caption: 'uniform' } } } },
+    };
+    const reader = { spriteLayouts: { 'pc::雪乃': { posX: 1 }, 'pc::雪乃::默认': { posX: 2 }, 'pc::雪乃|校服': { posX: 3 }, 'pc::雪乃|校服::平和': { posX: 4 }, 'pc::雪': { posX: 5 } }, spriteHeads: { '雪乃::默认': { x: 1 }, '雪乃|校服::平和': { x: 2 } } };
+    const result = promoteOutfitToOriginal({ sceneAssets: assets, readerSettings: reader, character: '雪乃', outfit: '校服', oldOriginal: 'migrate' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(assets.characters.雪乃, { 默认: 'uniform', 喜悦: 'uniform-joy' });
+    assert.deepEqual(assets.characterOutfits.雪乃.原装备份.moods, { 平和: 'base', 喜悦: 'base-joy' });
+    assert.equal(assets.characterOutfits.雪乃.校服, undefined);
+    assert.equal(assets.characterOutfits.雪乃.睡衣.moods && Object.keys(assets.characterOutfits.雪乃.睡衣.moods).length, 0);
+    assert.deepEqual(assets.characters.雪, { 默认: 'other' });
+    assert.deepEqual(assets.generated.expressionNotes.雪乃, { 喜悦: { caption: 'uniform' } });
+    assert.deepEqual(assets.generated.expressionNotes['雪乃\u0001原装备份'], { 喜悦: { caption: 'old' } });
+    assert.deepEqual(reader.spriteLayouts['pc::雪乃'], { posX: 3 });
+    assert.deepEqual(reader.spriteLayouts['pc::雪乃::默认'], { posX: 4 });
+    assert.deepEqual(reader.spriteLayouts['pc::雪乃|原装备份'], { posX: 1 });
+    assert.deepEqual(reader.spriteLayouts['pc::雪'], { posX: 5 });
+    assert.deepEqual(reader.spriteHeads['雪乃|原装备份::平和'], { x: 1 });
+    assert.deepEqual(reader.spriteHeads['雪乃::默认'], { x: 2 });
+});
+test('gate:outfits:promote-to-original-discard-removes-old-images-and-keys-without-touching-other-outfits', () => {
+    const assets = { characters: { 小林: { 默认: 'old' }, 小林海斗: { 默认: 'untouched' } }, characterOutfits: { 小林: { 泳装: { words: ['泳衣'], moods: { 平和: 'new' } }, 睡衣: { moods: { 平和: 'sleep' } } } } };
+    const reader = { spriteLayouts: { 'pc::小林::默认': { posX: 1 }, 'pc::小林|泳装::平和': { posX: 2 }, 'pc::小林海斗::默认': { posX: 3 } }, spriteHeads: {} };
+    const rejected = promoteOutfitToOriginal({ sceneAssets: assets, readerSettings: reader, character: '小林', outfit: '泳装' });
+    assert.equal(rejected.ok, false, '旧原装处理方式必须明确选择');
+    const result = promoteOutfitToOriginal({ sceneAssets: assets, readerSettings: reader, character: '小林', outfit: '泳装', oldOriginal: 'discard' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(assets.characters.小林, { 默认: 'new' });
+    assert.equal(assets.characterOutfits.小林.泳装, undefined);
+    assert.deepEqual(assets.characterOutfits.小林.睡衣.moods, { 平和: 'sleep' });
+    assert.equal(reader.spriteLayouts['pc::小林::默认'].posX, 2);
+    assert.deepEqual(reader.spriteLayouts['pc::小林海斗::默认'], { posX: 3 });
+});
+
+test('gate:outfits:promote-menu-action-migrates-and-persists-only-selected-character', async () => {
+    const t = createCtx({
+        characters: { 小林: { 默认: 'old' }, 小林海斗: { 默认: 'other' } },
+        characterOutfits: { 小林: {
+            '夏:装': { words: ['夏装'], moods: { 平和: 'new', 喜悦: 'new-joy' } },
+            睡衣: { words: [], moods: { 平和: 'sleep' } },
+        } },
+        generated: { expressionNotes: { 小林: { 默认: { caption: 'old' } }, '小林\u0001夏:装': { 平和: { caption: 'new' } } } },
+    });
+    t.rs().spriteLayouts = { 'pc::小林::默认': { posX: 1 }, 'pc::小林|夏:装::平和': { posX: 2 }, 'pc::小林海斗::默认': { posX: 3 } };
+    const menu = renderCharacterSlotTabs({ charName: '小林', activeOutfit: '夏:装', outfits: t.sa().characterOutfits.小林, baseMoods: [], baseListHtml: '', sceneAssets: t.sa(), icons: {}, expressionNotes: {}, resolveUrl: (url) => url });
+    assert.match(menu, /data-action="scene-promote-outfit:%E5%B0%8F%E6%9E%97:%E5%A4%8F%3A%E8%A3%85"/);
+    const prompts = [];
+    t.ctx.dialogs = {
+        choose: async (...args) => { assert.deepEqual(args[1].map((choice) => choice.value), ['migrate', 'discard']); return 'migrate'; },
+        prompt: async () => { prompts.push('asked'); return '旧衣'; },
+        alert: (message) => t.alerts.push(message),
+    };
+    t.ctx.settingsState.asyncState.outfitTabs = { 小林: '夏:装', 小林海斗: '校服' };
+    const result = await handleOutfitAction('scene-promote-outfit:' + encodeURIComponent('小林') + ':' + encodeURIComponent('夏:装'), t.ctx);
+    assert.equal(result.ok, true);
+    assert.equal(prompts.length, 1);
+    assert.equal(t.persisted(), 1);
+    assert.deepEqual(t.sa().characters.小林, { 喜悦: 'new-joy', 默认: 'new' });
+    assert.deepEqual(t.sa().characterOutfits.小林.旧衣.moods, { 平和: 'old' });
+    assert.deepEqual(t.sa().characterOutfits.小林.睡衣.moods, { 平和: 'sleep' });
+    assert.equal(t.sa().characterOutfits.小林['夏:装'], undefined);
+    assert.deepEqual(t.sa().characters.小林海斗, { 默认: 'other' });
+    assert.deepEqual(t.sa().generated.expressionNotes.小林, { 默认: { caption: 'new' } });
+    assert.deepEqual(t.sa().generated.expressionNotes['小林\u0001旧衣'], { 默认: { caption: 'old' } });
+    assert.deepEqual(t.rs().spriteLayouts['pc::小林::默认'], { posX: 2 });
+    assert.deepEqual(t.rs().spriteLayouts['pc::小林|旧衣::平和'], { posX: 1 });
+    assert.deepEqual(t.rs().spriteLayouts['pc::小林海斗::默认'], { posX: 3 });
+    assert.deepEqual(t.ctx.settingsState.asyncState.outfitTabs, { 小林海斗: '校服' });
+});
+
+test('gate:outfits:promote-discard-cancel-conflict-and-name-collision-never-silently-lose-images', async () => {
+    const t = createCtx({ characters: { 雪乃: { 默认: 'old', 平和: 'old-calm' } }, characterOutfits: { 雪乃: { 校服: { moods: { 平和: 'new' } }, 睡衣: { words: ['旧衣'], moods: {} } } } });
+    const action = 'scene-promote-outfit:' + encodeURIComponent('雪乃') + ':' + encodeURIComponent('校服');
+    const original = JSON.stringify(t.sa());
+    let choice = null;
+    let name = '旧衣';
+    t.ctx.dialogs = { choose: async () => choice, prompt: async () => name, alert: (message) => t.alerts.push(message) };
+    await handleOutfitAction(action, t.ctx);
+    assert.equal(JSON.stringify(t.sa()), original);
+    choice = 'migrate';
+    await handleOutfitAction(action, t.ctx);
+    assert.match(t.alerts.at(-1), /「默认」和「平和」都有图/);
+    assert.equal(JSON.stringify(t.sa()), original);
+    delete t.sa().characters.雪乃.平和;
+    const beforeCollision = JSON.stringify(t.sa());
+    await handleOutfitAction(action, t.ctx);
+    assert.match(t.alerts.at(-1), /冲突/);
+    assert.equal(JSON.stringify(t.sa()), beforeCollision);
+    assert.equal(t.persisted(), 0);
+    choice = 'discard';
+    const done = await handleOutfitAction(action, t.ctx);
+    assert.equal(done.ok, true);
+    assert.equal(t.persisted(), 1);
+    assert.deepEqual(t.sa().characters.雪乃, { 默认: 'new' });
+    assert.deepEqual(t.sa().characterOutfits.雪乃.睡衣, { words: ['旧衣'], moods: {} });
 });

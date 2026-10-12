@@ -818,6 +818,62 @@ test('gate:assets:reader-manual-retries-settled-floor', async () => {
     } finally { host.destroy(); }
 });
 
+test('gate:assets:review-rename-accept-persists-status-and-hides-card-or-rolls-back-on-failure', async () => {
+    const raw = '[igs-scene:旧背景|夜晚|晴]\n此处审核新背景。';
+    for (const failStatus of [false, true]) {
+        const document = createFakeDocument();
+        const record = { key: 'review-39', chatId: 'chat-1', floorKey: 'chat-1|39|0', type: 'background', name: '旧背景', time: '夜晚', imageId: 'image-39', status: 'review' };
+        const floor = { chatId: 'chat-1', messageId: 39, swipeId: 0, isAi: true, isLatest: true, text: raw };
+        let settings = { bridge: { sceneAssets: { enabled: true, scenes: {}, characters: {} } }, readerSettings: {} };
+        const saves = [];
+        const service = {
+            listReview: (key) => key === record.floorKey && record.status === 'review' ? [record] : [],
+            resolveUrl: (url) => url,
+            async setStatus(key, next) {
+                assert.equal(key, record.key);
+                assert.equal(next, 'library');
+                if (failStatus) return { ok: false, reason: 'store-write-failed' };
+                record.status = next;
+                return { ok: true };
+            },
+        };
+        const host = createIgsReaderHost({
+            global: { document, localStorage: createMemoryStorage() },
+            getIllustrationSource: () => floor,
+            getUnifiedSettings: () => settings,
+            saveUnifiedSettings(next) { settings = next; saves.push(next.bridge.sceneAssets.scenes); return { ok: true }; },
+            generatedAssets: service,
+        });
+        try {
+            const opened = host.openReader({ messageId: 39, message: { id: 39, text: raw }, raw }, { mode: 'pc' });
+            assert.equal(opened.ok, true);
+            const panel = document.getElementById('igs-asset-review');
+            assert.ok(panel, '最后一页须挂载待确认素材卡片');
+            const input = panel.querySelector('input');
+            assert.ok(input);
+            input.value = '改名后的背景';
+            const button = panel.querySelector('[data-asset-review-act="library"]');
+            assert.ok(button);
+            button.click();
+            for (let n = 0; n < 50 && (failStatus
+                ? saves.length < 2 : record.status !== 'library' || !panel.hasAttribute('hidden')); n += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+            }
+            assert.equal(saves.length, failStatus ? 2 : 1, '保存失败要补偿提交一次');
+            if (failStatus) {
+                assert.equal(record.status, 'review');
+                assert.deepEqual(settings.bridge.sceneAssets.scenes, {});
+                assert.ok(!panel.hasAttribute('hidden'), '失败仍可重试，不从待确认列表消失');
+            } else {
+                assert.equal(record.status, 'library');
+                assert.equal(settings.bridge.sceneAssets.scenes['改名后的背景'].times['夜晚'].url, 'igs-gen:image-39');
+                assert.equal(service.listReview(record.floorKey).length, 0);
+                assert.ok(panel.hasAttribute('hidden'), '状态缓存更新后卡片消失');
+            }
+        } finally { host.destroy(); }
+    }
+});
+
 // 旧楼（isLatest:false）不再拒绝：续读停在哪一楼，工具栏就按哪一楼出图。
 test('gate:assets:reader-manual-rejects-ineligible-or-changed-floor', async () => {
     const document = createFakeDocument();
@@ -4906,6 +4962,11 @@ test('gate:simulation:igs-ui-fullscreen-shows-reply-wait-and-opens-the-new-floor
         hostAdapter: {
             getCurrentMessage: async () => currentMessage,
             getMessageById: async (id) => messages.get(Number(id)) || null,
+            listMessages: async () => [
+                { id: 78, raw: { mes: '[igs-char:艾莉|喜悦|快来。]' }, text: '[igs-char:艾莉|喜悦|快来。]' },
+                { id: 79, raw: { mes: '[igs-char:露娜|悲伤|等我。]' }, text: '[igs-char:露娜|悲伤|等我。]' },
+                currentMessage,
+            ],
             typeAndSend: async () => {
                 eventSource.emit('generation_started');
                 return { ok: true };
@@ -4923,6 +4984,16 @@ test('gate:simulation:igs-ui-fullscreen-shows-reply-wait-and-opens-the-new-floor
     assert.equal(overlay.classList.contains('igs-awaiting-reply'), true);
     assert.equal(overlay.querySelector('#igs-send-status-text').textContent, '正在生成…');
     assert.equal(overlay.querySelector('#igs-toast').textContent, '');
+    await new Promise((resolve) => setImmediate(resolve));
+    const waitRoot = overlay.querySelector('.igs-waitstage');
+    assert.ok(waitRoot);
+    const games = waitRoot.querySelector('.igs-ws-games');
+    assert.ok(games);
+    const labels = games.querySelectorAll('button').map((button) => button.textContent);
+    assert.ok(labels.includes('这句是谁说的'), '宿主对象形态的角色台词须进入游戏池');
+    const rps = games.querySelectorAll('button').find((button) => button.textContent === '猜拳');
+    rps.click();
+    assert.equal(waitRoot.getAttribute('data-igs-waitstage-game'), 'rps');
 
     const nextElement = createFakeMessageElement(document, { messageId: 81, textContent: '生成完成后的最终正文。' });
     chat.appendChild(nextElement);
@@ -4937,7 +5008,16 @@ test('gate:simulation:igs-ui-fullscreen-shows-reply-wait-and-opens-the-new-floor
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
+    assert.ok(overlay.querySelector('.igs-waitstage'), '回复到达后保留已开始的这一局');
+    assert.equal(waitRoot.getAttribute('data-igs-waitstage-game'), 'rps');
+    assert.equal(games.hidden, true, '当前局进行时不提供开启新游戏的菜单');
+    const hand = waitRoot.querySelector('.igs-ws-hands').querySelectorAll('button')[0];
+    hand.click();
+    hand.click();
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(overlay.classList.contains('igs-awaiting-reply'), false);
+    assert.ok(!overlay.querySelector('.igs-waitstage'), '本局结算后自动收起过场');
     assert.match(opened.reader.controller.getSnapshot().content.displayText, /生成完成后的最终正文/);
     vn.destroy();
 });
@@ -7840,6 +7920,9 @@ function createFakeElement(tagName, ownerDocument) {
             child.parentElement = element;
             element.children.push(child);
             return child;
+        },
+        append(...children) {
+            for (const child of children) element.appendChild(child);
         },
         insertBefore(child, referenceNode) {
             if (!referenceNode) return element.appendChild(child);

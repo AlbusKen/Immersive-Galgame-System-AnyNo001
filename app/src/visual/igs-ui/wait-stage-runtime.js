@@ -1,4 +1,5 @@
 import { extractSceneDirectives } from '../../scene/scene-directives.js';
+import { getMessagePrimaryText } from '../../scene/message-source.js';
 import { outfitsOfCharacter } from '../../scene/character-outfits.js';
 import {
     WAIT_STAGE_FALLBACK_LINES,
@@ -19,7 +20,7 @@ export function collectWaitStageLines(turns, options = {}) {
     const out = [];
     const seen = new Set();
     for (const turn of list.slice(-Math.max(1, Math.round(options.turns || TURN_LOOKBACK)))) {
-        const raw = String((turn && (turn.raw || turn.text || turn.visibleText)) || '');
+        const raw = getMessagePrimaryText(turn && (turn.raw || turn)) || getMessagePrimaryText(turn);
         if (!raw) continue;
         let directives = [];
         try {
@@ -55,21 +56,39 @@ export function collectWaitStageArt(sceneAssets, options = {}) {
     const resolveUrl = typeof options.resolveUrl === 'function' ? options.resolveUrl : (url) => String(url || '');
     const sprites = [];
     const pictures = [];
+    const addSprite = (character, outfit, mood, url) => {
+        const resolved = url ? String(resolveUrl(url) || '') : '';
+        if (!resolved) return;
+        if (mood && mood !== '默认') sprites.push({ character, outfit, mood, url: resolved });
+        pictures.push({ character, label: mood, url: resolved });
+    };
+    for (const [character, moods] of Object.entries(assets.characters || {})) {
+        for (const [mood, url] of Object.entries(moods || {})) addSprite(character, '', mood, url);
+    }
     for (const character of Object.keys(assets.characterOutfits || {})) {
         const { outfits } = outfitsOfCharacter(assets.characterOutfits, assets.characterAliases, character);
         for (const [outfitName, outfit] of Object.entries(outfits || {})) {
             for (const [mood, url] of Object.entries((outfit && outfit.moods) || {})) {
-                const resolved = url ? String(resolveUrl(url) || '') : '';
-                const label = String(mood || '').trim();
-                if (resolved && label) sprites.push({ character, outfit: outfitName, mood: label, url: resolved });
+                addSprite(character, outfitName, String(mood || '').trim(), url);
             }
             const base = outfit && outfit.base ? String(resolveUrl(outfit.base) || '') : '';
             if (base) pictures.push({ character, label: outfitName, url: base });
         }
     }
-    for (const url of Object.values(assets.scenes || {})) {
+    const addPicture = (url) => {
         const resolved = url ? String(resolveUrl(url) || '') : '';
         if (resolved) pictures.push({ character: '', label: '', url: resolved });
+    };
+    for (const scene of Object.values(assets.scenes || {})) {
+        if (typeof scene === 'string') { addPicture(scene); continue; }
+        if (!scene || typeof scene !== 'object') continue;
+        addPicture(scene.url);
+        for (const time of Object.values(scene.times || {})) {
+            if (typeof time === 'string') { addPicture(time); continue; }
+            if (!time || typeof time !== 'object') continue;
+            addPicture(time.url);
+            for (const weather of Object.values(time.weathers || {})) addPicture(typeof weather === 'string' ? weather : weather && weather.url);
+        }
     }
     for (const entry of Array.isArray(options.pictures) ? options.pictures : []) {
         if (entry && entry.url) pictures.push(entry);
@@ -178,8 +197,7 @@ function mountNode(doc, className, html) {
     return node;
 }
 
-// 等待过场本体：五种模式共用一层。回复到了由宿主调 replyArrived()，
-// 正在玩小游戏就返回 false 让宿主继续等，玩完这局自己收场。
+// 等待过场本体：五种模式共用一层；回复结束由宿主直接关闭。
 export function createWaitStageRuntime(options = {}) {
     // 内嵌模式的宿主文档与主文档可能不是同一份，开层时现取。
     const resolveDoc = typeof options.getDoc === 'function'
@@ -187,7 +205,6 @@ export function createWaitStageRuntime(options = {}) {
         : () => options.doc || (typeof document !== 'undefined' ? document : null);
     const random = typeof options.random === 'function' ? options.random : Math.random;
     const onVoice = typeof options.onVoice === 'function' ? options.onVoice : () => {};
-    // 回复到了但玩家还在玩：玩完这局后由过场叫宿主继续换页。
     const onExitReady = typeof options.onExitReady === 'function' ? options.onExitReady : () => {};
     let doc = null;
     let root = null;
@@ -271,29 +288,32 @@ export function createWaitStageRuntime(options = {}) {
         phase = 'wait';
     }
 
+    function finishRound() {
+        if (phase !== 'exit') return;
+        closeRoot();
+        onExitReady();
+    }
+
+    function settleRound() {
+        if (phase !== 'exit' || !gameState || !gameState.done) return;
+        clearTimer();
+        timer = setTimeout(() => { timer = null; finishRound(); }, 850);
+    }
+
     function closeGame() {
         if (!board) return;
+        if (phase === 'exit') { finishRound(); return; }
         board.innerHTML = '';
         board.hidden = true;
         game = null;
         gameState = null;
         syncGameAttr();
-        // 回复已经等在门口：玩完这局就收场，不回台词轮换，交给宿主换页。
-        if (phase === 'exit') {
-            closeRoot();
-            try {
-                onExitReady();
-            } catch (error) {
-                // 换页失败不该卡住过场。
-            }
-            return;
-        }
         if (gamesRow) gamesRow.hidden = false;
         scheduleLine();
     }
 
     function openGame(id) {
-        if (!board || !model) return;
+        if (!board || !model || phase !== 'wait') return;
         clearTimer();
         game = { id };
         gameState = {};
@@ -359,10 +379,12 @@ export function createWaitStageRuntime(options = {}) {
         status.textContent = '出什么？';
         setNote(waitStageGameLine('start', random));
         chipRow('igs-ws-hands', RPS_HANDS.map((hand) => ({ id: hand.id, label: hand.label })), (hand) => {
-            // 猜拳不锁局：出完结果直接再点就是下一把。
+            if (phase === 'exit' && gameState.done) return;
             const foe = RPS_HANDS[Math.floor(random() * RPS_HANDS.length)];
             const outcome = rpsOutcome(hand.id, foe.id);
             say(status, `你出${hand.label}，对方出${foe.label}。`, rpsLineKey(outcome));
+            gameState.done = true;
+            settleRound();
         });
     }
 
@@ -379,6 +401,7 @@ export function createWaitStageRuntime(options = {}) {
             gameState.done = true;
             const right = item.id === round.answer;
             say(status, right ? `是${round.answer}。` : `是${round.answer}说的。`, right ? 'right' : 'wrong');
+            settleRound();
         });
     }
 
@@ -433,6 +456,8 @@ export function createWaitStageRuntime(options = {}) {
                     if (pairs >= total) {
                         setNote(waitStageGameLine('right', random));
                         status.textContent = `配对完成，共 ${moves} 手。`;
+                        gameState.done = true;
+                        settleRound();
                     }
                     return;
                 }
@@ -468,6 +493,7 @@ export function createWaitStageRuntime(options = {}) {
             gameState.done = true;
             const right = item.id === round.answer;
             say(status, right ? `是${round.answer}。` : `其实是${round.answer}。`, right ? 'right' : 'wrong');
+            settleRound();
         });
     }
 
@@ -479,7 +505,7 @@ export function createWaitStageRuntime(options = {}) {
             gamesRow.hidden = true;
             return;
         }
-        gamesRow.hidden = false;
+        gamesRow.hidden = Boolean(game) || phase === 'exit';
         for (const id of list) {
             const button = doc.createElement('button');
             button.type = 'button';
@@ -497,11 +523,11 @@ export function createWaitStageRuntime(options = {}) {
             if (!nextDoc || typeof nextDoc.createElement !== 'function') return null;
             closeRoot();
             doc = nextDoc;
-            model = opts.model || model;
+            model = opts.model || null;
+            phase = 'wait';
             settings = normalizeWaitStageSettings(opts.settings || settings);
             // 关掉等待过场时内嵌也不能开天窗：退化成纯三点，等还是要有反馈。
             minimal = settings.enabled === false;
-            phase = 'wait';
             index = 0;
             game = null;
             gameState = null;
@@ -533,23 +559,20 @@ export function createWaitStageRuntime(options = {}) {
         update(nextModel) {
             if (!nextModel || !root) return;
             model = nextModel;
-            renderLine();
-            renderGames();
-        },
-        // true = 宿主可以换页了；false = 正在玩，继续等。
-        replyArrived() {
-            if (!root) return true;
-            if (game) {
-                phase = 'exit';
-                clearTimer();
-                root.classList.add('is-exit');
-                setNote('回复到了，玩完这局再回去。');
-                return false;
+            if (!game && phase === 'wait') {
+                renderLine();
+                renderGames();
             }
-            return true;
         },
-        isGameActive() {
-            return Boolean(game);
+        // 回复到达后不再开新局；已结算的一局稍作展示，未结算的等玩家完成或主动关闭。
+        replyArrived() {
+            if (!root || !game) return true;
+            phase = 'exit';
+            clearTimer();
+            root.classList.add('is-exit');
+            setNote('回复到了，玩完这局再回去。');
+            settleRound();
+            return false;
         },
         // 生成期间宿主每 150ms 报一次活动：层已经挂着就别重建，否则台词永远停在第一句、点开的小游戏会被抹掉。
         isOpen(host) {

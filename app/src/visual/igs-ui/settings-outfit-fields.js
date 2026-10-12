@@ -312,6 +312,7 @@ export function renderCharacterSlotTabs({ charName, baseMoods, baseListHtml, bas
     const menu = active
         ? renderRowMenu([
             menuItem(`ui-toggle-open:${encSeg(metaKey)}`, isOpen(metaKey) ? '收起服装设置' : '服装设置（衣柜、别名…）'),
+            menuItem(`scene-promote-outfit:${c}:${o}`, '设为原装'),
             menuItem(`scene-rename-outfit:${c}:${o}`, '重命名这套'),
             menuItem(`scene-remove-outfit:${c}:${o}`, '删除这套', ' is-danger'),
         ], `「${active}」的操作`)
@@ -400,11 +401,10 @@ export function renderMigrateOutfitPanel(rows, { skipped = [], busy = false } = 
     });
 }
 
-// 角色立绘区顶部的一次性功能键：没有清单时只留一个按钮，有清单时整块替换掉。
+// 清单仍显示在角色立绘区顶部；入口只存在于各角色行菜单。
 export function renderMigrateEntry(rows) {
     if (Array.isArray(rows)) return renderMigrateOutfitPanel(rows);
-    return '<div class="igs-mig-entry"><button type="button" class="igs-settings-action" data-action="scene-migrate-outfit" title="把已有的原装立绘整体搬成差分服装 / 衣柜">原装迁成差分服装</button>'
-        + '<span class="igs-mig-entry-note">整批一次，会先在清单里让你改服装名、别名和说明</span></div>';
+    return '';
 }
 
 // 待确认页的一块：标题、数量、一句说明、清空，下面是条目。三块（服装词 / 情绪词 / 刚生成的图）长得一样。
