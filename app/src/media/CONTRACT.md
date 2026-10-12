@@ -42,3 +42,7 @@
 - 同源提交与磁盘预算用 Web Locks；缺失时用 IndexedDB lease 锁。BroadcastChannel 通知缓存清除/单键失效。清理增加世代、取消旧请求和 FileReader、撤销对象 URL；下载最多 4 路。销毁关闭通道和缓存连接，旧任务不得回填。
 - `IGS.media` 提供 `clearCache/stats/auditImages/auditFiles/collectImages/flush/retryDeletes/destroy`；孤儿图片先审计，删除仍复查引用。旧文件名恢复只接受可验证归属，不猜 Unicode/截断名称；旧哈希按真实键与内容校验。目录 listing 短期共享，不永久缓存缺图结果。
 - 酒馆文件接口不提供 CAS：版本合并、写后校验与重试依赖本机日志仍存在，不能保证多设备同时写入无丢失或提供跨设备强删除隔离。完整库存、兼容条件和验收边界见 `docs/MEDIA_REFACTOR.md`。
+
+## 文件适配器依赖方向（v0.36.40）
+
+`tavern-image-files.js` 只提供底层文件读写，禁止反向导入或导出 `tavern-generated-assets.js`、`tavern-illustrations.js`、`tavern-photos.js`。业务适配器由 core 直接装配。发布构建必须冷启动压缩包和调试包的自动/手动入口，创建正确版本的 IGS API 后才成功；仅导入源码或检查导出函数不构成启动验收。

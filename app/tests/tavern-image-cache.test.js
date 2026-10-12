@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createLocalImageCache, normalizeImageCacheCount, DEFAULT_IMAGE_CACHE_COUNT } from '../src/media/tavern-image-cache.js';
-import { withTavernIllustrationFiles } from '../src/media/tavern-image-files.js';
+import { withTavernIllustrationFiles } from '../src/media/tavern-illustrations.js';
 import { createMemoryIllustrationStore } from '../src/media/illustration-store.js';
 import { createCgLibrary } from '../src/media/cg-library.js';
 

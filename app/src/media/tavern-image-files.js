@@ -3,9 +3,6 @@ import { createLegacyImageRecovery } from './legacy-image-recovery.js';
 import { localImageCacheFor } from './tavern-image-cache.js';
 import { mediaRequest, tavernHeaders } from './tavern-media-http.js';
 import { mediaFileGcFor } from './media-file-gc.js';
-export { withTavernGeneratedAssetFiles } from './tavern-generated-assets.js';
-export { withTavernIllustrationFiles, CG_RECORDS_FILE } from './tavern-illustrations.js';
-export { withTavernPhotoFiles } from './tavern-photos.js';
 export const IMAGE_PROVENANCE = Symbol('igs-image-provenance');
 
 const uploads = new WeakMap();

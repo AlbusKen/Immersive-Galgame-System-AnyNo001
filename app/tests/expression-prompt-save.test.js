@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryGeneratedAssetStore } from '../src/media/generated-asset-store.js';
-import { withTavernGeneratedAssetFiles } from '../src/media/tavern-image-files.js';
+import { withTavernGeneratedAssetFiles } from '../src/media/tavern-generated-assets.js';
 import { createAssetGenerationService } from '../src/generated-images/illustration/asset-generation-service.js';
 
 const cap = (t) => ({ v4_prompt: { caption: { base_caption: t, char_captions: [] } }, v4_negative_prompt: { caption: { base_caption: 'lowres', char_captions: [] } } });

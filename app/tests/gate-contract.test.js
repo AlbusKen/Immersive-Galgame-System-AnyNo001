@@ -35,6 +35,7 @@ import { GRADIENT_VEIL_STYLE_TEXT } from '../src/visual/igs-ui/gradient-veil-dia
 import { getDialogSkinStyleText, listDialogSkinAssetUrls, watchDialogSkinAssets } from '../src/visual/igs-ui/dialog-skin-style.js';
 import { getSettingsShellTemplate } from '../src/visual/igs-ui/settings-shell.js';
 import { findTruncatedFontTables } from '../scripts/font-slices.js';
+import { checkBundleStartup } from '../scripts/bundle-startup-check.js';
 import { getSettingsStyleText } from '../src/visual/igs-ui/settings-style.js';
 import { DIALOG_FONT_OPTIONS } from '../src/visual/igs-ui/reader-host-constants.js';
 import {
@@ -188,6 +189,13 @@ test('gate:dist-bundle:is-self-contained-for-loader-cache-bust', () => {
     assert.match(bundle, /message-scope-not-found/);
     assert.equal(manifest.name, 'Immersive Galgame System');
     assert.equal(manifest.version, pkgVersion);
+});
+
+test('gate:dist-bundle:boots-minified-and-debug-in-fresh-processes', () => {
+    const version = readJson('package.json').version;
+    for (const file of ['igs.bundle.js', 'igs.bundle.debug.js']) {
+        checkBundleStartup(path.join(appRoot, 'dist', file), version);
+    }
 });
 
 test('gate:dist-bundle:loads-as-esm-entry', async () => {

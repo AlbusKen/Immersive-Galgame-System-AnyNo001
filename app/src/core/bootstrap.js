@@ -2,7 +2,8 @@ import { createMediaRuntime } from '../media/media-runtime.js';
 import { createPublicApi, attachPublicApi, detachPublicApi } from '../api/public-api.js';
 import { createTavernHelperAdapter, getSillyTavernContext } from '../host/tavern-helper-adapter.js';
 import { sceneAssetsForContext } from '../scene/asset-scope.js';
-import { withTavernGeneratedAssetFiles, withTavernIllustrationFiles } from '../media/tavern-image-files.js';
+import { withTavernGeneratedAssetFiles } from '../media/tavern-generated-assets.js';
+import { withTavernIllustrationFiles } from '../media/tavern-illustrations.js';
 import { localImageCacheFor } from '../media/tavern-image-cache.js';
 import { createPresetRegistry } from '../presets/preset-registry.js';
 import { createInputChannel } from '../host/input-channel.js';
@@ -62,7 +63,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.39';
+const IGS_VERSION = '0.36.40';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;

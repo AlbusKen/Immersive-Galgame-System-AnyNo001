@@ -6,7 +6,7 @@ import { createIndexedDbCgGalleryStore } from '../media/cg-gallery-store.js';
 import { createIndexedDbCgIndexStore } from '../media/cg-index-store.js';
 import { createCgThumbnailer } from '../media/cg-thumbnail.js';
 import { createIndexedDbPhotoAlbumStore } from '../media/photo-album.js';
-import { withTavernPhotoFiles } from '../media/tavern-image-files.js';
+import { withTavernPhotoFiles } from '../media/tavern-photos.js';
 import { createShujukuClient } from '../data/shujuku/client.js';
 import { buildItemCatalog } from '../data/shujuku/item-catalog.js';
 import { createItemLedger } from '../data/shujuku/item-ledger.js';
