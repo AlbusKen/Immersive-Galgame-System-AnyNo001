@@ -201,7 +201,7 @@ test('gate:outfits:body-format-hides-outfit-field-with-default-regex', async () 
     assert.equal(applyImmersiveGalgameSystemBodyFormat('[igs-char:小林|喜悦|你好]', DEFAULT_VIRTUAL_REGEX).formattedRaw, '[小林]：你好');
 });
 
-test('gate:identity:first-adoption-keeps-identity-and-outfit-separate', async () => {
+test('gate:identity:first-adoption-stores-default-clothing-in-dna', async () => {
     const { adoptSpriteIdentity } = await import('../src/scene/character-identity.js');
     const { normalizeCharacterDna } = await import('../src/scene/character-dna.js');
     const { legacyPresetToPack } = await import('../src/scene/legacy-preset.js');
@@ -212,14 +212,15 @@ test('gate:identity:first-adoption-keeps-identity-and-outfit-separate', async ()
     const patch = adoptSpriteIdentity(assets, 'Alice', 'sprite-1', meta);
     assert.equal(assets.characterDna, undefined, '采用函数不修改输入');
     assert.equal(patch.characterDna.Alice.identity, 'Silver hair. A small mole.');
-    assert.equal(patch.characterDna.Alice.defaultAppearance, '');
+    assert.equal(patch.characterDna.Alice.defaultAppearance, 'A blue coat.');
     const outfits = normalizeCharacterOutfits(patch.characterOutfits);
     const wardrobe = normalizeWardrobe(patch.wardrobe);
-    assert.equal(resolveWardrobePrompt(wardrobe, outfits.Alice.Coat, 'Coat').prompt, 'A blue coat.');
+    assert.deepEqual(outfits, {}, '默认服装不创建外部页签');
     assert.equal(wardrobe['Alice·Coat'].prompt, 'kept');
-    const existing = adoptSpriteIdentity({ characterDna: { Alice: { identity: 'Player identity.' } } }, 'Alice', 'sprite-2', meta);
+    const existing = adoptSpriteIdentity({ characterDna: { Alice: { identity: 'Player identity.', defaultAppearance: 'Player clothing.' } } }, 'Alice', 'sprite-2', meta);
     assert.equal(existing.characterDna.Alice.identity, 'Player identity.');
     const cleared = { ...patch, characterDna: { Alice: normalizeCharacterDna({ ...patch.characterDna.Alice, identity: '' }) } };
+    assert.equal(existing.characterDna.Alice.defaultAppearance, 'Player clothing.');
     assert.equal(adoptSpriteIdentity(cleared, 'Alice', 'sprite-3', meta).characterDna.Alice.identity, '');
     assert.equal(adoptSpriteIdentity({}, 'Alice', 'sprite-4', meta, { hadDefault: true }).characterDna.Alice, undefined);
     assert.equal(adoptSpriteIdentity({}, 'Alice', 'sprite-5', undefined).characterDna.Alice, undefined);

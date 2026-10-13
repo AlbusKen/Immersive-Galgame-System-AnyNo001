@@ -1316,7 +1316,9 @@ test('gate:dna-adoption-ui:默认采用回读候选后保存 DNA，保存失败�
             assert.deepEqual(saves[0].characterDna.Alice.views, record.dnaCandidates.characters[0].views);
             assert.equal(assets.characterDna.Alice.identitySource, record.imageId);
             assert.equal(assets.characters.Alice.默认, `igs-gen:${record.imageId}`);
-            assert.equal(assets.wardrobe['Alice·日常'].prompt, 'A red hoodie.');
+            assert.equal(assets.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
+            assert.deepEqual(assets.characterOutfits, {});
+            assert.deepEqual(assets.wardrobe, {});
         } else {
             assert.equal(result.ok, false, mode);
             assert.deepEqual(assets, original, mode);

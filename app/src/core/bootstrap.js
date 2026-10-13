@@ -1,6 +1,7 @@
 import { createPublicApi, attachPublicApi, detachPublicApi } from '../api/public-api.js';
 import { createTavernHelperAdapter, getSillyTavernContext } from '../host/tavern-helper-adapter.js';
-import { sceneAssetsForContext } from '../scene/asset-scope.js';
+import { sceneAssetsForContext, resolveAssetScope } from '../scene/asset-scope.js';
+import { captureOutfitScope, prepareCgOutfitAdoption } from '../scene/outfit-identity.js';
 import { withTavernGeneratedAssetFiles, withTavernIllustrationFiles } from '../media/tavern-image-files.js';
 import { localImageCacheFor } from '../media/tavern-image-cache.js';
 import { createPresetRegistry } from '../presets/preset-registry.js';
@@ -164,6 +165,15 @@ export function bootstrapIGS(options = {}) {
         getReaderMode: readerModeNow,
         getViewport: () => readCgViewport(globalObject, readerModeNow()),
         getSceneAssets: () => sceneAssetsNow(readImageBridge().sceneAssets),
+        captureCgOutfitScope: (keys) => captureOutfitScope(readImageBridge().sceneAssets || {},
+            resolveAssetScope(getSillyTavernContext(globalObject)).key, keys),
+        adoptCgOutfits: (record) => {
+            const bridge = readImageBridge();
+            const adopted = prepareCgOutfitAdoption(bridge.sceneAssets || {},
+                resolveAssetScope(getSillyTavernContext(globalObject)).key, record);
+            if (!adopted.ok || !adopted.changed) return adopted;
+            return saveUnifiedSettings({ bridge: { sceneAssets: adopted.sceneAssets } });
+        },
         imageCodec: options.imageCodec || createCanvasImageCodec(globalObject),
         resolveCgReference: async (characterKey, assets) => {
             const url = assets.characters?.[characterKey]?.['默认'] || assets.generated?.characters?.[characterKey]?.['默认'] || '';

@@ -47,6 +47,7 @@ import { formatImageJobLogText } from '../../generated-images/image-job-log.js';
 import { addGeneratedAssetToLibrary, bindGeneratedBackground, bindGeneratedSprite, collectGeneratedImageIds, generatedAssetIdOf, isGeneratedAssetUrl, normalizeGeneratedLibrary, removeGeneratedLibraryEntry, renameGeneratedLibraryEntry, setGeneratedExpressionNote } from '../../scene/asset-match.js';
 import { resolveCharacterDna } from '../../scene/character-dna.js';
 import { prepareSpriteIdentityAdoption } from '../../scene/character-identity.js';
+import { prepareOutfitAdoption } from '../../scene/outfit-identity.js';
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
 import { normalizeCharacterDna, normalizeCharacterDnaMap, removeCharacterDna, renameCharacterDna } from '../../scene/character-dna.js';
 import { normalizeCharacterHouses } from './magic-house.js';
@@ -113,6 +114,14 @@ function spriteAdoptionTarget(settingsState, requested) {
         library: owner ? root.cards?.[owner] : root };
 }
 
+// 有效视图仅供拒绝诊断；校验与补丁仍使用原所属库。
+function outfitAdoptionReadOptions(settingsState, target) {
+    const diagnosticAssets = draftEffectiveAssets(settingsState);
+    return { readWardrobe: diagnosticAssets.wardrobe, diagnosticAssets,
+        diagnosticOwner: !target.owner ? 'global'
+            : target.owner === target.scope ? 'current-card' : 'other-card' };
+}
+
 function hasSpriteAdoptionEvidence(record) {
     return Boolean(record?.promptRecipe || record?.dnaCandidates !== undefined
         || record?.promptTask?.mode === 'dna_template');
@@ -124,6 +133,8 @@ async function readSpriteAdoptionRecord(service, imageId, record) {
         const stored = await service.readStoredImage?.(imageId);
         if (!stored?.dataUrl || stored.id !== imageId || stored.type !== 'sprite'
             || !stored.promptRecipe || !stored.sentPrompt
+            || (record.promptRecipe?.outfitMode === 'template'
+                && (stored.promptRecipe.outfitMode !== 'template' || !stored.outfitSnapshot))
             || (record.dnaCandidates !== undefined && stored.dnaCandidates === undefined)) {
             return { ok: false, reason: 'DNA_ADOPTION_INVALID', error: '候选图片或身份资料无法权威回读，原资料保持不变' };
         }
@@ -131,6 +142,7 @@ async function readSpriteAdoptionRecord(service, imageId, record) {
         return { ok: true, record: { ...stored, imageId,
             ...(record.ok !== undefined && { ok: record.ok }),
             ...(record.name !== undefined && { name: record.name }),
+            ...(record.mood !== undefined && { mood: record.mood }),
             ...(record.status !== undefined && { status: record.status }) } };
     } catch {
         return { ok: false, reason: 'DNA_ADOPTION_INVALID', error: '候选图片资料回读失败，原资料保持不变' };
@@ -419,6 +431,14 @@ function persistGeneratedLibrary(persistSettingsDraft) {
     }
 }
 
+function generatedAdoptionRollbackFailure(dialogs, globalObj, message, cause) {
+    return {
+        ...generatedOperationFailure(dialogs, globalObj, message, 'generated-asset-accept-rollback-failed'),
+        rollbackFailed: true,
+        causeReason: typeof cause?.reason === 'string' ? cause.reason : 'generated-asset-persist-failed',
+    };
+}
+
 function restoreGeneratedLibrary(sceneAssets, previousLibrary, persistSettingsDraft) {
     sceneAssets.generated = previousLibrary;
     try {
@@ -504,7 +524,7 @@ function nsfwEnabledForAssets(draft) {
 
 // 跑的时候把生成按钮换成「停止生成」；按一下就置 abort，已画好的图保留。
 function createStopControl(onRestore) {
-    const controller = { aborted: false };
+    const controller = new AbortController();
     const globalObj = typeof globalThis !== 'undefined' ? globalThis : null;
     const doc = globalObj && globalObj.document;
     const host = doc && typeof doc.getElementById === 'function' ? doc.getElementById('igs-unified-settings') : null;
@@ -521,8 +541,8 @@ function createStopControl(onRestore) {
     const onClick = (event) => {
         const target = event.target && event.target.closest ? event.target.closest('[data-action^="char-expression-set:"],[data-action^="outfit-expression-set:"]') : null;
         if (!target) return;
-        if (!controller.aborted && state.restore) {
-            controller.aborted = true;
+        if (!controller.signal.aborted && state.restore) {
+            controller.abort();
             target.textContent = '正在收尾…';
             target.disabled = true;
         }
@@ -536,7 +556,7 @@ function createStopControl(onRestore) {
         }
     }
     return {
-        signal: controller,
+        signal: controller.signal,
         stopButton: {
             set restore(fn) { state.restore = fn; },
         },
@@ -596,6 +616,12 @@ function applyMoodPreset(groups) {
 function generatedOperationFailure(dialogs, globalObj, message, reason) {
     pageAlert(dialogs, globalObj, message);
     return { ok: false, reason };
+}
+
+function generatedAdoptionFailure(dialogs, globalObj, adoption) {
+    return { ...generatedOperationFailure(dialogs, globalObj, adoption.error, adoption.reason),
+        error: adoption.error, writeAttempted: false,
+        ...(adoption.diagnostic && { diagnostic: adoption.diagnostic }) };
 }
 
 // 图片只跟全局和角色卡里的配置走。这些地方不再引用，图就可以清掉。
@@ -1180,9 +1206,11 @@ export async function handleSettingsAction(action, ctx) {
             const persisted = persistGeneratedLibrary(persistSettingsDraft);
             if (operationFailed(persisted)) {
                 sceneAssets.scenes = previousScenes;
+                // 仅保存适配器明确保证未尝试写入时跳过持久化补偿；未知失败仍须恢复保存。
+                if (persisted?.writeAttempted === false) return persisted;
                 const rolled = persistGeneratedLibrary(persistSettingsDraft);
                 if (operationFailed(rolled)) {
-                    return generatedOperationFailure(dialogs, globalObj, '场景素材入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
+                    return generatedAdoptionRollbackFailure(dialogs, globalObj, '场景素材入库失败，且无法恢复原设置。', persisted);
                 }
                 return persisted;
             }
@@ -1199,8 +1227,9 @@ export async function handleSettingsAction(action, ctx) {
                     return generatedOperationFailure(dialogs, globalObj, '候选身份与目标角色不匹配，原资料保持不变。', 'DNA_TEMPLATE_BINDING');
             }
             const adoption = prepareSpriteIdentityAdoption(sceneAssets, bound.name, record.imageId, record,
-                { sourceName, hadDefault: Boolean(previousCharacters[bound.name]?.['默认']) });
-            if (!adoption.ok) return generatedOperationFailure(dialogs, globalObj, adoption.error, adoption.reason);
+                { sourceName, hadDefault: Boolean(previousCharacters[bound.name]?.['默认']),
+                    ...outfitAdoptionReadOptions(settingsState, target) });
+            if (!adoption.ok) return generatedAdoptionFailure(dialogs, globalObj, adoption);
             if (target && !sourceLibrary) sceneAssets = ensureCardLibrary(bridge.sceneAssets, target.owner);
             sceneAssets.characters = bound.characters;
             sceneAssets.characterAliases = bound.characterAliases;
@@ -1210,9 +1239,10 @@ export async function handleSettingsAction(action, ctx) {
                 sceneAssets.characters = previousCharacters;
                 sceneAssets.characterAliases = previousAliases;
                 Object.assign(sceneAssets, previousIdentity);
+                if (persisted?.writeAttempted === false) return persisted;
                 const rolled = persistGeneratedLibrary(persistSettingsDraft);
                 if (operationFailed(rolled)) {
-                    return generatedOperationFailure(dialogs, globalObj, '角色立绘入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
+                    return generatedAdoptionRollbackFailure(dialogs, globalObj, '角色立绘入库失败，且无法恢复原设置。', persisted);
                 }
                 return persisted;
             }
@@ -1228,7 +1258,7 @@ export async function handleSettingsAction(action, ctx) {
                 sceneAssets.scenes = previousScenes;
                 const rolled = persistGeneratedLibrary(persistSettingsDraft);
                 if (operationFailed(rolled)) {
-                    return generatedOperationFailure(dialogs, options.global || globalThis, '场景素材入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
+                    return generatedAdoptionRollbackFailure(dialogs, options.global || globalThis, '场景素材入库失败，且无法恢复原设置。', status);
                 }
             } else if (previousCharacters) {
                 sceneAssets.characters = previousCharacters;
@@ -1236,10 +1266,10 @@ export async function handleSettingsAction(action, ctx) {
                 Object.assign(sceneAssets, previousIdentity);
                 const rolled = persistGeneratedLibrary(persistSettingsDraft);
                 if (operationFailed(rolled)) {
-                    return generatedOperationFailure(dialogs, options.global || globalThis, '角色立绘入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
+                    return generatedAdoptionRollbackFailure(dialogs, options.global || globalThis, '角色立绘入库失败，且无法恢复原设置。', status);
                 }
             } else if (!restoreGeneratedLibrary(sceneAssets, previousLibrary, persistSettingsDraft)) {
-                return generatedOperationFailure(dialogs, options.global || globalThis, '生成素材入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
+                return generatedAdoptionRollbackFailure(dialogs, options.global || globalThis, '生成素材入库失败，且无法恢复原设置。', status);
             }
             return status;
         }
@@ -1549,8 +1579,11 @@ export async function handleSettingsAction(action, ctx) {
             characterDna: liveAssets.characterDna, characterOutfits: liveAssets.characterOutfits, wardrobe: liveAssets.wardrobe,
             characterSpriteNotes: cloneData(liveAssets.characterSpriteNotes || {}) };
         const adoption = prepareSpriteIdentityAdoption(liveAssets, name, result.imageId, result,
-            { hadDefault: Boolean(current) });
-        if (!adoption.ok) return failed(adoption.error);
+            { hadDefault: Boolean(current), ...outfitAdoptionReadOptions(settingsState, target) });
+        if (!adoption.ok) {
+            progress.end();
+            return generatedAdoptionFailure(dialogs, globalObj, adoption);
+        }
         const characters = { ...(liveAssets.characters || {}) };
         characters[name] = { ...(characters[name] || {}), '默认': `igs-gen:${result.imageId}` };
         liveAssets.characters = characters;
@@ -1793,12 +1826,21 @@ export async function handleSettingsAction(action, ctx) {
             if (!confirmed) return rerenderSettings();
         }
         let result;
+        const sourceScope = String(settingsState.asyncState?.assetScopeKey || '');
+        const sourceState = JSON.stringify({ character: sceneAssets.characters?.[name],
+            dna, outfits: sceneAssets.characterOutfits?.[name],
+            wardrobe: draftEffectiveAssets(settingsState).wardrobe });
+        const targetUnchanged = () => String(settingsState.asyncState?.assetScopeKey || '') === sourceScope
+            && draftAssetLibrary(settingsState, editTarget) === sceneAssets
+            && JSON.stringify({ character: sceneAssets.characters?.[name],
+                dna: characterExpressionDna(sceneAssets, name), outfits: sceneAssets.characterOutfits?.[name],
+                wardrobe: draftEffectiveAssets(settingsState).wardrobe }) === sourceState;
         if (!progress) progress = startExpressionProgress(globalObj, subject);
         const onProgress = progress.onProgress;
         // 单张重画的按钮由宿主按 settingsBusyLabel 锁住，这里只锁整套差分的按钮。
         const restoreBusy = retry ? () => {} : markExpressionActionBusy(globalObj, normalizedAction, '生图中');
         // 单张重画不接停止键：只有一张，按了也停不下来，别把「表情差分」按钮变成摆设。
-        const stopControl = retry ? { signal: { aborted: false }, done() {} } : createStopControl(() => restoreBusy());
+        const stopControl = retry ? { signal: new AbortController().signal, done() {} } : createStopControl(() => restoreBusy());
         const hadImage = retry && Boolean(String(slots[mood] || '').trim());
         const failed = (error) => {
             progress.end();
@@ -1827,8 +1869,40 @@ export async function handleSettingsAction(action, ctx) {
         }
         stopControl.done();
         if (!result || !result.ok) return failed(result && result.error);
-        const liveBridge = settingsState.draft.bridge = settingsState.draft.bridge || {};
-        const liveAssets = draftAssetLibrary(settingsState, editTarget);
+        if (!targetUnchanged()) return failed('角色、衣装或资料作用域已变化，原资料保持不变');
+        const liveAssets = sceneAssets;
+        let outfitPatch = {};
+        let candidateDescription;
+        for (const item of result.items || []) {
+            if (!item.ok || !item.imageId || item.promptRecipe?.outfitMode !== 'template') continue;
+            const authoritative = await readSpriteAdoptionRecord(service, item.imageId, item);
+            if (!authoritative.ok) return failed(authoritative.error);
+            if (!targetUnchanged()) return failed('候选回读期间角色、衣装或作用域已变化，原资料保持不变');
+            const record = authoritative.record;
+            const selected = record.outfitSnapshot?.characters?.filter(c => c.characterKey === name);
+            if (selected?.length !== 1 || (outfitMode && selected[0].name !== outfitName))
+                return failed('衣装候选与当前角色或服装不匹配，原资料保持不变');
+            const adoption = prepareOutfitAdoption(liveAssets, name, item.imageId, record,
+                outfitAdoptionReadOptions(settingsState, spriteAdoptionTarget(settingsState, name)));
+            if (!adoption.ok) {
+                progress.end();
+                restoreBusy();
+                return generatedAdoptionFailure(dialogs, globalObj, adoption);
+            }
+            if (Object.keys(adoption.patch).length) {
+                const candidate = selected[0];
+                const signature = JSON.stringify([candidate.name, candidate.description]);
+                if (candidateDescription !== undefined && candidateDescription !== signature)
+                    return failed('同批衣装候选说明不一致，原资料保持不变');
+                candidateDescription = signature;
+                outfitPatch = { ...adoption.patch, wardrobe: { ...(liveAssets.wardrobe || {}),
+                    ...Object.fromEntries(Object.entries(adoption.patch.wardrobe)
+                        .filter(([key]) => !Object.hasOwn(draftEffectiveAssets(settingsState).wardrobe || {}, key))) } };
+            }
+        }
+        const previous = Object.fromEntries(['characters', 'characterOutfits', 'wardrobe', 'generated',
+            'characterMoodTiers', 'characterMoodNotes'].map(key => [key, cloneData(liveAssets[key])]));
+        Object.assign(liveAssets, outfitPatch);
         if (!retry && !resume) {
             const tiers = liveAssets.characterMoodTiers && typeof liveAssets.characterMoodTiers === 'object'
                 ? liveAssets.characterMoodTiers : (liveAssets.characterMoodTiers = {});
@@ -1847,8 +1921,15 @@ export async function handleSettingsAction(action, ctx) {
         }
         const persisted = persistGeneratedLibrary(persistSettingsDraft);
         if (operationFailed(persisted)) {
+            for (const [key, value] of Object.entries(previous)) {
+                if (value === undefined) delete liveAssets[key];
+                else liveAssets[key] = value;
+            }
+            const rolled = persistGeneratedLibrary(persistSettingsDraft);
             progress.end();
             restoreBusy();
+            if (operationFailed(rolled)) return generatedOperationFailure(dialogs, globalObj,
+                '衣装差分保存失败，且原设置无法重新保存。', 'generated-asset-accept-rollback-failed');
             return persisted;
         }
         const painted = (result.items || []).filter((item) => item.ok).length;

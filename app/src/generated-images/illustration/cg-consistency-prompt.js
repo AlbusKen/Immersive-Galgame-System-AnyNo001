@@ -47,6 +47,7 @@ export function consistencyPromptTask(record, characters, assets, plans) {
 
     const expected = [scene, ...rounds];
     const promptTask = { version: 1, mode: 'dna_template', purpose: 'consistency',
+        ...(recipe.outfitMode && { outfitMode: recipe.outfitMode }),
         characters: [...named, ...refs].map(({ kind, characterKey, token, framing }) =>
             ({ kind, characterKey, token, framing })),
         slots: expected.map((s) => ({ slotId: s.slotId, tokens: s.rows.map((r) => r.token) })) };
@@ -62,6 +63,7 @@ export function consistencyPromptTask(record, characters, assets, plans) {
             'slotid 1 是原尺寸正式场景模板：保留原 CG 全部动态和非身份内容，不含辅助图或额外参考人物。其余 slotid 是工作轮次：只校正该轮目标身份，裁剪区中的非目标人物和物件也必须保留，不把粗区域等同于整块重设计许可。',
             '每个工作轮次独立用于实际重绘，不会继承 slotid 1 的正文。必须在每份工作 Scene 与对应目标 Char 中具体保留原场景依据已有的姿势、动作、身体朝向、表情、视线、遮挡和互动接触关系；不得省略为仅身份与衣装，也不得只写笼统的保持原姿势。原依据未描述的细节不猜测，沿用输入 CG；不把裁剪或参考图当成新的镜头与构图。',
             '具名人物的 meta_outfit_name 与 meta_outfit_description 必须从本次角色资料的 outfit.name/description 逐字照抄；这些字段来自原 CG 衣装快照，不是参照立绘衣装。不改写、不翻译、不补全，空值保持为空。实际 Char 绘图正文必须同时保持该原衣装的颜色和细节；元数据照抄但正文换色同样不合格。',
+            ...(recipe.outfitMode === 'template' ? ['每份写 outfit_mode: template；named Char 恰写本人的 <<outfit:token>> 一次，不另写衣装说明。reference 与所有 UC 不使用衣装占位。原 CG 衣装仅按快照展开，不采用新候选或参照图服装。'] : []),
             '以本次输出清单的 captionIndex 作为本图 Char 的零基索引，从 0 连续编号。slotid、原图角色序号和 token 中的数字都不是本图索引。同一 characterKey 的 named 与 reference 是两个独立 Char，必须各用清单给出的索引和 token，不能合并。每个索引的每个 meta_* 字段恰好写一次，不在图末重复汇总。',
             '工作画布侧边辅助图仅供识别目标身份，不是剧情里的第二个人、肖像画或装饰。工作模板 Scene 只描述原 CG 的连续场景与互动；不得把 reference inset、panel、frame、border、split screen、collage、左右分栏、画布边缘、矩形蒙版或参考布局写成正向画面内容，包括不要在正向正文写 no frame 一类否定句。',
             '参考 Char 仍使用输入的独立 reference token 和 portrait 景别，只引用身份主语及简洁可见状态，不要求相框、描边、展示卡、衣装或新背景。协议字段仍完整：在参考 Char 自己的索引各写一次 meta_outfit_name: 索引 | 和 meta_outfit_description: 索引 |，值均为空；不得复制 named 的衣装或写回 named 的索引。正式场景不含 reference Char。',

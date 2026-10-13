@@ -136,6 +136,23 @@ export function promptProvenance(value = {}) {
                 subject: c.subject, negative: c.negative, profile: normalizeCharacterDna(c.profile) };
         }) };
     }
+    if (value.outfitSnapshot !== undefined) {
+        const raw = value.outfitSnapshot;
+        if (raw?.version !== 1 || !Array.isArray(raw.characters) || raw.characters.length > 16) invalid();
+        const indexes = new Set();
+        out.outfitSnapshot = { version: 1, characters: raw.characters.map(c => {
+            if (!c || !['saved', 'candidate'].includes(c.source)
+                || typeof c.characterKey !== 'string' || !c.characterKey.trim()
+                || !Number.isInteger(c.captionIndex) || c.captionIndex < 0 || c.captionIndex >= 16
+                || indexes.has(c.captionIndex) || typeof c.token !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(c.token)
+                || typeof c.name !== 'string' || c.name.length > 128
+                || typeof c.description !== 'string' || c.description.length > 4096
+                || /<<\s*(?:dna|outfit)/i.test(c.description)) invalid();
+            indexes.add(c.captionIndex);
+            return { characterKey: c.characterKey, captionIndex: c.captionIndex, token: c.token,
+                name: c.name, description: c.description, source: c.source };
+        }) };
+    }
     if (value.sentPrompt !== undefined) {
         const raw = value.sentPrompt;
         const caption = normalizeCaption(raw?.caption);
@@ -156,7 +173,7 @@ export function promptProvenance(value = {}) {
                 || keys.has(round.characterKey) || round.consistencyPrompt !== undefined) invalid();
             ids.add(round.slotId); keys.add(round.characterKey);
             const checked = promptProvenance({ promptRecipe: round.promptRecipe,
-                dnaSnapshot: round.dnaSnapshot, sentPrompt: round.sentPrompt });
+                dnaSnapshot: round.dnaSnapshot, outfitSnapshot: round.outfitSnapshot, sentPrompt: round.sentPrompt });
             if (!checked.promptRecipe || !checked.dnaSnapshot || checked.sentPrompt?.action !== 'infill'
                 || !checked.promptRecipe.bindings.some((b) => b.kind === 'reference'
                     && b.characterKey === round.characterKey)) invalid();

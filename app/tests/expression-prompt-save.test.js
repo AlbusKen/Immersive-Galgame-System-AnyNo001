@@ -236,7 +236,8 @@ async function expressionTemplateHarness(indexedDB = createTransactionalIdb(), o
             writes.push(structuredClone({ ...req, signal: undefined }));
             const written = options.writePrompt ? await options.writePrompt(req, pipeline) : null;
             if (written && !written.ok) return written;
-            const value = written ? written.value : characterWriteFixture(req, { action: 'wears a white dress and smiles.' });
+            const value = written ? written.value : characterWriteFixture(req, {
+                action: 'wears a white dress and smiles.', outfitDescription: 'wears a white dress' });
             options.transformWritten?.(value, req);
             value.captions.reverse();
             afterWrite();
@@ -263,7 +264,7 @@ async function expressionTemplateHarness(indexedDB = createTransactionalIdb(), o
 test('gate:dna-expression:当前 DNA 重画与手改定稿跨连接回读', async () => {
     const h = await expressionTemplateHarness();
     const dna = { version: 2, views: characterViewsFixture(), defaultAppearance: 'red hoodie' };
-    const outfit = { name: '礼服', prompt: '白色礼服', words: ['white dress'] };
+    const outfit = { name: '礼服', prompt: 'wears a white dress', words: ['white dress'] };
     const before = structuredClone(dna);
     try {
         const first = await h.service.generateExpressionSet({ name: 'Alice', dna, outfit, moods: ['喜悦', '愤怒'] });
@@ -392,29 +393,36 @@ test('gate:dna-sprite:当前 DNA 重画与手改定稿采用不复用旧候选',
             before.characterDna, '无历史 recipe 的手改定稿也不得走旧身份建档');
     } finally { h.pipeline.imageGen.dispose(); }
 });
-test('gate:dna-adoption:实际批量生成经 UI 采用，状态事务失败恢复并可重试', async () => {
+test('gate:dna-adoption:三个全新角色空衣装库首次采用，状态失败恢复并可重试', async () => {
     const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
     const floor = { chatId: 'fixture', messageId: 3, swipeId: 0, isAi: true, isLatest: true,
-        text: '[igs-char:Alice|平静|你好。]\n[igs-char:Bob|平静|早上好。]' };
+        text: '[igs-char:侯方域|平静|你好。]\n[igs-char:李香君|平静|早上好。]\n[igs-char:田仰|平静|请坐。]' };
     const assets = { enabled: true, characters: {}, scenes: {}, characterAliases: {},
         characterDna: {}, characterOutfits: {}, wardrobe: {} };
     const h = await expressionTemplateHarness(createTransactionalIdb(), {
         messageHost: { getChatId: () => 'fixture', readFloor: () => floor, readPreviousAiTexts: () => [] },
-        getSettings: () => ({ autoIllustration: { assets: { spriteEnabled: true } }, sceneAssets: assets }),
+        getSettings: () => ({ autoIllustration: { assets: { spriteEnabled: true, maxPerFloor: 3 } }, sceneAssets: assets }),
         transformWritten(value) {
-            for (const entry of value.captions) for (const view of Object.values(entry.dnaCandidates.characters[0].views))
+            for (const entry of value.captions) for (const view of Object.values(entry.dnaCandidates?.characters[0]?.views || {}))
                 view.subject = `${entry.characterMeta.characters[0].characterKey}, an adult with silver hair,`;
         },
     });
     try {
         assert.equal((await h.service.processMessage(3, { manual: true })).ok, true);
         assert.deepEqual(assets.characterDna, {}, '生成图片不提交身份');
+        assert.deepEqual(assets.characters, {}, '生成后、首次入库前不登记角色');
+        assert.deepEqual(assets.characterOutfits, {}, '生成后、首次入库前没有默认衣装');
+        assert.deepEqual(assets.wardrobe, {}, '未采用的候选衣装不进入衣柜');
         const raw = createIndexedDbGeneratedAssetStore({ indexedDB: h.indexedDB });
         const records = await raw.getAssetsByChat('fixture');
-        assert.equal(records.length, 2);
+        assert.equal(records.length, 3);
         for (const record of records) {
+            const frozen = await h.open().readStoredImage(record.imageId);
+            assert.deepEqual(frozen.outfitContext[0].outfits, [], '本张图片冻结的是空的已保存衣装基线');
+            assert.equal(frozen.outfitSnapshot.characters[0].source, 'candidate', '本次衣装只是候选');
+            assert.equal(assets.characterOutfits[record.name], undefined, '其他角色采用不登记本角色衣装');
             const before = structuredClone(assets), saves = [];
-            let failStatus = record.name === 'Bob', reads = 0;
+            let failStatus = record.name === '李香君', reads = 0;
             const ctx = {
                 state: { activeSettings: { draft: { bridge: { sceneAssets: assets } }, asyncState: {} } },
                 options: { global: { alert() {} }, generatedAssets: { ...h.service,
@@ -439,6 +447,10 @@ test('gate:dna-adoption:实际批量生成经 UI 采用，状态事务失败恢�
                 assert.equal((await handleSettingsAction(`gen-temp-accept:${encodeURIComponent(record.key)}`, ctx)).ok, true);
             } else assert.equal(result.ok, true, result.error);
             const image = await h.open().readStoredImage(record.imageId);
+            const clothing = image.outfitSnapshot.characters[0];
+            assert.equal(assets.characterDna[record.name].defaultAppearance, clothing.description, '成功采用才将默认服装写入 DNA');
+            assert.deepEqual(assets.characterOutfits, {}, '默认服装不新建外部服装页签');
+            assert.deepEqual(assets.wardrobe, {}, '默认服装不登记衣柜');
             assert.deepEqual(assets.characterDna[record.name].views, image.dnaCandidates.characters[0].views);
             assert.equal(assets.characterDna[record.name].identitySource, image.id);
             assert.equal(h.service.getRecord(record.key).status, 'library');
@@ -446,7 +458,18 @@ test('gate:dna-adoption:实际批量生成经 UI 采用，状态事务失败恢�
             assert.equal((await h.service.setStatus(record.key, 'library', { imageId: record.imageId, status: record.status })).reason,
                 'DNA_ADOPTION_CONFLICT', '重复旧回执不能再次提交');
         }
-        assert.equal(h.writes.length, 1); assert.equal(h.paints.length, 2);
+        assert.equal(h.writes.length, 1); assert.equal(h.paints.length, 3);
+        const name = records[0].name, dna = assets.characterDna[name];
+        const repeated = await h.service.generateExpressionSet({ name, dna, moods: ['喜悦'] });
+        assert.equal(repeated.ok, true, repeated.error);
+        assert.equal(repeated.items[0].ok, true, repeated.items[0].error);
+        const stored = await h.open().readStoredImage(repeated.items[0].imageId);
+        assert.equal(stored.outfitSnapshot.characters[0].source, 'saved');
+        assert.equal(stored.outfitSnapshot.characters[0].name, '');
+        assert.equal(stored.outfitSnapshot.characters[0].description, dna.defaultAppearance);
+        assert.equal(h.paints.at(-1).caption.v4_prompt.caption.char_captions[0].char_caption,
+            dna.views.half_body.subject + ' ' + dna.defaultAppearance + ' and smiles.');
+        assert.deepEqual(assets.characterOutfits, {}); assert.deepEqual(assets.wardrobe, {});
     } finally { h.pipeline.imageGen.dispose(); }
 });
 test('gate:dna-expression:缺身份景别形态零请求，批次不混用中途修改的 DNA', async () => {
@@ -496,7 +519,9 @@ test('gate:dna-adoption:候选跨连接回读，采用才登记且身份变化�
         assert.equal(adopted.patch.characterDna.Alice.identitySource, record.id);
         assert.equal(adopted.patch.characterDna.Alice.identityInitialized, true);
         assert.equal(adopted.patch.characterDna.Alice.identity, '', '不从动态词猜旧身份');
-        assert.equal(adopted.patch.wardrobe['Alice·日常'].prompt, 'A red hoodie.');
+        assert.equal(adopted.patch.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
+        assert.equal(adopted.patch.characterOutfits, undefined);
+        assert.equal(adopted.patch.wardrobe, undefined);
         for (const profile of [{ identity: 'manual', identityInitialized: true },
             { identity: '', identityInitialized: true }, adopted.patch.characterDna.Alice]) {
             assert.equal(prepareSpriteIdentityAdoption({ characterDna: { Alice: profile } }, 'Alice', record.id, record).reason,
@@ -584,12 +609,12 @@ test('gate:dna-compatibility:旧中文 DNA 同次转换，采用回读保留原�
         async writePrompt(req, pipeline) {
             pipeline.llm.complete = async (input) => {
                 pipeline.llmCalls.push(input);
-                return Ok({ text: ['slotid: 1', 'prompt_mode: dna_template',
+                return Ok({ text: ['slotid: 1', 'prompt_mode: dna_template', 'outfit_mode: template',
                     'scene: One adult woman in a half-body composition against a transparent background.',
-                    'scene_uc: blurry', 'char: 0.5,0.5 | <<dna:r0>> wears a blue coat and smiles.',
+                    'scene_uc: blurry', 'char: 0.5,0.5 | <<dna:r0>> <<outfit:r0>> and smiles.',
                     'char_uc: <<dna_uc:r0>>', 'meta_kind: 0 | named', 'meta_key: 0 | Alice',
-                    'meta_token: 0 | r0', 'meta_frame: 0 | half_body', 'meta_outfit_name: 0 | 外套',
-                    'meta_outfit_description: 0 | A blue coat.',
+                    'meta_token: 0 | r0', 'meta_frame: 0 | half_body', 'meta_outfit_name: 0 |',
+                    'meta_outfit_description: 0 |',
                     ...Object.entries(views).flatMap(([frame, view]) => [
                         `meta_dna_${frame}: 0 | ${view.subject}`, `meta_dna_uc_${frame}: 0 | extra fingers`,
                     ])].join('\n'), json: null });
@@ -619,7 +644,7 @@ test('gate:dna-compatibility:旧中文 DNA 同次转换，采用回读保留原�
         const image = await h.open().readStoredImage(assets.characters.Alice.默认.slice('igs-gen:'.length));
         assert.equal(image.dnaSnapshot.characters[0].source, 'candidate');
         assert.equal(image.prompt.caption.v4_prompt.caption.char_captions[0].char_caption,
-            views.half_body.subject + ' wears a blue coat and smiles.');
+            views.half_body.subject + ' ' + legacy.defaultAppearance + ' and smiles.');
         for (const feature of ['two black horns', 'scaled tail', 'silver hair clip', 'pearl earrings']) {
             assert.ok(image.sentPrompt.caption.v4_prompt.caption.char_captions[0].char_caption.includes(feature), feature);
             assert.ok(assets.characterDna.Alice.views.full_body.subject.includes(feature), feature);
@@ -662,4 +687,59 @@ test('gate:dna-compatibility:无模板历史立绘复用旧协议且不伪造来
         assert.deepEqual((await store.getImage('legacy')).prompt.caption, caption, '历史记录保持不变');
         assert.ok(h.paints[0].caption.v4_prompt.caption.base_caption.includes('unknown artist source'));
     } finally { h.pipeline.imageGen.dispose(); }
+});
+
+
+test('gate:outfit-adoption:新衣装经权威回读提交，保存失败恢复且复用不重写', async () => {
+    const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
+    for (const mode of ['success', 'save-failed', 'missing', 'wire-changed', 'scope-changed']) {
+        const assets = { characters: { Alice: { 默认: 'igs-gen:base' } },
+            characterDna: { Alice: { version: 2, views: characterViewsFixture() } },
+            characterOutfits: { Alice: { 礼服: { words: ['dress'], moods: {} } } }, wardrobe: {} };
+        const h = await expressionTemplateHarness(createTransactionalIdb(), {
+            getSettings: () => ({ autoIllustration: {}, sceneAssets: assets }) });
+        const before = structuredClone(assets), saves = [];
+        const settings = { draft: { bridge: { sceneAssets: assets } }, asyncState: {} };
+        let reads = 0;
+        const ctx = { state: { activeSettings: settings },
+            options: { global: { alert() {} }, generatedAssets: { ...h.service,
+                getImagePrompt: async id => id === 'base' ? { caption: cap('base') } : h.service.getImagePrompt(id),
+                async readStoredImage(id) {
+                    reads++;
+                    const record = await h.open().readStoredImage(id);
+                    if (mode === 'missing') return null;
+                    if (mode === 'wire-changed') record.sentPrompt.caption.v4_prompt.caption.base_caption += ' changed';
+                    if (mode === 'scope-changed') settings.asyncState.assetScopeKey = 'card:other';
+                    return record;
+                } } },
+            dialogs: { choose: async () => '1', confirm: async () => true, edit: async () => '', alert() {} },
+            persistSettingsDraft() {
+                saves.push(structuredClone(assets));
+                return mode === 'save-failed' && saves.length === 1 ? { ok: false, reason: 'save-failed' } : { ok: true };
+            }, rerenderSettings: () => ({ ok: true }) };
+        try {
+            const result = await handleSettingsAction('outfit-expression-set:Alice:' + encodeURIComponent('礼服'), ctx);
+            assert.equal(reads, 1, JSON.stringify({ mode, result,
+                writes: h.writes.length, paints: h.paints.length, saves: saves.length,
+                errors: Object.values(assets.generated?.expressionNotes || {}).flatMap(notes => Object.values(notes).map(note => note.error)) }));
+            if (mode !== 'success') {
+                assert.equal(result.ok, false, mode);
+                assert.deepEqual(assets, before, mode);
+                assert.equal(saves.length, mode === 'save-failed' ? 2 : 0);
+                continue;
+            }
+            assert.equal(result.ok, true, result.error);
+            assert.equal(assets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
+            assert.deepEqual(assets.characterDna, before.characterDna);
+            const imageId = assets.characterOutfits.Alice.礼服.moods.平和.slice('igs-gen:'.length);
+            const record = await h.open().readStoredImage(imageId);
+            assert.equal(record.outfitSnapshot.characters[0].source, 'candidate');
+            const reused = await h.service.generateExpressionSet({ name: 'Alice', dna: assets.characterDna.Alice,
+                outfit: { name: '礼服' }, moods: ['喜悦'] });
+            assert.equal(reused.items[0].ok, true, reused.items[0].error);
+            assert.equal(reused.items[0].outfitSnapshot.characters[0].source, 'saved');
+            assert.equal(reused.items[0].outfitSnapshot.characters[0].description, 'wears a white dress');
+            assert.equal(h.writes.length, 2);
+        } finally { h.pipeline.imageGen.dispose(); }
+    }
 });

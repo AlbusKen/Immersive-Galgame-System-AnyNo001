@@ -16,6 +16,7 @@ import { sceneTimeBucket } from '../../scene/time-bucket.js';
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
 import { isCharacterDnaEmpty, resolveCharacterDna } from '../../scene/character-dna.js';
 import { buildCharacterContext, spriteAdoptionEvidence } from '../../scene/character-identity.js';
+import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
 import { BUILTIN_PROMPTS } from '../prompt-registry.js';
 import { usesCharacterTemplates, characterPromptTask, singleCharacterContext, preflightCharacterTask, characterTemplateInput, characterPromptRecovery } from './character-prompt-task.js';
 
@@ -334,6 +335,7 @@ export function createAssetGenerationService(deps) {
                 ...promptProvenance(image), ...(image.promptEdited === true && { promptEdited: true }),
                 ...characterPromptRecovery(image),
                 ...(image.identityContext && { identityContext: structuredClone(image.identityContext) }),
+                ...(image.outfitContext && { outfitContext: structuredClone(image.outfitContext) }),
             });
             report('warn', '素材图片存储空间不足，已只保存透明结果，之后无法从原图修复抠图（source-unavailable: quota）');
             return { ok: true, diagnostic: 'quota' };
@@ -509,7 +511,7 @@ export function createAssetGenerationService(deps) {
         // 整次点击先冻结全部身份；下一批不重新读取已改变的资料。
         const contexts = template ? new Map(items.map((item) => {
             const c = buildCharacterContext([item.need.name], s.sceneAssets)[0];
-            return [item.need.name, singleCharacterContext(c.characterKey, c.dna)[0]];
+            return [item.need.name, singleCharacterContext(c.characterKey, c.dna, undefined, s.sceneAssets)[0]];
         })) : null;
         const putSpriteRecord = async (item, result) => {
             const key = tempAssetKeyOf(floor.chatId, item.need);
@@ -527,10 +529,12 @@ export function createAssetGenerationService(deps) {
                 if (result.characterMeta) image.characterMeta = result.characterMeta;
                 Object.assign(image, characterPromptRecovery(result));
                 if (result.identityContext) image.identityContext = structuredClone(result.identityContext);
+                if (result.outfitContext) image.outfitContext = structuredClone(result.outfitContext);
                 const saved = await putImageWithQuotaFallback(image);
                 rememberImage(imageId, image.dataUrl);
                 record = { ...base, imageId, status: 'review', ...promptProvenance(image), ...characterPromptRecovery(image),
                     ...(image.identityContext && { identityContext: structuredClone(image.identityContext) }),
+                    ...(image.outfitContext && { outfitContext: structuredClone(image.outfitContext) }),
                     ...(saved.diagnostic ? { sourceUnavailable: saved.diagnostic } : {}) };
                 if (image.characterMeta) record.characterMeta = image.characterMeta;
             } else {
@@ -588,7 +592,7 @@ export function createAssetGenerationService(deps) {
                             result = await nai.generateDbgenCaption({ ...input, size: paintMeta.size,
                                 imageKind: 'sprite', promptKind: 'sprite', messageId: floor.messageId,
                                 ...(transparent && { transparent: true }), replaceCharacterKeywords: false });
-                            if (result.ok) result = { ...result, ...spriteAdoptionEvidence(input, result) };
+                            if (result.ok) result = { ...result, ...spriteAdoptionEvidence(input, result), ...outfitAdoptionEvidence(input, result) };
                         } catch (error) { result = { ok: false, error: error.message || '出图失败' }; }
                     }
                 } else {
@@ -915,13 +919,15 @@ export function createAssetGenerationService(deps) {
         if (exact && history && prompt) prompt = { ...promptProvenance(history), ...prompt, captionMode: 'final' };
         if (prompt) { image.prompt = prompt; Object.assign(image, promptProvenance(prompt)); }
         if (exact) { image.promptEdited = true; image.captionMode = 'final'; }
-        if (characterMeta) image.characterMeta = characterMeta;
+        if (painted.characterMeta || characterMeta) image.characterMeta = painted.characterMeta || characterMeta;
         if (painted.dnaCandidates !== undefined) image.dnaCandidates = structuredClone(painted.dnaCandidates);
         Object.assign(image, spriteAdoptionEvidence(templateInput, painted));
+        Object.assign(image, outfitAdoptionEvidence(templateInput, painted));
         await putImageWithQuotaFallback(image);
         rememberImage(imageId, image.dataUrl);
-        return { mood, ok: true, imageId, prompt, name, characterMeta,
+        return { mood, ok: true, imageId, prompt, name, characterMeta: image.characterMeta,
             ...promptProvenance(image), ...characterPromptRecovery(image),
+            ...(image.outfitContext && { outfitContext: structuredClone(image.outfitContext) }),
             ...(image.identityContext && { identityContext: structuredClone(image.identityContext) }) };
     }
 
@@ -940,7 +946,7 @@ export function createAssetGenerationService(deps) {
             return { ok: false, error: '当前图像来源不能写表情差分' };
         }
         const template = usesCharacterTemplates(nai);
-        const context = template ? singleCharacterContext(name, dna, outfit) : null;
+        const context = template ? singleCharacterContext(name, dna, outfit, readSettings().sceneAssets) : null;
         const paintMeta = template ? expressionPaintMeta({ template: true }) : null;
         if (template) {
             const checked = preflightCharacterTask(context, 'derived', 'half_body', outfit);
@@ -1043,7 +1049,7 @@ export function createAssetGenerationService(deps) {
             writtenFromDna: spritePromptNeedsWriting(dna, outfit) };
         const paintDna = expressionPaintDna(dna, outfit);
         outfit = outfit ? structuredClone(outfit) : outfit;
-        const context = singleCharacterContext(name, dna, outfit);
+        const context = singleCharacterContext(name, dna, outfit, readSettings().sceneAssets);
         const templateMeta = expressionPaintMeta({ template: true });
         const stopped = () => Boolean(signal && signal.aborted);
         const results = [];
@@ -1146,7 +1152,7 @@ export function createAssetGenerationService(deps) {
             return { ok: false, error: '当前图像来源不能生成头像' };
         }
         if (usesCharacterTemplates(nai)) {
-            const context = singleCharacterContext(who, dna);
+            const context = singleCharacterContext(who, dna, undefined, readSettings().sceneAssets);
             const checked = preflightCharacterTask(context, 'derived', 'portrait');
             if (!checked.ok) return checked;
             if (signal?.aborted) return { ok: false, error: '已停止' };
@@ -1208,7 +1214,7 @@ export function createAssetGenerationService(deps) {
         const who = String(name || '').trim();
         if (!who) return { ok: false, error: '没有角色' };
         if (usesCharacterTemplates(nai) && (!caption || promptRecipe || exact)) {
-            const context = singleCharacterContext(who, dna, nude ? { nude: true } : undefined);
+            const context = singleCharacterContext(who, dna, nude ? { nude: true } : undefined, readSettings().sceneAssets);
             const meta = expressionPaintMeta({ template: true });
             let input;
             if (exact && caption) input = { caption, captionMode: 'final' };

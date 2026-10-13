@@ -2106,7 +2106,7 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
         characterAliases: { Alice: ['小爱'] }, characterDna: {}, characterOutfits: {}, wardrobe: {} });
     for (const mode of ['card', 'global', 'missing', 'missing-candidate', 'wrong-image', 'wrong-character',
         'record-image', 'record-status', 'record-revision', 'dna', 'scope', 'borrowed',
-        'persist-failed', 'status-failed', 'status-throw', 'rollback-failed']) {
+        'persist-not-started', 'persist-failed', 'status-failed', 'status-throw', 'rollback-failed', 'conflict-rollback-failed']) {
         const record = await spriteAdoptionFixture();
         record.updatedAt = 7;
         let liveRecord = structuredClone(record);
@@ -2144,6 +2144,7 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
                     events.push('status'); assert.equal(key, 'temp'); assert.equal(status, 'library');
                     assert.deepEqual(receipt, { imageId: record.imageId, status: 'temp', updatedAt: 7 });
                     if (mode === 'status-throw') throw new Error('fixture-status');
+                    if (mode === 'conflict-rollback-failed') return { ok: false, reason: 'DNA_ADOPTION_CONFLICT' };
                     if (['status-failed', 'rollback-failed'].includes(mode)) return { ok: false, reason: 'status-failed' };
                     liveRecord.status = status; return { ok: true };
                 },
@@ -2151,8 +2152,10 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
             dialogs: { prompt: async () => '小爱', alert() {} },
             persistSettingsDraft() {
                 events.push('save'); saves.push(structuredClone(root));
+                if (mode === 'persist-not-started') return { ok: false, reason: 'DNA_ADOPTION_CONFLICT', writeAttempted: false };
                 if (mode === 'persist-failed' && saves.length === 1) return { ok: false, reason: 'persist-failed' };
-                if (mode === 'rollback-failed' && saves.length === 2) return { ok: false, reason: 'rollback-failed' };
+                if (['rollback-failed', 'conflict-rollback-failed'].includes(mode) && saves.length === 2)
+                    return { ok: false, reason: 'rollback-failed' };
                 return { ok: true };
             }, rerenderSettings: () => ({ ok: true }),
         };
@@ -2163,7 +2166,9 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
             assert.equal(library.characters.Alice.默认, `igs-gen:${record.imageId}`);
             assert.deepEqual(library.characterDna.Alice.views, record.dnaCandidates.characters[0].views);
             assert.equal(library.characterDna.Alice.identitySource, record.imageId);
-            assert.equal(library.wardrobe['Alice·日常'].prompt, 'A red hoodie.');
+            assert.equal(library.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
+            assert.deepEqual(library.wardrobe, {});
+            assert.deepEqual(library.characterOutfits, {});
             assert.equal(library.characters['小爱'], undefined);
             assert.deepEqual(events, ['read', 'save', 'status']);
             if (mode === 'card') for (const field of Object.keys(makeLibrary())) assert.deepEqual(root[field], original[field]);
@@ -2172,14 +2177,124 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
             assert.equal(result.ok, false, mode);
             assert.deepEqual(root, mode === 'dna' ? afterRead : original, mode);
             assert.equal(liveRecord.status, mode === 'record-status' ? 'discarded' : 'temp', mode);
-            if (['persist-failed', 'status-failed', 'status-throw', 'rollback-failed'].includes(mode)) {
+            if (['persist-failed', 'status-failed', 'status-throw', 'rollback-failed', 'conflict-rollback-failed'].includes(mode)) {
                 assert.equal(saves.length, 2, mode); assert.deepEqual(saves[1], original, mode);
+            } else if (mode === 'persist-not-started') {
+                assert.equal(result.reason, 'DNA_ADOPTION_CONFLICT');
+                assert.equal(result.writeAttempted, false);
+                assert.deepEqual(events, ['read', 'save'], '未尝试写入时只恢复草稿，不再次保存或采用候选');
             } else assert.equal(saves.length, 0, mode);
             if (mode === 'borrowed') { assert.equal(result.reason, 'DNA_ADOPTION_SCOPE'); assert.deepEqual(events, []); }
-            if (mode === 'rollback-failed') assert.equal(result.reason, 'generated-asset-accept-rollback-failed');
+            if (['rollback-failed', 'conflict-rollback-failed'].includes(mode)) {
+                assert.equal(result.reason, 'generated-asset-accept-rollback-failed');
+                assert.equal(result.rollbackFailed, true);
+                assert.equal(result.causeReason, mode === 'conflict-rollback-failed' ? 'DNA_ADOPTION_CONFLICT' : 'status-failed');
+            }
         }
     }
 });
+
+test('gate:outfit-adoption-ui:立绘采用读取共享衣柜但只写角色所属库', async () => {
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    for (const action of ['gen-temp-accept:temp', 'char-generate-sprite:Alice']) {
+        for (const changed of [false, true]) {
+            const description = 'wears a red hoodie';
+            const record = await spriteAdoptionFixture('Alice', {}, [{ characterKey: 'Alice', dna: {},
+                outfit: { name: '日常', description },
+                outfits: [{ name: '日常', description, default: true }] }]);
+            const root = { wardrobe: { shared: { prompt: changed ? 'wears a blue coat' : description },
+                unrelated: { prompt: 'wears a black suit' } },
+                cards: { 'card:current': { characters: { Alice: { 默认: 'old.png' } },
+                    characterAliases: {}, characterDna: {},
+                    characterOutfits: { Alice: { 日常: { words: [], moods: {}, default: true, wardrobe: 'shared' } } },
+                    wardrobe: {} } } };
+            const before = structuredClone(root), saves = [], alerts = [];
+            const state = { draft: { bridge: { sceneAssets: root } }, asyncState: {} };
+            let status = 'temp';
+            const result = await handleSettingsAction(action, {
+                state: { activeSettings: state },
+                options: { global: { SillyTavern: { getContext: () => ({ name2: 'current' }) } },
+                    generatedAssets: { getRecord: () => ({ ...record, status }),
+                        readStoredImage: async () => structuredClone(record),
+                        generateCharacterSprite: async () => ({ ...record, ok: true }),
+                        setStatus: async () => { status = 'library'; return { ok: true }; } } },
+                dialogs: { prompt: async () => 'Alice', confirm: async () => true,
+                    edit: async () => '', alert: message => alerts.push(message) },
+                persistSettingsDraft: () => { saves.push(structuredClone(root)); return { ok: true }; },
+                rerenderSettings: () => ({ ok: true }),
+            });
+            if (changed) {
+                assert.equal(result.ok, false, action);
+                assert.match(alerts.join('; '), /saved-outfits-changed/);
+                assert.equal(result.reason, 'OUTFIT_ADOPTION_CONFLICT');
+                assert.equal(result.writeAttempted, false);
+                assert.deepEqual(result.diagnostic.baseline, {
+                    baselineKnown: true, baselineCount: 1, currentCount: 1, equal: false,
+                    addedCount: 0, removedCount: 0, descriptionChangedCount: 1, defaultChangedCount: 0,
+                    effectiveCount: 1, ownerEffectiveEqual: true, effectiveBaselineEqual: false,
+                    ownerKind: 'current-card',
+                });
+                assert.doesNotMatch(JSON.stringify(result.diagnostic), /Alice|日常|wears|shared|card:current/);
+                assert.doesNotMatch(alerts.join('; '), /Alice|日常|wears|shared|card:current/);
+                assert.deepEqual(root, before, '真实共享说明变化必须拒收且不改资料');
+                assert.equal(saves.length, 0);
+                assert.equal(status, 'temp');
+            } else {
+                assert.equal(result.ok, true, `${action}: ${alerts.join('; ')}`);
+                assert.equal(saves.length, 1);
+                assert.equal(root.cards['card:current'].characters.Alice.默认, `igs-gen:${record.imageId}`);
+                assert.deepEqual(root.wardrobe, before.wardrobe, '全局共享衣柜保持原样');
+                assert.deepEqual(root.cards['card:current'].wardrobe, {}, '不把共享衣柜复制到角色卡');
+                assert.deepEqual(root.cards['card:current'].characterOutfits, before.cards['card:current'].characterOutfits);
+            }
+        }
+    }
+});
+
+test('gate:outfit-adoption-diagnostic:空基线、真实差异与有效视图只读摘要', async () => {
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    const { prepareOutfitAdoption } = await import('../src/scene/outfit-identity.js');
+    const row = { name: '日常', description: 'wears a red hoodie', default: true };
+    const context = outfits => [{ characterKey: 'Alice', dna: {}, outfits,
+        outfit: outfits.length ? { name: row.name, description: row.description } : { name: '', description: '' } }];
+    const empty = await spriteAdoptionFixture('Alice', {}, context([]));
+    const saved = await spriteAdoptionFixture('Alice', {}, context([row]));
+    const assetsOf = rows => ({ characterOutfits: { Alice: Object.fromEntries(rows.map(o =>
+        [o.name, { wardrobe: o.name, ...(o.default === true && { default: true }) }])) },
+        wardrobe: Object.fromEntries(rows.map(o => [o.name, { prompt: o.description }])) });
+    assert.equal(prepareOutfitAdoption({}, 'Alice', empty.id, empty).ok, true);
+    assert.deepEqual(prepareOutfitAdoption({}, 'Alice', empty.id, empty,
+        { diagnosticAssets: assetsOf([row]), diagnosticOwner: 'current-card' }),
+        prepareOutfitAdoption({}, 'Alice', empty.id, empty), '诊断视图不能参与放行或补丁');
+    for (const [record, rows, expected] of [
+        [empty, [row], [0, 1, 1, 0, 0, 0]],
+        [saved, [], [1, 0, 0, 1, 0, 0]],
+        [saved, [{ ...row, description: 'wears a blue coat' }], [1, 1, 0, 0, 1, 0]],
+        [saved, [{ ...row, default: false }], [1, 1, 0, 0, 0, 1]],
+    ]) {
+        const assets = assetsOf(rows), before = structuredClone(assets);
+        const effective = assetsOf(record === empty ? [] : [row]);
+        const result = prepareOutfitAdoption(assets, 'Alice', record.id, record,
+            { diagnosticAssets: effective, diagnosticOwner: 'current-card' });
+        assert.equal(result.reason, 'OUTFIT_ADOPTION_CONFLICT');
+        assert.equal(result.diagnostic.issue, 'saved-outfits-changed');
+        const d = result.diagnostic.baseline;
+        assert.deepEqual([d.baselineCount, d.currentCount, d.addedCount, d.removedCount,
+            d.descriptionChangedCount, d.defaultChangedCount], expected);
+        assert.equal(d.ownerEffectiveEqual, false);
+        assert.equal(d.effectiveBaselineEqual, true);
+        assert.equal(d.equal, false);
+        assert.doesNotMatch(JSON.stringify(result), /Alice|日常|wears a|red hoodie|blue coat/);
+        assert.deepEqual(assets, before, '失败和诊断不能改写资产');
+    }
+    const unknown = structuredClone(empty);
+    delete unknown.identityContext[0].outfits;
+    const rejected = prepareOutfitAdoption(assetsOf([row]), 'Alice', unknown.id, unknown);
+    assert.equal(rejected.diagnostic.baseline.baselineKnown, false);
+    assert.equal(rejected.diagnostic.baseline.baselineCount, null);
+    assert.match(rejected.error, /不能确认历史基线为空/);
+});
+
 
 test('gate:dna-adoption-ui:无模板旧立绘采用保留独立兼容路径', async () => {
     const assets = { characters: {}, characterDna: {}, characterAliases: {} };

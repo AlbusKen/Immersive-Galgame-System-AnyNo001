@@ -8,6 +8,9 @@ export const EXPRESSION_WRITE_BATCH_MAX = 8;
 export const EXPRESSION_DIFF_BATCH_MAX = 9;
 // 数据库生图模式下的前端提示词接线：写词接口只说明画什么。
 // 正负模板在出图前合并进插件返回的 NaiCaption，不交给写词模型照抄。
+const OUTFIT_TEMPLATE_RULE = '任务 outfitMode 为 template 时，每份写 outfit_mode: template；named Char 在身份占位后恰写本人的 <<outfit:token>> 一次，再写动作与表情，不重复衣装说明。'
+    + 'meta_outfit_name 与 meta_outfit_description 独立旁路：已登记衣装按角色 outfits 原样引用，新装同次提供名称和英文穿着谓语；动作、表情不进入衣装说明。'
+    + 'reference 的两项 meta_outfit_* 在自己的索引各写一次空值，reference、scene 与 UC 不使用衣装占位。';
 
 const WEIGHT_RE = /^-?\d*\.?\d+::|::$/g;
 
@@ -98,6 +101,7 @@ export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit
     const moods = (Array.isArray(labels) ? labels : []).map((item) => String(item || '').trim()).filter(Boolean);
     if (template) return [
         `为角色「${name || ''}」写 ${moods.length} 份独立表情动态模板，按本次 slots 映射输出。`,
+        OUTFIT_TEMPLATE_RULE,
         '只引用已保存的 half_body 身份，不生成候选、不重复固定外貌。',
         outfit?.nude ? '本次不穿衣服；保留基础身份和标志性特征。'
             : outfit?.name ? `当次服装：${outfit.name}。服装名、词池和具体穿着说明以本次角色资料为准。`
@@ -241,6 +245,7 @@ export function buildCharacterSpriteDescription(name, dna, options) {
     const note = String(options && options.note || '').trim();
     if (options?.template) return [
         `为角色「${name || ''}」写一份默认立绘动态模板，slotid 为 1。`,
+        OUTFIT_TEMPLATE_RULE,
         '固定身份只引用本次任务 token；仅缺景别时同次输出独立景别 DNA 候选，衣装不进入 DNA。',
         nude ? '当次不穿衣服；保留基础身份及标志性特征，不删改 DNA。' : '衣装按当次角色资料；未指定时按角色设定设计日常穿着。',
         SPRITE_DAILY_POSE_LINE, note ? `本次额外要求：\n${note}` : '',
@@ -264,6 +269,7 @@ export function buildCharacterSpriteDescription(name, dna, options) {
 export function buildCharacterAvatarDescription(name, dna, options) {
     if (options?.template) return [
         `为角色「${name || ''}」写一份 Q 版头像动态模板，slotid 为 1，使用 portrait 身份。`,
+        OUTFIT_TEMPLATE_RULE,
         '仅引用已保存 DNA，不建立或补写身份候选。',
         '头像裁成圆形，只画头、脖子与肩膀；脸在正中占画面大半，圆脸、大眼、正面带一点笑。',
         '不画肩膀以下身体或手，纯色浅底，不要背景或文字。衣领沿用当次衣装。',
@@ -307,6 +313,7 @@ export function buildWardrobeClothingDescription(_character, outfitName, { nsfwB
 export function buildDbgenSpriteBatchDescription(needs = [], options = {}) {
     if (options.template) return [
         `按本次 slots 映射写 ${needs.length} 份独立立绘动态模板，slotid 从 1 到 ${needs.length}。`,
+        OUTFIT_TEMPLATE_RULE,
         ...needs.map((need, index) => `${index + 1}. ${need.name}`),
         '每份只画该 slot 指定的角色，固定身份使用自身 token。',
         '仅缺景别的角色同次输出独立景别 DNA 候选；已有景别逐字保留，服装独立。',

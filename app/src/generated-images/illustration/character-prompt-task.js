@@ -1,5 +1,6 @@
 // 人物任务交接：冻结输入资料，不展开身份、不加工模型返回的正文。
 import { normalizeCharacterDna, readCharacterDnaView } from '../../scene/character-dna.js';
+import { savedCharacterOutfits } from '../../scene/outfit-identity.js';
 
 export const usesCharacterTemplates = (backend) => ['nai', 'dbgen'].includes(backend?.describe?.().mode);
 
@@ -8,17 +9,21 @@ export function characterPromptTask(context, purpose, framing, slotKeys) {
     const characters = characterContext.map((c, index) => ({ characterKey: c.characterKey,
         token: `r${index.toString(36)}`, framing }));
     const byKey = new Map(characters.map((c) => [c.characterKey, c.token]));
-    return { characterContext, promptTask: { version: 1, mode: 'dna_template', purpose, characters,
+    return { characterContext, promptTask: { version: 1, mode: 'dna_template', purpose, outfitMode: 'template', characters,
         ...(slotKeys && { slots: slotKeys.map((keys, index) => ({ slotId: index + 1,
             tokens: keys.map((key) => byKey.get(key)) })) }) } };
 }
 
-export function singleCharacterContext(name, dna, outfit) {
+export function singleCharacterContext(name, dna, outfit, assets = {}) {
     const profile = normalizeCharacterDna(dna);
-    return [{ characterKey: name, dna: profile, outfit: {
-        name: String(outfit?.name || ''),
+    const outfits = savedCharacterOutfits(assets, name);
+    // DNA 默认服装优先；旧服装库默认标记只作兼容读取，不搬移存量。
+    const original = profile.defaultAppearance ? { name: '', description: profile.defaultAppearance }
+        : outfits.find(o => o.default === true);
+    return [{ characterKey: name, dna: profile, outfits, outfit: {
+        name: String(outfit?.name || (outfit?.nude ? '裸体' : original?.name) || ''),
         description: outfit?.nude ? 'No clothing; retain the fixed identifying features.'
-            : String(outfit?.prompt || (outfit?.name ? '' : profile.defaultAppearance) || ''),
+            : String(outfit?.prompt || (outfit?.name ? '' : original?.description || profile.defaultAppearance) || ''),
         ...(Array.isArray(outfit?.words) && { words: [...outfit.words] }),
         ...(outfit?.nsfwBoost === true && { nsfwBoost: true }),
     } }];

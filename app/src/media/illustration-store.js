@@ -24,7 +24,7 @@ function slotPatch(old, expectedRevision, patch, options) {
         next.consistencyBaselineDataUrl = old.dataUrl;
         next.consistencyBaselineMeta = { revision: revisionOf(old),
             ...Object.fromEntries(['characterMeta', 'caption', 'originalSize', 'prompt', 'promptRecipe',
-                'dnaSnapshot', 'sentPrompt', 'consistencyPrompt', 'captionMode', 'promptEdited']
+                'dnaSnapshot', 'outfitSnapshot', 'sentPrompt', 'consistencyPrompt', 'captionMode', 'promptEdited']
                 .filter((field) => old[field] !== undefined).map((field) => [field, structuredClone(old[field])])) };
     }
     return { ok: true, record: revised(old, next, old.floorKey) };

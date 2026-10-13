@@ -13,6 +13,7 @@ import { CG_PIXEL_CAP, clampToPixelCap, fitCgSize, parseCgSize } from './cg-pixe
 import { cgCharacterState, bindCgCaption, cgPromptTask, preflightCgCaption, cgPaintRequests, cgFinalRequest } from './cg-character-bindings.js';
 import { createCgConsistencyService } from './cg-consistency-service.js';
 import { promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
+import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
 
 const MARKER_RE = /(?:\[igs-img:\s*(\d+)\s*\]|<IMG>\s*(\d+)\s*<\/IMG>)/gi;
 
@@ -285,6 +286,7 @@ export function createAutoIllustrationService(deps) {
             return { ok: false, reason: 'backend-unavailable', error };
         }
         const sceneAssets = JSON.parse(JSON.stringify(readSceneAssets()));
+        const outfitScope = deps.captureCgOutfitScope?.(characters);
         const characterState = cgCharacterState(floor.text, characters, sceneAssets,
             typeof messageHost.readPreviousAiTexts === 'function'
                 ? messageHost.readPreviousAiTexts(messageId, 3) : [], deps.readOutfitClues);
@@ -352,6 +354,7 @@ export function createAutoIllustrationService(deps) {
             }
             for (const warning of bound.warnings || []) report('info', `第 ${messageId} 楼${warning}`);
             slots.push({ slot, caption: template ? item.caption : bound.caption, anchorSentence,
+                ...(template && outfitScope && { outfitScope }),
                 ...(template && {
                     ...(bound.promptRecipe !== undefined && { promptRecipe: bound.promptRecipe }),
                     ...(bound.promptTask !== undefined && { promptTask: bound.promptTask }),
@@ -459,6 +462,7 @@ export function createAutoIllustrationService(deps) {
             ? { ...request, status: 'done', dataUrl: result.dataUrl, error: null, failureReason: null,
                 caption: result.caption || request.caption,
                 ...promptProvenance(result),
+                ...outfitAdoptionEvidence(request, result),
                 ...(prompt && { prompt }),
                 ...(result.characterMeta && { characterMeta: result.characterMeta }) }
             : { ...(attempt.dataUrl ? attempt : request), status: attempt.dataUrl ? 'done' : 'failed',
@@ -468,6 +472,24 @@ export function createAutoIllustrationService(deps) {
             { ...record, updatedAt: now() }, { expectedToken: attempt.revisionToken,
                 shouldCommit: () => targetStillLive(floor, request.slot) });
         if (!saved?.ok) throw new Error(saved?.reason || 'slot-update-failed');
+        if (result?.ok && record.promptRecipe?.outfitMode === 'template'
+            && record.promptEdited !== true && record.edited !== true
+            && record.outfitSnapshot?.characters.some(c => c.source === 'candidate')) {
+            try {
+                const raw = await store.getSlotRecord(`${key}|${request.slot}`);
+                const authoritative = raw && (store.hydrateSlot ? await store.hydrateSlot(raw) : raw);
+                if (!authoritative?.dataUrl || authoritative.revision !== saved.record.revision
+                    || authoritative.revisionToken !== saved.record.revisionToken
+                    || !targetStillLive(floor, request.slot)) throw new Error('OUTFIT_ADOPTION_CONFLICT');
+                const adopted = typeof deps.adoptCgOutfits === 'function'
+                    ? await deps.adoptCgOutfits(authoritative, floor)
+                    : { ok: false, reason: 'OUTFIT_ADOPTION_UNAVAILABLE' };
+                if (!adopted?.ok) throw new Error(adopted?.reason || 'OUTFIT_ADOPTION_CONFLICT');
+            } catch {
+                // 图片已提交，不因衣装登记失败重发收费请求；保留证据供诊断。
+                report('warn', 'CG 已保存，但衣装候选未登记；原衣装资料保持不变');
+            }
+        }
         remember(`${key}|${request.slot}`, { status: saved.record.status, dataUrl: saved.record.dataUrl || '' });
         emit(floor, request.slot);
     }
@@ -606,6 +628,7 @@ export function createAutoIllustrationService(deps) {
         let plan;
         const template = backend.mode === 'nai';
         const sceneAssets = structuredClone(readSceneAssets());
+        const outfitScope = deps.captureCgOutfitScope?.(numbered.characters);
         const characterState = template ? cgCharacterState(floor.text, numbered.characters, sceneAssets,
             messageHost.readPreviousAiTexts(messageId, 3), deps.readOutfitClues) : null;
         const task = template ? cgPromptTask(characterState.context) : null;
@@ -647,6 +670,7 @@ export function createAutoIllustrationService(deps) {
                         const context = characterState.at(offset);
                         const checked = preflightCgCaption(entry, task.promptTask, context);
                         slots.push({ ...entry, slot: entry.slotId, promptTask: task.promptTask,
+                            ...(outfitScope && { outfitScope }),
                             characterContext: context, originalSize: parseCgSize(cgSize(s)),
                             ...(!checked.ok && { preflightFailure: { reason: checked.reason, error: checked.error } }) });
                     }

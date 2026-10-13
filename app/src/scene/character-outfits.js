@@ -74,6 +74,7 @@ export function normalizeCharacterOutfits(value) {
                 words.push(word.trim());
             }
             outfits[name] = { words, moods: normalizeMoods(entry.moods) };
+            if (entry.default === true) outfits[name].default = true;
             const scenes = normalizeSceneList(entry.scenes);
             if (scenes.length) outfits[name].scenes = scenes;
             const avatar = typeof entry.avatar === 'string' ? entry.avatar.trim() : '';

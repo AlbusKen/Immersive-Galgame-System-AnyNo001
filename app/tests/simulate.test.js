@@ -773,18 +773,31 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
     const { createIndexedDbGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { normalizeBridgeConfig, normalizeReaderSettings } = await import('../src/visual/igs-ui/settings-host-normalize.js');
-    for (const mode of ['success', 'edit', 'active', 'status-failed', 'save-failed', 'missing', 'scope', 'dna', 'borrowed']) {
+    for (const mode of ['success', 'edit', 'active', 'status-failed', 'save-failed', 'rollback-failed',
+        'missing-save-handler', 'missing', 'scope', 'dna', 'borrowed', 'shared-wardrobe',
+        'shared-wardrobe-changed', 'outfit-wire-text', 'outfit-snapshot']) {
         await t.test(mode, async () => {
             const document = createFakeDocument({ innerWidth: 390, innerHeight: 844 });
             const indexedDB = createTransactionalIdb();
             const store = createIndexedDbGeneratedAssetStore({ indexedDB });
-            const record = { ...await spriteAdoptionFixture(), key: 'temp/sp', chatId: 'chat-1',
+            const shared = mode.startsWith('shared-wardrobe');
+            const description = 'wears a red hoodie';
+            const context = shared ? [{ characterKey: 'Alice', dna: {},
+                outfit: { name: '日常', description }, outfits: [{ name: '日常', description, default: true }] }] : undefined;
+            const record = { ...structuredClone(await spriteAdoptionFixture('Alice', {}, context)), key: 'temp/sp', chatId: 'chat-1',
                 floorKey: 'chat-1|39|0', status: 'review', updatedAt: 7 };
+            if (mode === 'outfit-wire-text') record.sentPrompt.caption.v4_prompt.caption.char_captions[0].char_caption += ' changed';
+            if (mode === 'outfit-snapshot') record.outfitSnapshot.characters[0].description += ' changed';
             await store.putImage(record);
             await store.putAsset(record);
             const library = () => ({ characters: { Alice: { 默认: 'old.png' } },
                 characterAliases: { Alice: ['小爱'] }, characterDna: {}, characterOutfits: {}, wardrobe: {} });
             const assets = { enabled: true, ...library(), cards: { 'card:current': library() } };
+            if (shared) {
+                assets.wardrobe.shared = { prompt: mode === 'shared-wardrobe-changed' ? 'wears a blue coat' : description };
+                assets.cards['card:current'].characterOutfits.Alice = {
+                    日常: { words: [], moods: {}, default: true, wardrobe: 'shared' } };
+            }
             if (mode === 'borrowed') {
                 assets.characters = {}; assets.characterAliases = {};
                 assets.cards = { 'card:current': {}, 'card:source': library() };
@@ -807,10 +820,13 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
                 saveUnifiedSettings(next) {
                     saves++;
                     if (mode === 'save-failed' && saves === 1) return { ok: false, reason: 'fixture-save' };
+                    if (mode === 'rollback-failed' && saves === 2) return { ok: false, reason: 'fixture-rollback' };
                     settings = structuredClone(next);
-                    if (mode === 'status-failed' && saves === 1) indexedDB.failNextPut(new Error('fixture-status'));
+                    if (['status-failed', 'rollback-failed'].includes(mode) && saves === 1)
+                        indexedDB.failNextPut(new Error('fixture-status'));
                     return { ok: true };
                 },
+                ...(mode === 'missing-save-handler' && { saveUnifiedSettings: undefined }),
                 generatedAssets: { ...service,
                     async readStoredImage(id) {
                         reads++;
@@ -836,18 +852,26 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
                     const edited = mode !== 'edit' || host.getState().activeSettings?.snapshot?.html
                         ?.includes('data-dna-field="views.half_body.subject"');
                     if ((service.getRecord(record.key).status === 'library' && edited)
-                        || String(document.getElementById('igs-toast')?.textContent || '').includes('未完成')) break;
+                        || /未完成|入库失败|入库已停止|DNA_ADOPTION_|OUTFIT_ADOPTION_/.test(String(document.getElementById('igs-toast')?.textContent || ''))) break;
                     await new Promise((resolve) => setTimeout(resolve, 0));
                 }
                 const savedRecord = (await createIndexedDbGeneratedAssetStore({ indexedDB }).getAssetsByChat('chat-1'))[0];
-                if (['success', 'edit', 'active'].includes(mode)) {
+                if (['success', 'edit', 'active', 'shared-wardrobe'].includes(mode)) {
                     assert.equal(savedRecord.status, 'library');
                     assert.equal(reads, 1);
                     const adopted = settings.bridge.sceneAssets.cards['card:current'];
                     assert.equal(adopted.characters.Alice.默认, `igs-gen:${record.imageId}`);
                     assert.deepEqual(adopted.characterDna.Alice.views, record.dnaCandidates.characters[0].views);
                     assert.equal(adopted.characterDna.Alice.identitySource, record.imageId);
-                    assert.equal(adopted.wardrobe['Alice·日常'].prompt, 'A red hoodie.');
+                    if (shared) {
+                        assert.deepEqual(adopted.wardrobe, {}, '共享衣柜只读，不复制到当前卡');
+                        assert.deepEqual(adopted.characterOutfits, original.cards['card:current'].characterOutfits);
+                        assert.deepEqual(settings.bridge.sceneAssets.wardrobe, original.wardrobe);
+                    } else {
+                        assert.deepEqual(adopted.wardrobe, original.cards['card:current'].wardrobe);
+                        assert.deepEqual(adopted.characterOutfits, original.cards['card:current'].characterOutfits);
+                    }
+                    assert.equal(adopted.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
                     assert.deepEqual(settings.bridge.sceneAssets.characterDna, original.characterDna);
                     if (mode === 'edit') {
                         const active = host.getState().activeSettings;
@@ -860,12 +884,45 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
                 } else {
                     assert.equal(savedRecord.status, 'review');
                     assert.equal(service.getRecord(record.key).status, 'review');
-                    assert.equal(settings.bridge.sceneAssets.cards['card:current'].characters?.Alice?.默认,
+                    if (mode === 'rollback-failed') {
+                        assert.equal(settings.bridge.sceneAssets.cards['card:current'].characters.Alice.默认,
+                            `igs-gen:${record.imageId}`, '恢复保存失败后不虚报持久设置已还原');
+                    } else assert.equal(settings.bridge.sceneAssets.cards['card:current'].characters?.Alice?.默认,
                         original.cards['card:current'].characters?.Alice?.默认);
-                    if (mode === 'dna') assert.deepEqual(settings.bridge.sceneAssets.cards['card:current'].characterDna.Alice, { identity: '手工更新' });
+                    if (mode === 'rollback-failed') assert.notDeepEqual(settings.bridge.sceneAssets, original);
+                    else if (mode === 'dna') assert.deepEqual(settings.bridge.sceneAssets.cards['card:current'].characterDna.Alice, { identity: '手工更新' });
                     else assert.deepEqual(settings.bridge.sceneAssets, original);
                     if (mode === 'borrowed') assert.equal(reads, 0);
-                    if (['status-failed', 'save-failed'].includes(mode)) assert.equal(saves, 2, '保存失败后恢复提交');
+                    if (['scope', 'dna', 'missing-save-handler', 'shared-wardrobe-changed', 'outfit-wire-text', 'outfit-snapshot'].includes(mode))
+                        assert.equal(saves, 0, '保存前拒绝不写入、不执行持久化补偿');
+                    if (['status-failed', 'save-failed', 'rollback-failed'].includes(mode)) assert.equal(saves, 2, '保存失败后恢复提交');
+                    assert.ok(await store.getImage(record.imageId), '失败保留已生成图片，不要求重画');
+                    const toast = String(document.getElementById('igs-toast')?.textContent || '');
+                    if (mode === 'missing') assert.match(toast, /候选图片或身份资料无法权威回读/);
+                    if (mode === 'borrowed') assert.match(toast, /角色资料来自其他角色卡/);
+                    if (mode === 'scope' || mode === 'dna') assert.match(toast, /DNA_ADOPTION_CONFLICT/);
+                    if (mode === 'status-failed') assert.match(toast, /素材审核状态保存失败/);
+                    if (mode === 'save-failed') assert.match(toast, /角色素材设置保存失败/);
+                    if (mode === 'missing-save-handler') assert.match(toast, /保存接口不可用.*missing-save-handler/);
+                    if (mode === 'shared-wardrobe-changed') {
+                        assert.match(toast, /已保存衣装基线与当前读取结果不同.*saved-outfits-changed/);
+                        assert.match(toast, /生成时已保存衣装1套，当前所属库读取1套/);
+                        assert.match(toast, /新增0、移除0、说明差异1、默认标记差异0/);
+                        assert.match(toast, /入库归属：当前卡/);
+                        assert.match(toast, /有效视图1套，与所属库相同，与生成基线不同/);
+                    }
+                    if (mode === 'outfit-wire-text') assert.match(toast, /实际发送的角色正文.*wire-text/);
+                    if (mode === 'outfit-snapshot') assert.match(toast, /衣装快照不一致.*snapshot-mismatch/);
+                    if (['shared-wardrobe-changed', 'outfit-wire-text', 'outfit-snapshot'].includes(mode)) {
+                        assert.match(toast, /OUTFIT_ADOPTION_CONFLICT/);
+                        assert.doesNotMatch(toast, /wears a|silver hair|changed；/, '诊断不回显衣装或身份正文');
+                    }
+                    if (mode === 'rollback-failed') {
+                        assert.match(toast, /设置状态未确认/);
+                        assert.match(toast, /generated-asset-accept-rollback-failed；原始原因：generated-asset-status-failed/);
+                    }
+                    assert.doesNotMatch(toast, /请重新打开审核。$/,
+                        '具体失败不能被通用提示覆盖');
                 }
             } finally { host.destroy(); }
         });

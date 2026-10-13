@@ -3,7 +3,7 @@ import { CHARACTER_DNA_VIEWS } from '../../scene/character-dna.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { checkPromptTask, checkPromptOutput } from '../../schemas/prompt-recipe.js';
 
-const fields = new Set(['slotid', 'size', 'analysis', 'scene', 'scene_uc', 'prompt_mode', 'char', 'char_uc', 'at']);
+const fields = new Set(['slotid', 'size', 'analysis', 'scene', 'scene_uc', 'prompt_mode', 'outfit_mode', 'char', 'char_uc', 'at']);
 const metaFields = new Set(['meta_kind', 'meta_key', 'meta_token', 'meta_frame', 'meta_identity', 'meta_signature',
     'meta_outfit_name', 'meta_outfit_description', 'meta_region',
     ...CHARACTER_DNA_VIEWS.flatMap((f) => [`meta_dna_${f}`, `meta_dna_uc_${f}`])]);
@@ -55,6 +55,7 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext }
 
     for (const block of blocks) {
         if (block.prompt_mode !== 'dna_template') return fail('PROMPT_MODE_CONFLICT');
+        if (block.outfit_mode !== undefined && block.outfit_mode !== 'template') return fail('OUTFIT_TEMPLATE_INVALID');
         if (block.chars.length > 16 || block.ucs.length !== block.chars.length || block.rows.size !== block.chars.length) return fail();
         const positive = [], negative = [], bindings = [], characters = [], candidates = [];
         for (let index = 0; index < block.chars.length; index += 1) {
@@ -74,6 +75,8 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext }
             if (!['named', 'reference'].includes(row.meta_kind)
                 || !['meta_key', 'meta_token', 'meta_frame', 'meta_outfit_name', 'meta_outfit_description']
                     .every((key) => Object.hasOwn(row, key))) return fail();
+            if (row.meta_kind === 'reference' && (row.meta_outfit_name !== ''
+                || row.meta_outfit_description !== '')) return fail('OUTFIT_TEMPLATE_INVALID');
             bindings.push({ kind: row.meta_kind, characterKey: row.meta_key, captionIndex: index,
                 token: row.meta_token, framing: row.meta_frame });
             const character = { characterKey: row.meta_key, captionIndex: index,
@@ -101,7 +104,8 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext }
         const meta = checkCharacterMeta({ version: 1, characters }, caption, characterContext.map((c) => c.characterKey));
         if (!meta.ok) return meta;
         const entry = { slotId: block.slotId, caption, characterMeta: meta.value,
-            promptRecipe: { version: 1, mode: 'dna_template', caption, bindings },
+            promptRecipe: { version: 1, mode: 'dna_template', caption, bindings,
+                ...(block.outfit_mode !== undefined && { outfitMode: block.outfit_mode }) },
             ...(candidates.length && { dnaCandidates: { version: 1, characters: candidates } }),
             ...(block.analysis !== undefined && { analysis: block.analysis }) };
         if (block.at !== undefined) {

@@ -422,9 +422,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             if (final && !image.promptSnapshot)
                 return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿生图缺少实际发送快照，不能保存来源' };
             return { ok: true, dataUrl: await blobToDataUrl(image.blob, image.mimeType, globalObject),
-                prompt: promptFromCaption(merged), characterMeta: meta.characterMeta, caption: merged,
+                prompt: promptFromCaption(merged), characterMeta: prepared.characterMeta || meta.characterMeta, caption: merged,
                 ...(final && { captionMode: 'final', sentPrompt: image.promptSnapshot }),
                 ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
+                    ...(prepared.outfitSnapshot && { outfitSnapshot: prepared.outfitSnapshot }),
                 ...(prepared.dnaCandidates && { dnaCandidates: prepared.dnaCandidates }) };
         } catch (error) {
             return { ok: false, error: `${DBGEN_LABEL}图片读取失败：${(error && error.message) || error}`, prompt: promptFromCaption(merged) };
@@ -465,8 +466,9 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                 if (!result.sentPrompt) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿生图缺少实际发送快照' };
                 return { ok: true, dataUrl: result.dataUrl, via: 'nai', caption: prepared.caption,
                     prompt: promptFromCaption(prepared.caption), captionMode: 'final', sentPrompt: result.sentPrompt,
-                    ...(meta.characterMeta !== undefined && { characterMeta: meta.characterMeta }),
+                    ...(meta.characterMeta !== undefined && { characterMeta: prepared.characterMeta || meta.characterMeta }),
                     ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
+                    ...(prepared.outfitSnapshot && { outfitSnapshot: prepared.outfitSnapshot }),
                     ...(prepared.dnaCandidates && { dnaCandidates: prepared.dnaCandidates }) };
             }
         } else if (meta.promptRecipe !== undefined || meta.promptTask !== undefined || meta.dnaCandidates !== undefined || meta.captionMode !== undefined) {
@@ -754,7 +756,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                     return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿重绘缺少实际发送快照' };
                 return { ok: true, dataUrl: await blobToDataUrl(image.blob, image.mimeType, globalObject),
                     ...(final && { caption: prepared.caption, captionMode: 'final', sentPrompt: image.promptSnapshot }),
-                    ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }) };
+                    ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
+                    ...(prepared.outfitSnapshot && { outfitSnapshot: prepared.outfitSnapshot }) };
             } catch {
                 return { ok: false, reason: 'edit-failed', error: '局部重绘失败或超时；上游请求可能仍在执行' };
             }
@@ -769,7 +772,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             return result && result.ok && result.dataUrl
                 ? { ok: true, dataUrl: result.dataUrl,
                     ...(final && { caption: prepared.caption, captionMode: 'final', sentPrompt: result.sentPrompt }),
-                    ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }) }
+                    ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
+                    ...(prepared.outfitSnapshot && { outfitSnapshot: prepared.outfitSnapshot }) }
                 : { ok: false, reason: result && result.reason === 'image-edit-unsupported' ? 'image-edit-unsupported' : 'edit-failed', error: (result && result.error) || '局部重绘失败' };
         } catch (error) {
             return { ok: false, reason: 'edit-failed', error: `局部重绘失败：${(error && error.message) || error}` };

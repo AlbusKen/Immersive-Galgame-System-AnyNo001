@@ -1352,19 +1352,22 @@ async function consistencyFixture(count = 2, storeOverride) {
             writes.push(request);
             const captions = request.promptTask.slots.map(({ slotId, tokens }) => {
                 const rows = tokens.map((token) => request.promptTask.characters.find((c) => c.token === token));
+                const outfitFor = c => request.characterContext.find(m => m.characterKey === c.characterKey).outfit;
                 const ref = rows.find((c) => c.kind === 'reference');
                 const caption = {
                     v4_prompt: { caption: { base_caption: ref
                         ? 'Two people interacting in a room, preserving their original clothing and interaction.'
                         : 'Two people interacting in a room.', char_captions: rows.map((c) => ({
-                        char_caption: `<<dna:${c.token}>> ${c.kind === 'reference' ? 'is visible from the shoulders up.' : `wears coat-${c.characterKey}.`}`,
+                        char_caption: `<<dna:${c.token}>> ${c.kind === 'reference' ? 'is visible from the shoulders up.' : request.promptTask.outfitMode === 'template' ? `<<outfit:${c.token}>>.` : `wears ${outfitFor(c).description}.`}`,
                         centers: [{ x: 0.5, y: 0.5 }] })) } },
                     v4_negative_prompt: { caption: { base_caption: ref ? 'decorative frame, golden border, split screen, collage, duplicate person' : '', char_captions: rows.map((c) => ({ char_caption: `<<dna_uc:${c.token}>>` })) } },
                 };
                 return { slotId, caption, promptRecipe: { version: 1, mode: 'dna_template', caption,
+                    ...(request.promptTask.outfitMode && { outfitMode: request.promptTask.outfitMode }),
                     bindings: rows.map((c, captionIndex) => ({ ...c, captionIndex })) },
                     characterMeta: { version: 1, characters: rows.flatMap((c, captionIndex) => c.kind === 'reference' ? [] : [{
                         ...structuredClone(characters.find((m) => m.characterKey === c.characterKey)), captionIndex,
+                        outfit: structuredClone(outfitFor(c)),
                         centers: [{ x: 0.5, y: 0.5 }], positionExplicit: true }]) } };
             }).reverse();
             return { ok: true, captions };
@@ -1580,13 +1583,13 @@ test('gate:cg-codec:decode-encode-budget-errors-and-cancel-release-handlers', as
 // 普通 CG 集成夹具：实际 planner parser、发送 Adapter 与存储事务；外部服务全部隔离。
 function cgTemplateText(slotId, at, rows = []) {
     return [`slotid: ${slotId}`, ...(at !== undefined ? [`at: ${at}`] : []),
-        'prompt_mode: dna_template', 'scene: Friends meet in a cafe. High quality illustration.',
+        'prompt_mode: dna_template', 'outfit_mode: template', 'scene: Friends meet in a cafe. High quality illustration.',
         'scene_uc: blurry', ...rows.flatMap(({ key, token, frame = 'half_body', x = 0.3, identity }, index) => [
-            `char: ${x},0.5 | <<dna:${token}>> wears a blue coat and waves toward Alice.`,
+            `char: ${x},0.5 | <<dna:${token}>> <<outfit:${token}>> and waves toward Alice.`,
             `char_uc: <<dna_uc:${token}>>, closed eyes`, `meta_kind: ${index} | named`,
             `meta_key: ${index} | ${key}`, `meta_token: ${index} | ${token}`,
             `meta_frame: ${index} | ${frame}`, `meta_outfit_name: ${index} | Coat`,
-            `meta_outfit_description: ${index} | A blue coat.`,
+            `meta_outfit_description: ${index} | wears a blue coat`,
             ...(identity !== undefined ? [`meta_identity: ${index} | ${identity}`,
                 `meta_signature: ${index} | silver hair clip`] : []),
         ])].join('\n');
@@ -1656,7 +1659,7 @@ async function cgTemplateRun(mode, reply, assets, count = 2, options = {}) {
         getBridge: () => bridge, nai, llm });
     const idb = createTransactionalIdb();
     const store = options.store || createIndexedDbIllustrationStore({ indexedDB: idb });
-    const service = createAutoIllustrationService({ ...fake, nai: backend, llm, store,
+    const service = createAutoIllustrationService({ ...fake, ...options.deps, nai: backend, llm, store,
         getSettings: () => bridge.autoIllustration, getSceneAssets: () => assets });
     const result = await service.processMessage(5);
     return { result, service, store, fake, wires, writes, llmRequests, bridge,
@@ -1708,6 +1711,40 @@ for (const mode of ['nai', 'dbgen']) {
 
 
 for (const mode of ['nai', 'dbgen']) {
+    test(`gate:cg-template:${mode}:DNA 默认服装保真发送且重画保留原衣装快照`, async () => {
+        const assets = cgTemplateAssets();
+        const description = 'wears a 1.2::blue coat:: with $1 trim';
+        assets.characterDna.Alice.defaultAppearance = description;
+        const before = structuredClone(assets);
+        const slot = mode === 'nai' ? 1 : 6;
+        const reply = cgTemplateText(slot, mode === 'nai' ? 2 : undefined,
+            [{ key: 'Alice', token: 'r0' }])
+            .replace('meta_outfit_name: 0 | Coat', 'meta_outfit_name: 0 |')
+            .replace('meta_outfit_description: 0 | wears a blue coat', 'meta_outfit_description: 0 |');
+        const run = await cgTemplateRun(mode, reply, assets, 1);
+        try {
+            assert.equal(run.result.ok, true, run.result.error);
+            assert.equal(run.result.count, 1);
+            assert.equal(run.result.failedCount || 0, 0);
+            assert.equal(run.wires.length, 1);
+            const record = await run.store.getSlotRecord(`c1|5|0|${slot}`);
+            assert.equal(record.status, 'done');
+            assert.equal(record.outfitSnapshot.characters[0].source, 'saved');
+            assert.equal(record.outfitSnapshot.characters[0].name, '');
+            assert.equal(record.outfitSnapshot.characters[0].description, description);
+            const positive = run.wires[0].parameters.v4_prompt.caption.char_captions[0].char_caption;
+            assert.equal(positive, 'Alice, half_body saved identity, ' + description + ' and waves toward Alice.');
+            assert.deepEqual(assets, before, 'CG 默认复用不写入角色资料或衣装库');
+            assets.characterDna.Alice.defaultAppearance = 'wears a green jacket';
+            const rerolled = await run.service.rerollSlot({ chatId: 'c1', messageId: 5, swipeId: 0, slot });
+            assert.equal(rerolled.ok, true, rerolled.error);
+            assert.equal(run.wires.length, 2);
+            assert.equal(run.llmRequests.length + run.writes.length, 1, '重画不重新写词');
+            assert.equal(run.wires[1].parameters.v4_prompt.caption.char_captions[0].char_caption, positive);
+            assert.equal(assets.characterDna.Alice.defaultAppearance, 'wears a green jacket');
+        } finally { run.dispose(); }
+    });
+
     test(`gate:cg-template:${mode}:缺景别使用当次身份且保存真实请求`, async () => {
         const assets = cgTemplateAssets();
         delete assets.characterDna.Bob.views.half_body;
@@ -1993,6 +2030,7 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
             const reply = output.captions.map((entry) => {
                 const pos = entry.caption.v4_prompt.caption, neg = entry.caption.v4_negative_prompt.caption;
                 return [`slotid: ${entry.slotId}`, 'prompt_mode: dna_template',
+                    ...(entry.promptRecipe.outfitMode === 'template' ? ['outfit_mode: template'] : []),
                     `scene: ${pos.base_caption} High quality illustration.`,
                     `scene_uc: ${['blurry', neg.base_caption].filter(Boolean).join(', ')}`,
                     ...entry.promptRecipe.bindings.flatMap((b) => {
@@ -2376,9 +2414,9 @@ for (const count of [2, 3]) test(`gate:dna-chain:${count}人采用到CG重画一
                     });
                 }
                 for (const meta of entry.characterMeta.characters) {
-                    meta.outfit = { name: '冬装', description: `coat-${meta.characterKey}` };
+                    meta.outfit = { name: '冬装', description: `wears coat-${meta.characterKey}` };
                     entry.caption.v4_prompt.caption.char_captions[meta.captionIndex].char_caption =
-                        `<<dna:${entry.promptRecipe.bindings[meta.captionIndex].token}>> wears coat-${meta.characterKey}.`;
+                        `<<dna:${entry.promptRecipe.bindings[meta.captionIndex].token}>> <<outfit:${entry.promptRecipe.bindings[meta.captionIndex].token}>>.`;
                 }
                 for (const candidate of entry.dnaCandidates?.characters || []) {
                     candidate.views.portrait.subject = `${candidate.characterKey}, an adult with silver hair and blue eyes,`;
@@ -2724,3 +2762,85 @@ for (const duplicate of [false, true]) test(`gate:cg-consistency:单轮清单双
         assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
     } finally { for (const p of pipelines) p.imageGen.dispose(); }
 });
+
+
+for (const mode of ['nai', 'dbgen']) {
+    for (const fault of ['none', 'save', 'scope', 'owner', 'wire', 'missing', 'revision', 'wardrobe']) {
+        test(`gate:cg-outfit:${mode}:${fault}:权威回读与衣装保存门禁`, async () => {
+            const { captureOutfitScope, prepareCgOutfitAdoption, savedCharacterOutfits } = await import('../src/scene/outfit-identity.js');
+            const { effectiveSceneAssets } = await import('../src/scene/asset-scope.js');
+            const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
+            const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
+            let root = { cards: { 'card:Source': cgTemplateAssets() } }, scope = 'card:Active';
+            const assets = effectiveSceneAssets(root, scope), before = structuredClone(root);
+            const raw = createIndexedDbIllustrationStore({ indexedDB: createTransactionalIdb() });
+            const reports = [], adopted = [];
+            let saves = 0, reads = 0;
+            const store = { ...raw, async getSlotRecord(key) {
+                const record = await raw.getSlotRecord(key);
+                if (record?.status !== 'done') return record;
+                reads++;
+                if (fault === 'missing') return null;
+                if (fault === 'wire') record.sentPrompt.caption.v4_prompt.caption.char_captions[0].char_caption += ' altered';
+                if (fault === 'revision') record.revisionToken += '-stale';
+                if (fault === 'scope') scope = 'card:Other';
+                if (fault === 'owner') root.cards['card:Active'] = { characters: { Alice: {} } };
+                if (fault === 'wardrobe') {
+                    root.cards['card:Source'].characterOutfits = { Alice: { Coat: { wardrobe: 'changed' } } };
+                    root.cards['card:Source'].wardrobe = { changed: { prompt: 'wears a red coat' } };
+                }
+                return record;
+            } };
+            const slot = mode === 'nai' ? 1 : 6;
+            const run = await cgTemplateRun(mode, cgTemplateText(slot, mode === 'nai' ? 2 : undefined,
+                [{ key: 'Alice', token: 'r0' }, { key: 'Bob', token: 'r1', x: 0.7 }]), assets, 1, {
+                store, deps: {
+                    report: (...args) => reports.push(args),
+                    captureCgOutfitScope: keys => captureOutfitScope(root, scope, keys),
+                    async adoptCgOutfits(record) {
+                        adopted.push(record);
+                        const prepared = prepareCgOutfitAdoption(root, scope, record);
+                        if (!prepared.ok || !prepared.changed) return prepared;
+                        saves++;
+                        await Promise.resolve();
+                        if (fault === 'save') return { ok: false, reason: 'settings-save-failed' };
+                        root = prepared.sceneAssets;
+                        Object.assign(assets, effectiveSceneAssets(root, scope));
+                        return { ok: true };
+                    },
+                },
+            });
+            try {
+                assert.equal(run.result.ok, true, JSON.stringify(run.result));
+                assert.equal(run.wires.length, 1, '登记失败不重复生成');
+                assert.equal(run.writes.length + run.llmRequests.length, 1, '候选来自同次写词');
+                const record = await raw.getSlotRecord(`c1|5|0|${slot}`);
+                assert.equal(record.status, 'done');
+                assert.ok(record.dataUrl);
+                assert.equal(reads, 1, '采用前权威回读');
+                assert.deepEqual(root.cards['card:Source'].characterDna, before.cards['card:Source'].characterDna);
+                if (fault === 'none') {
+                    assert.equal(saves, 1);
+                    assert.equal(adopted.length, 1);
+                    assert.equal(adopted[0].revisionToken, record.revisionToken);
+                    for (const name of ['Alice', 'Bob']) assert.deepEqual(savedCharacterOutfits(
+                        root.cards['card:Source'], name), [{ name: 'Coat', description: 'wears a blue coat' }]);
+                    assert.equal(root.cards['card:Active'], undefined, '借用角色写回冻结来源卡');
+                    assert.equal(reports.some(args => args[0] === 'warn'), false);
+                    const saved = structuredClone(root);
+                    assert.equal((await run.service.rerollSlot({ chatId: 'c1', messageId: 5, swipeId: 0, slot })).ok, true);
+                    assert.equal(run.wires.length, 2);
+                    assert.equal(saves, 1, '已有衣装复用不重写');
+                    assert.deepEqual(root, saved);
+                } else {
+                    assert.ok(reports.some(args => args[0] === 'warn' && args[1].includes('衣装候选未登记')));
+                    assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Bob').length, 0,
+                        '多人物任一冲突不留下部分登记');
+                    if (fault === 'wardrobe') assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Alice')[0].description, 'wears a red coat');
+                    else assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Alice').length, 0);
+                    if (fault === 'save') assert.deepEqual(root, before, '保存失败不替换内存或衣柜');
+                }
+            } finally { run.dispose(); }
+        });
+    }
+}

@@ -1,8 +1,9 @@
 // 唯一身份展开点：无存储、模型或配置访问；调用方提供本次资料快照。
 import { checkPromptRecipe, checkPromptTask, checkPromptOutput, checkRecipeCharacterMeta, promptTaskForSlot, isSceneOnlyPromptOutput } from '../schemas/prompt-recipe.js';
 import { readCharacterDnaView, normalizeCharacterDna, checkDnaViews } from '../scene/character-dna.js';
+import { checkOutfitTemplates } from '../schemas/outfit-template.js';
 const fail = (reason, error) => ({ ok: false, reason, error });
-const controlled = /<<\s*dna/i;
+const controlled = /<<\s*(?:dna|outfit)/i;
 const textFields = (caption) => [caption?.v4_prompt?.caption, caption?.v4_negative_prompt?.caption]
     .flatMap((side) => [side?.base_caption, ...(side?.char_captions || []).map((c) => c.char_caption)]);
 function freeze(value) {
@@ -61,6 +62,8 @@ export function prepareCharacterCaption(input = {}) {
         ? checkPromptOutput({ caption, promptRecipe, dnaCandidates, characterMeta: input.characterMeta }, selected.value, characterContext)
         : checkRecipeCharacterMeta(checked.value, input.characterMeta);
     if (!output.ok) return output;
+    const outfits = checkOutfitTemplates(checked.value, input.characterMeta, characterContext, selected.value);
+    if (!outfits.ok) return outfits;
     for (const b of checked.value.bindings.filter((b) => b.token)) {
         if (characterContext.filter((c) => c?.characterKey === b.characterKey).length !== 1)
             return fail('DNA_TEMPLATE_BINDING', '角色资料快照无法唯一绑定');
@@ -81,6 +84,8 @@ export function prepareCharacterCaption(input = {}) {
         const neg = expanded.v4_negative_prompt.caption.char_captions[b.captionIndex];
         // 替换回调保真 $、权重与标点；只替换原模板，不再扫描替换产物。
         pos.char_caption = pos.char_caption.replace(`<<dna:${b.token}>>`, () => view.value.subject);
+        const outfit = outfits.value.characters.find(c => c.captionIndex === b.captionIndex);
+        if (outfit) pos.char_caption = pos.char_caption.replace(`<<outfit:${b.token}>>`, () => outfit.description);
         if (neg) neg.char_caption = neg.char_caption.replace(`<<dna_uc:${b.token}>>`, () => view.value.negative);
         characters.push({ ...b, source: candidate ? 'candidate' : view.source,
             dnaVersion: view.source === 'scene' ? 0 : 2,
@@ -91,5 +96,10 @@ export function prepareCharacterCaption(input = {}) {
         return fail('DNA_TEMPLATE_UNRESOLVED', '身份展开后仍有未解析令牌');
     return freeze({ ok: true, caption: expanded, captionMode: 'final', promptRecipe: checked.value,
         dnaSnapshot: { version: 1, characters },
+        ...(checked.value.outfitMode === 'template' && { outfitSnapshot: outfits.value,
+            ...(input.characterMeta && { characterMeta: { ...structuredClone(input.characterMeta), characters: input.characterMeta.characters.map(c => {
+                const outfit = outfits.value.characters.find(o => o.captionIndex === c.captionIndex);
+                return outfit ? { ...structuredClone(c), outfit: { name: outfit.name, description: outfit.description } } : structuredClone(c);
+            }) } }) }),
         ...(output.value.dnaCandidates !== undefined && { dnaCandidates: output.value.dnaCandidates }) });
 }

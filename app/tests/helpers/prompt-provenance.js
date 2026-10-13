@@ -36,14 +36,25 @@ export function characterViewsFixture(subject = 'Alice, an adult woman with silv
 }
 
 // 写词替身遵守真实任务的 slot/token 绑定；发送仍由实际 Adapter 校验、展开。
-export function characterWriteFixture(request, { subject, scene = 'One woman stands in soft light.', action = 'wears a red hoodie and smiles.' } = {}) {
+export function characterWriteFixture(request, { subject, scene = 'One woman stands in soft light.', action = 'wears a red hoodie and smiles.', outfitDescription = 'wears a red hoodie' } = {}) {
     const task = request.promptTask;
     const slots = task.slots || [{ slotId: 1, tokens: task.characters.map((c) => c.token) }];
     const captions = slots.map(({ slotId, tokens }) => {
         const characters = task.characters.filter((c) => tokens.includes(c.token));
+        const clothing = c => {
+            const source = request.characterContext.find(x => x.characterKey === c.characterKey);
+            const current = source?.outfit;
+            const saved = source?.outfits?.find(o => o.name === current?.name);
+            if (current?.name === '' && current.description?.trim()
+                && current.description === source?.dna?.defaultAppearance) return { name: '', description: '' };
+            return { name: current?.name || '日常',
+                description: current?.name && (current.description || saved?.description)
+                    ? '' : outfitDescription };
+        };
+        const dynamic = task.outfitMode === 'template' ? 'and smiles.' : action;
         const caption = {
             v4_prompt: { caption: { base_caption: scene, char_captions: characters.map((c) => ({
-                char_caption: `<<dna:${c.token}>> ${action}`, centers: [{ x: 0.5, y: 0.5 }],
+                char_caption: `<<dna:${c.token}>> ${task.outfitMode === 'template' ? `<<outfit:${c.token}>> ` : ''}${dynamic}`, centers: [{ x: 0.5, y: 0.5 }],
             })) } },
             v4_negative_prompt: { caption: { base_caption: 'blurry', char_captions: characters.map((c) => ({
                 char_caption: `<<dna_uc:${c.token}>>`,
@@ -53,10 +64,12 @@ export function characterWriteFixture(request, { subject, scene = 'One woman sta
         const savedViews = (c) => request.characterContext.find((x) => x.characterKey === c.characterKey)?.dna?.views;
         const candidates = characters.filter((c) => !['full_body', 'half_body', 'portrait']
             .every((frame) => savedViews(c)?.[frame]?.subject?.trim()));
-        return { slotId, caption, promptRecipe: { version: 1, mode: 'dna_template', caption, bindings },
+        return { slotId, caption, promptRecipe: { version: 1, mode: 'dna_template', caption, bindings,
+            ...(task.outfitMode && { outfitMode: task.outfitMode }) },
             characterMeta: { version: 1, characters: characters.map((c, captionIndex) => ({
                 characterKey: c.characterKey, captionIndex, identityAnchor: '', signatureDetails: '',
-                outfit: { name: '日常', description: 'A red hoodie.' },
+                outfit: task.outfitMode === 'template' ? clothing(c)
+                    : { name: '日常', description: 'A red hoodie.' },
                 centers: [{ x: 0.5, y: 0.5 }], positionExplicit: true,
             })) },
             ...(task.purpose === 'sprite' && candidates.length && { dnaCandidates: { version: 1,
@@ -69,10 +82,10 @@ export function characterWriteFixture(request, { subject, scene = 'One woman sta
 }
 
 // UI 采用 fixture 仍经过实际任务校验、身份展开和定稿快照入口。
-export async function spriteAdoptionFixture(name = 'Alice', dna = {}) {
+export async function spriteAdoptionFixture(name = 'Alice', dna = {}, characterContext) {
     const { characterPromptTask } = await import('../../src/generated-images/illustration/character-prompt-task.js');
     const { spriteAdoptionEvidence } = await import('../../src/scene/character-identity.js');
-    const task = characterPromptTask([{ characterKey: name, dna }], 'sprite', 'half_body', [[name]]);
+    const task = characterPromptTask(characterContext || [{ characterKey: name, dna }], 'sprite', 'half_body', [[name]]);
     const entry = characterWriteFixture(task, { subject: `${name}, an adult with silver hair,` }).captions[0];
     const input = { ...task, ...entry };
     const prepared = prepareCharacterCaption(input);

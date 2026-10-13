@@ -1,5 +1,6 @@
 // IGS 请求与模板交接边界；不依赖 DBGen 的运行时，也不改写正文。
 import { CHARACTER_DNA_VIEWS, CHARACTER_DNA_REQUIRED_VIEWS, checkDnaViews } from '../scene/character-dna.js';
+import { checkOutfitTemplates } from './outfit-template.js';
 const plain = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const keyOk = (v) => typeof v === 'string' && v === v.trim() && v.length > 0 && v.length <= 128
     && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -18,6 +19,7 @@ export function checkPromptTask(raw, context) {
     if (raw === undefined) return { ok: true, value: undefined };
     if (!plain(raw) || raw.version !== 1 || raw.mode !== 'dna_template'
         || !['sprite', 'derived', 'cg', 'consistency'].includes(raw.purpose)
+        || (raw.outfitMode !== undefined && raw.outfitMode !== 'template')
         || !Array.isArray(raw.characters) || raw.characters.length > 16 || !Array.isArray(context)) return fail('PROMPT_MODE_CONFLICT', 'promptTask');
     const keys = new Set(), tokens = new Set(), characters = [];
     for (const c of raw.characters) {
@@ -55,6 +57,7 @@ export function checkPromptTask(raw, context) {
         if (characters.some((c) => !assigned.has(c.token))) return fail('DNA_TEMPLATE_BINDING', 'promptTask.slots.tokens', 'missing');
     }
     return { ok: true, value: { version: 1, mode: 'dna_template', purpose: raw.purpose, characters,
+        ...(raw.outfitMode !== undefined && { outfitMode: raw.outfitMode }),
         ...(slots !== undefined && { slots }) } };
 }
 
@@ -70,6 +73,7 @@ export function promptTaskForSlot(task, slotId) {
 export function checkPromptRecipe(raw, caption, task) {
     if (raw === undefined) return task ? fail('PROMPT_MODE_CONFLICT', 'promptRecipe', 'missing') : { ok: true, value: undefined };
     if (!plain(raw) || raw.version !== 1 || raw.mode !== 'dna_template'
+        || (raw.outfitMode !== undefined && raw.outfitMode !== 'template')
         || !Array.isArray(raw.bindings) || raw.bindings.length > 16) return fail('DNA_TEMPLATE_BINDING', 'promptRecipe');
     const pos = caption?.v4_prompt?.caption, neg = caption?.v4_negative_prompt?.caption;
     if (!Array.isArray(pos?.char_captions) || !Array.isArray(neg?.char_captions)
@@ -119,7 +123,11 @@ export function checkPromptRecipe(raw, caption, task) {
         if (typeof negative !== 'string' || !check(negative, uc, uc && negative.includes(uc) ? 1 : 0))
             return fail('DNA_TEMPLATE_UNRESOLVED', 'caption.char_uc', 'placeholder', { captionIndex: b.captionIndex });
     }
-    return { ok: true, value: { version: 1, mode: 'dna_template', caption: structuredClone(caption), bindings } };
+    const value = { version: 1, mode: 'dna_template', caption: structuredClone(caption), bindings,
+        ...(raw.outfitMode !== undefined && { outfitMode: raw.outfitMode }) };
+    const outfits = checkOutfitTemplates(value, undefined, undefined, task);
+    if (!outfits.ok) return outfits;
+    return { ok: true, value };
 }
 
 export function checkDnaCandidates(raw, { task, context, recipe } = {}) {
@@ -176,7 +184,7 @@ export function isSceneOnlyPromptOutput(item) {
             && Array.isArray(meta.characters) && meta.characters.length === 0))
         && [item.caption?.v4_prompt?.caption, item.caption?.v4_negative_prompt?.caption]
             .every((side) => plain(side) && typeof side.base_caption === 'string'
-                && !/<<\s*dna/i.test(side.base_caption)
+                && !/<<\s*(?:dna|outfit)/i.test(side.base_caption)
                 && Array.isArray(side.char_captions) && side.char_captions.length === 0);
 }
 
@@ -195,6 +203,8 @@ export function checkPromptOutput(item, task, context) {
     if (!metadata.ok) return metadata;
     const candidates = checkDnaCandidates(item.dnaCandidates, { task, context, recipe: recipe.value });
     if (!candidates.ok) return candidates;
+    const outfits = checkOutfitTemplates(recipe.value, item.characterMeta, context, task);
+    if (!outfits.ok) return outfits;
     if (task?.purpose === 'sprite') {
         for (const b of recipe.value.bindings.filter((b) => b.kind === 'named')) {
             const dna = context?.find((c) => c.characterKey === b.characterKey)?.dna;
@@ -205,5 +215,6 @@ export function checkPromptOutput(item, task, context) {
         }
     }
     return { ok: true, value: { ...(recipe.value !== undefined && { promptRecipe: recipe.value }),
-        ...(candidates.value !== undefined && { dnaCandidates: candidates.value }) } };
+        ...(candidates.value !== undefined && { dnaCandidates: candidates.value }),
+        ...(recipe.value?.outfitMode === 'template' && { outfitSnapshot: outfits.value }) } };
 }

@@ -4413,12 +4413,12 @@ export function createIgsReaderHost(options = {}) {
             let committedAssets = JSON.stringify(snapshot.bridge.sceneAssets);
             const save = () => {
                 if (state.activeSettings !== activeSettings || scope() !== sourceScope)
-                    return { ok: false, reason: 'DNA_ADOPTION_CONFLICT' };
+                    return { ok: false, reason: 'DNA_ADOPTION_CONFLICT', writeAttempted: false };
                 if (activeSettings) return persistSettingsDraft();
                 const current = resolveBridgeConfigSnapshot({ mode: 'default' });
                 if (JSON.stringify(current.bridge.sceneAssets) !== committedAssets)
-                    return { ok: false, reason: 'DNA_ADOPTION_CONFLICT' };
-                if (typeof options.saveUnifiedSettings !== 'function') return { ok: false, reason: 'missing-save-handler' };
+                    return { ok: false, reason: 'DNA_ADOPTION_CONFLICT', writeAttempted: false };
+                if (typeof options.saveUnifiedSettings !== 'function') return { ok: false, reason: 'missing-save-handler', writeAttempted: false };
                 let saved;
                 try { saved = options.saveUnifiedSettings({ bridge: { ...current.bridge,
                     sceneAssets: settingsState.draft.bridge.sceneAssets }, readerMode: 'default', readerSettings: current.readerSettings }); }
@@ -4427,6 +4427,7 @@ export function createIgsReaderHost(options = {}) {
                 committedAssets = JSON.stringify(resolveBridgeConfigSnapshot({ mode: 'default' }).bridge.sceneAssets);
                 return saved;
             };
+            let adoptionError = '';
             const result = await handleSettingsAction(`gen-temp-accept:${encodeURIComponent(item.key)}`, {
                 state: { activeSettings: settingsState },
                 options: { ...options, generatedAssets: { ...service,
@@ -4436,12 +4437,30 @@ export function createIgsReaderHost(options = {}) {
                             && current.updatedAt === item.updatedAt ? current : null;
                     } } },
                 dialogs: { prompt: async () => String(name || item.name || '').trim(),
-                    alert: (message) => writeToastSafe(message) },
+                    alert: (message) => { adoptionError = String(message || ''); } },
                 persistSettingsDraft: save, rerenderSettings: () => ({ ok: true }),
             });
             if (!result?.ok || service.getRecord?.(item.key)?.status !== 'library') {
-                writeToastSafe('角色立绘采用未完成，原资料或候选保持不变，请重新打开审核。');
-                return result;
+                const failure = result?.ok === false ? result
+                    : { ok: false, reason: 'DNA_ADOPTION_CONFLICT' };
+                const messages = {
+                    'DNA_ADOPTION_CONFLICT': '候选图片、角色资料或当前角色卡已变化，请重新打开审核后重试。',
+                    'OUTFIT_ADOPTION_CONFLICT': '衣装候选或已保存衣装与生成时的资料不一致，入库已停止。',
+                    'DNA_ADOPTION_INVALID': '候选图片或身份资料无法权威回读，入库已停止。',
+                    'generated-asset-status-failed': '素材审核状态保存失败，入库未完成。',
+                    'generated-asset-persist-failed': '角色素材设置保存失败，入库未完成。',
+                    'save-failed': '角色素材设置保存失败，入库未完成。',
+                    'missing-save-handler': '角色素材设置保存接口不可用，入库未完成。',
+                    'generated-assets-unavailable': '生成素材服务不可用，入库未完成。',
+                };
+                const code = /^[A-Za-z0-9_-]{1,80}$/.test(failure.reason || '')
+                    ? failure.reason : 'sprite-adoption-failed';
+                const cause = /^[A-Za-z0-9_-]{1,80}$/.test(failure.causeReason || '') ? failure.causeReason : '';
+                const recovery = failure.rollbackFailed
+                    ? '恢复保存也失败，设置状态未确认；请先检查角色资料，不要反复点击入库。' : '';
+                writeToastSafe(`${adoptionError || messages[code] || '角色素材设置保存失败或采用检查未通过，入库未完成。'}${recovery}`
+                    + `（${code}${cause && cause !== code ? `；原始原因：${cause}` : ''}）`);
+                return failure;
             }
             if (activeSettings) rerenderSettings();
             if (state.activeReader) rerenderActiveReader();

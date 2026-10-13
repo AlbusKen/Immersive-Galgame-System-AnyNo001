@@ -10,6 +10,7 @@ import { checkPromptTask, checkPromptOutput, isSceneOnlyPromptOutput } from '../
 export function cgPromptTask(context) {
     const characterContext = structuredClone(context);
     return { characterContext, promptTask: { version: 1, mode: 'dna_template', purpose: 'cg',
+        outfitMode: 'template',
         characters: characterContext.map((c, index) => ({ characterKey: c.characterKey,
             token: `r${index.toString(36)}`, kind: 'named' })) } };
 }
@@ -62,6 +63,7 @@ export function cgPaintRequests(slots, assets) {
                 if (assets) {
                     request.characterContext = currentCgContext(request, assets);
                     request.promptTask = { version: 1, mode: 'dna_template', purpose: 'cg',
+                        ...(request.promptRecipe.outfitMode && { outfitMode: request.promptRecipe.outfitMode }),
                         characters: request.promptRecipe.bindings.filter((b) => b.kind === 'named')
                             .map(({ characterKey, token }) => ({ characterKey, token, kind: 'named' })) };
                 }
@@ -82,16 +84,21 @@ export function cgPaintRequests(slots, assets) {
 
 // 手改定稿只发正文；旧 recipe / 快照留在存储中追溯。
 export function cgFinalRequest(request) {
-    const { promptRecipe, promptTask, dnaCandidates, dnaSnapshot, sentPrompt, preflightFailure, ...final } = request;
+    const { promptRecipe, promptTask, dnaCandidates, dnaSnapshot, outfitSnapshot, outfitContext,
+        sentPrompt, preflightFailure, ...final } = request;
     return { ...final, captionMode: 'final' };
 }
 
 // 普通重画只取当前 DNA；保留原 CG 当次衣装元数据，不重新解释剧情或复用历史身份。
 export function currentCgContext(record, assets) {
     const keys = record.promptRecipe.bindings.filter((b) => b.kind === 'named').map((b) => b.characterKey);
-    return buildCharacterContext(keys, assets).map((c) => ({ ...c,
-        outfit: structuredClone(record.characterMeta?.characters?.find((m) => m.characterKey === c.characterKey)?.outfit
-            || { name: '', description: '' }) }));
+    return buildCharacterContext(keys, assets).map((c) => {
+        const snapshot = record.outfitSnapshot?.characters?.find((m) => m.characterKey === c.characterKey);
+        const outfit = snapshot ? { name: snapshot.name, description: snapshot.description }
+            : record.characterMeta?.characters?.find((m) => m.characterKey === c.characterKey)?.outfit
+                || { name: '', description: '' };
+        return { ...c, outfit: structuredClone(outfit) };
+    });
 }
 
 // 仅消费既有正文和资料；不看图、不做额外写词或定位请求。

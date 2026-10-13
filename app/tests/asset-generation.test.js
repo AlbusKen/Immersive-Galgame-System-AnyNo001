@@ -1901,7 +1901,7 @@ test('gate:assets:dna-composition-reaches-final-dbgen-caption-and-saved-prompt',
     const wire = requests[0];
     const role = wire.caption.v4_prompt.caption.char_captions[0];
     assert.equal(writes.length, 1);
-    assert.equal(role.char_caption, 'Alice, alice_tag, 1girl, silver hair, blue eyes, wears a red hoodie and smiles.');
+    assert.equal(role.char_caption, 'Alice, alice_tag, 1girl, silver hair, blue eyes, ' + dna.defaultAppearance + ' and smiles.');
     assert.deepEqual(role.centers, [{ x: 0.5, y: 0.5 }]);
     const positive = JSON.stringify(wire.caption.v4_prompt);
     assert.doesNotMatch(positive, /black hair|brown hair|green eyes|maid outfit/);
@@ -1978,7 +1978,8 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
                 getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1 }),
                 async generateSinglePrompt(req) {
                     writes.push(req);
-                    return { ok: true, value: characterWriteFixture(req, { action: 'wears a white dress and smiles.' }) };
+                    return { ok: true, value: characterWriteFixture(req, { action: 'wears a white dress and smiles.',
+                        outfitDescription: fixture.outfit?.prompt || 'wears a white dress' }) };
                 },
                 async generate(req) { paints.push(req); return pipeline.imageGen.generate(req); },
             },
@@ -2008,7 +2009,8 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
         const wire = paints[0];
         const positive = JSON.stringify(wire.caption.v4_prompt);
         assert.match(positive, /silver hair/);
-        assert.match(positive, /white dress/);
+        const clothing = fixture.outfit ? fixture.outfit.prompt || 'wears a white dress' : fixture.dna.defaultAppearance;
+        assert.ok(positive.includes(clothing));
         assert.doesNotMatch(positive, /brown hair|maid outfit|red hoodie/);
         assert.equal(wire.replaceCharacterKeywords, false);
         assert.deepEqual((await store.getImage(result.items[0].imageId)).prompt.caption, wire.caption);
@@ -2019,7 +2021,7 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
             dna: fixture.dna, outfit: fixture.outfit });
         assert.equal(resumed.items[0].ok, true, resumed.items[0].error);
         assert.equal(writes.length, 1, '继续生图复用已写好的单份结果');
-        assert.match(JSON.stringify(paints[1].caption.v4_prompt), /white dress/);
+        assert.deepEqual(paints[1].caption.v4_prompt, paints[0].caption.v4_prompt, '续画保留实际衣装正文');
         assert.doesNotMatch(JSON.stringify(paints[1].caption.v4_prompt), /brown hair|maid outfit|red hoodie/);
         pipeline.imageGen.dispose();
     }
@@ -2082,7 +2084,7 @@ test('gate:dna-avatar:portrait 实际 Adapter、快照与失败关闭', async ()
         async generateSinglePrompt(req) {
             writes.push(req);
             const result = characterWriteFixture(req, { scene: 'Chibi head and shoulders on a pale background.',
-                action: 'wears a red collar and smiles.' });
+                action: 'wears a red collar and smiles.', outfitDescription: 'wears a red collar' });
             if (cancelAfterWriting) controller.abort();
             return { ok: true, value: result };
         },
@@ -2104,7 +2106,7 @@ test('gate:dna-avatar:portrait 实际 Adapter、快照与失败关闭', async ()
         assert.equal(requests[0].captionMode, 'final');
         assert.equal(requests[0].replaceCharacterKeywords, false);
         assert.equal(requests[0].caption.v4_prompt.caption.char_captions[0].char_caption,
-            dna.views.portrait.subject + ' wears a red collar and smiles.');
+            dna.views.portrait.subject + ' ' + dna.defaultAppearance + ' and smiles.');
         assert.equal(result.dnaSnapshot.characters[0].framing, 'portrait');
         assert.equal(result.dnaSnapshot.characters[0].source, 'saved');
         assert.equal(result.dnaCandidates, undefined);

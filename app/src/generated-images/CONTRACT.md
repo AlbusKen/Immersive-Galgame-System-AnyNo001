@@ -52,6 +52,15 @@
 - 一致性保姿优先于身份相似度：不依据 DNA 重塑原 CG 身体轮廓、骨架、肢体长度或躯干比例，不移动头部、手脚或接触点。每个实际发送的工作轮次由写词阶段独立保留原依据已有的姿势、朝向、表情、视线、遮挡与互动，不依赖正式场景模板正文；未知细节不猜测。程序不拼补动态正文，语义约束不保证真实模型保姿。
 - 一致性任务要求 `getPromptCapabilities()` 声明 `generationConfig: 1`、`generationConfigLease: 1`，并提供返回 `Result` 的 `getGenerationConfig()` 与同步布尔接口 `isGenerationConfigCurrent(token)`。`getEditConfig` 返回配置令牌、画师正文和仅留在任务内存的 `isCurrent` 守卫；能力缺失、异步守卫或读取失败均拒绝开始。各轮显式传 `expectedConfigToken`，DBGen 从核验的私有快照装配，在排队发送前复核同 ID 的接口实体及实际并行凭据池。
 - 接受候选时，文件上传后由 `beforeCommit` 异步复核配置、原记录、DNA 与写词要求；实际存储事务只用同步 `shouldCommit` 检查租约、当前目标和身份，不在 IndexedDB 事务里等待读取。DBGen 同一 `docDb` 的配置／画师 Repository 共享提交通知，修改后再改回也使旧令牌失效；该通知不保证跨客户端或标签页同步。配置／画师／DNA／写词要求变化、取消及目标冲突保留原图。令牌与守卫不进入 wire 或持久化来源，旧调用缺省不追加租约字段。离线请求捕获不能代表真实 provider 接受性或模型效果。
+- 衣装模板显式使用 `outfitMode: 'template'` 与扁平 `outfit_mode: template`；缺省字段的历史任务保持旧协议。named 正向 Char 恰有本人的 `<<outfit:token>>`，Scene、reference 和所有 UC 禁止衣装占位。reference 的两项 `meta_outfit_*` 在自己的索引各写一次空值，双端解析实际核验。
+- 衣装只在 `prepareCharacterCaption()` 展开，保存独立 `outfitSnapshot`；已有说明按角色复用，不翻译、不改写，同名不同说明拒收。新衣装由同次写词提供旁路候选，不增加写词、生图或候选 UI。默认立绘成功采用后将说明写入 `characterDna[name].defaultAppearance`，不自动创建 `characterOutfits` 或 `wardrobe` 条目；服装差分及普通 CG 的有名候选继续走外部服装登记。
+- 默认立绘写入 DNA 前仍须通过图片成功、权威回读、角色／作用域、冻结衣装基线、模板、实际发送正文／坐标及既有设置保存门禁。已有默认说明、`identityInitialized: true`（含主动清空）和内置裸体不被自动覆盖或补写；存量衣装不迁移、不删除。设置或素材状态保存失败按原路径恢复，保留同一候选供重试。
+- 后续默认立绘、头像、表情和普通 CG 优先读取 DNA 默认服装；旧外部衣装的默认标记仅在 DNA 无默认说明时兼容读取。有名当次衣装及剧情明确换装优先，空名默认衣装使用空 `meta_outfit_name`／`meta_outfit_description` 保真复用 DNA，来源为 `saved`；默认说明改写仍拒收。普通 CG 重画读取当前身份但保留原图 `outfitSnapshot`，一致性只用原 CG 衣装快照。
+- 立绘与服装差分采用通过 `readWardrobe` 读取当前有效共享衣柜来解析所属角色的衣装说明；返回补丁仍基于角色所属库，不复制共享衣柜，新增衣柜键避开共享键。衣装拒收保留 `OUTFIT_ADOPTION_CONFLICT`，提示和受控诊断区分资料变化、模板复核、快照、发送正文／坐标及证据缺失；诊断不含身份、衣装正文或凭据，失败保留已生成图片。
+- `saved-outfits-changed` 的拒绝摘要仅返回冻结基线／当前读取条数、新增／移除／说明／默认标记差异、匿名归属及所属库／有效视图相等性；缺失历史列表标为未知，不据此断言历史为空。摘要不返回角色名、衣装名、图片或正文，不参与采用判定或补丁；三个 UI 采用入口保留具体错误码、摘要及保存前 `writeAttempted: false`。首次入库前不要求编辑不存在的衣装，空库合成回归通过不代表现场根因已确认。
+- 普通 CG 写词前冻结作用域及角色归属，采用前复核槽位 key、revision/token、当前目标及衣装资料；借用角色写回冻结来源卡。多人物候选全部核验后生成一份设置补丁。图片已经提交而衣装登记失败时保留图片并警告，不重复生图、不写入半成品。图片与设置存储不共享事务。
+- 一致性重绘沿原 CG 衣装快照展开，不以当前衣柜、默认外观或参考立绘服装替换；首次一致性基线保存实际存在的 `outfitSnapshot`。手改定稿不采用候选，最终发送仍拒绝未展开的衣装令牌。
+
 
 ## Provider 契约
 
