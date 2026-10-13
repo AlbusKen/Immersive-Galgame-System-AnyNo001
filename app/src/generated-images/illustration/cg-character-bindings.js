@@ -1,6 +1,6 @@
 import { buildCharacterContext } from '../../scene/character-identity.js';
 import { buildCharacterDnaPromptParts, mergePromptTags } from '../../scene/character-dna.js';
-import { createOutfitResolver, collectLatestOutfits } from '../../scene/character-outfits.js';
+import { createOutfitResolver, collectLatestOutfits, resolveTagOutfitAt, isValidOutfitName } from '../../scene/character-outfits.js';
 import { extractSceneDirectives, resolveCharacterKey } from '../../scene/scene-directives.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { readCaptionIdentity } from '../character-caption.js';
@@ -104,12 +104,15 @@ export function currentCgContext(record, assets) {
 // 仅消费既有正文和资料；不看图、不做额外写词或定位请求。
 export function cgCharacterState(text, names, assets, previousTexts = [], readClues) {
     const outfitResolver = createOutfitResolver(assets);
-    const directives = extractSceneDirectives(text, { outfitResolver }).directives;
+    // 未登记衣装只作为写词上下文，不改阅读器的旧图回退或衣柜。
+    const storyDirectives = source => extractSceneDirectives(source, { outfitResolver }).directives
+        .map(d => d.unknownOutfit && isValidOutfitName(d.unknownOutfit) ? { ...d, outfit: d.unknownOutfit } : d);
+    const directives = storyDirectives(text);
     const known = { ...assets.characterDna, ...assets.characters, ...assets.characterOutfits, ...assets.generated?.characters };
     const canonical = (name) => resolveCharacterKey(known, assets.characterAliases || {}, name) || name;
     const inheritedOutfits = {};
     for (const previous of previousTexts.slice(-3).reverse()) {
-        const latest = collectLatestOutfits(extractSceneDirectives(previous, { outfitResolver }).directives, canonical);
+        const latest = collectLatestOutfits(storyDirectives(previous), canonical);
         for (const [key, value] of Object.entries(latest)) {
             if (!Object.hasOwn(inheritedOutfits, key)) inheritedOutfits[key] = value;
         }
@@ -117,7 +120,12 @@ export function cgCharacterState(text, names, assets, previousTexts = [], readCl
     const at = (offset) => {
         const scene = directives.filter((d) => d.type === 'scene' && d.offset <= offset).at(-1);
         return buildCharacterContext(names, assets, { directives, offset, inheritedOutfits, readClues,
-            scene: scene?.scene ? [scene.scene] : [] });
+            scene: scene?.scene ? [scene.scene] : [] }).map(c => {
+            const requested = resolveTagOutfitAt(directives, c.characterKey, offset, inheritedOutfits, canonical);
+            return isValidOutfitName(requested) && !outfitResolver(c.characterKey, requested)
+                ? { ...c, outfit: { name: requested, description: '' } }
+                : c;
+        });
     };
     const context = at(Infinity);
     const timeline = directives.filter((d) => d.outfit).map((d) => ({

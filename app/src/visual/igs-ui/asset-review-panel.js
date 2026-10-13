@@ -38,6 +38,17 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         body.className = 'igs-asset-review-body';
         const label = doc.createElement('div');
         label.textContent = `「${ask.character}」穿了「${ask.word}」`;
+        const status = doc.createElement('div');
+        if (ask.id) {
+            status.textContent = ask.busy ? (ask.status === 'painting' ? '正在生成换装立绘…' : '正在提取本楼衣装…')
+                : ask.reason ? `处理未完成（${ask.reason}），候选保留`
+                : ask.imageId ? '立绘已生成，等待入库' : ask.prompt ? '衣装描述已准备，确认后才入库' : '衣装描述尚未完成';
+            body.appendChild(status);
+            if (ask.prompt) { const detail = doc.createElement('details');
+                const summary = doc.createElement('summary'); summary.textContent = '查看衣装描述';
+                const text = doc.createElement('div'); text.textContent = ask.prompt;
+                detail.append(summary, text); body.appendChild(detail); }
+        }
         const select = doc.createElement('select');
         select.setAttribute('aria-label', '新衣服加入方式');
         select.addEventListener('keydown', (event) => event.stopPropagation());
@@ -49,14 +60,18 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         }
         const actions = doc.createElement('div');
         actions.className = 'igs-asset-review-actions';
-        for (const [act, text] of [['ok', '加入'], ['later', '稍后']]) {
+        const acts = [['ok', '加入'], ...(ask.id && !ask.prompt ? [['retry', '重试写词']] : []), ['later', '稍后']];
+        select.disabled = Boolean(ask.busy);
+        for (const [act, text] of acts) {
             const button = doc.createElement('button');
             button.type = 'button';
             button.textContent = text;
             button.setAttribute('data-outfit-ask-act', act);
+            button.disabled = Boolean(ask.busy);
             button.addEventListener('click', (event) => {
                 event.stopPropagation();
-                if (typeof handlers.onOutfit === 'function') handlers.onOutfit(ask, act === 'ok' ? select.value : '');
+                if (!button.disabled && typeof handlers.onOutfit === 'function')
+                    handlers.onOutfit(ask, act === 'ok' ? select.value : act === 'retry' ? 'retry' : '');
             });
             actions.appendChild(button);
         }

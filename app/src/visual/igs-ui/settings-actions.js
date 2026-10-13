@@ -20,6 +20,7 @@ import { buildPageDiagnostic } from './page-diagnostic.js';
 import { isPromptEntryKey } from '../../scene/prompt-entries.js';
 import { getLastPromptReport } from '../../scene/prompt-triggers.js';
 import { clearMoodReview, loadMoodReview, removeMoodReview, saveMoodReview } from '../../scene/mood-review-store.js';
+import { loadStoryOutfitCandidates } from '../../scene/outfit-review-store.js';
 import { applyMoodAssignments, applyMoodReclassification, buildMoodClassificationRequest, buildMoodReclassifyRequest, parseMoodClassification, resolveSecondaryLlm } from '../../scene/mood-classify.js';
 import { SETTINGS_NOTICE_MS } from './settings-notice.js';
 import { STATUS_HUD_POSITION_DEVICES, normalizeStatusHudSettings } from '../../data/shujuku/status-hud-model.js';
@@ -624,9 +625,14 @@ function generatedAdoptionFailure(dialogs, globalObj, adoption) {
         ...(adoption.diagnostic && { diagnostic: adoption.diagnostic }) };
 }
 
-// 图片只跟全局和角色卡里的配置走。这些地方不再引用，图就可以清掉。
+// 已保存配置、旧预设和待确认衣装共同持有图片；读取候选失败时保守保留。
 export function unreferencedGeneratedImageIds(imageIds, sceneAssets, storage) {
     const inUse = new Set(collectGeneratedImageIds(sceneAssets));
+    if (storage) {
+        const candidates = loadStoryOutfitCandidates(storage);
+        if (!candidates.ok) return [];
+        for (const row of candidates.items) if (row.imageId) inUse.add(row.imageId);
+    }
     // 本机还留着的旧版预设也算在用：找回之前，它们引用的图不能删。
     for (const preset of Object.values(loadLegacyPresets(storage))) {
         for (const id of collectGeneratedImageIds(preset)) inUse.add(id);

@@ -1093,6 +1093,17 @@ test('gate:cg-bindings:outfit-snapshot-follows-anchor-and-nearest-floor', async 
     const inherited = cgCharacterState('No new outfit.', f.names, f.assets,
         ['[igs-char:A|smile|Coat|Old]', '[igs-char:A|smile|Dress|Recent]']);
     assert.equal(inherited.context[0].outfit.description, 'A white dress.');
+    f.assets.characterDna.Alice.defaultAppearance = 'A default hoodie.';
+    const changed = cgCharacterState('[igs-char:A|smile|浴衣|Changed]', f.names, f.assets);
+    assert.deepEqual(changed.context[0].outfit, { name: '浴衣', description: '' }, '明确新衣装不能回退默认');
+    assert.equal(changed.timeline[0].outfit.name, '浴衣');
+    const continued = cgCharacterState('Next floor.', f.names, f.assets, ['[igs-char:A|smile|浴衣|Changed]']);
+    assert.equal(continued.context[0].outfit.name, '浴衣');
+    const registered = cgCharacterState('[igs-char:A|smile|Dress|Saved]', f.names, f.assets);
+    assert.deepEqual(registered.context[0].outfit, { name: 'Dress', description: 'A white dress.' });
+    const reset = cgCharacterState('[igs-char:A|smile|默认|Reset]', f.names, f.assets);
+    assert.deepEqual(reset.context[0].outfit, { name: '', description: 'A default hoodie.' });
+    assert.equal(cgCharacterState('No change.', f.names, f.assets).context[0].outfit.description, 'A default hoodie.');
 });
 
 test('gate:cg-bindings:parser-default-center-is-not-explicit-position', async () => {
@@ -1454,8 +1465,9 @@ async function consistencyFixture(count = 2, storeOverride) {
     const logData = new Map(), reports = [];
     const logStorage = { getItem: (key) => logData.get(key), setItem: (key, value) => logData.set(key, value) };
     const jobLog = createImageJobLog({ storage: logStorage });
-    const backend = { describeEdit: () => ({ supported: true, via: 'dbgen', infillImg2imgStrength: 1, appearanceCorrection: 1 }),
-        async getEditConfig() { return { ok: true, version: 1, configToken: 'fixture-config', artist: null, isCurrent: () => true }; },
+    const backend = { describeEdit: (_bridge, request = {}) => ({ supported: true, via: 'dbgen', model: request.model,
+        infillImg2imgStrength: 1, appearanceCorrection: 1, infillModelNegotiation: 1 }),
+        async getEditConfig({ model } = {}) { return { ok: true, version: 1, configToken: 'fixture-config', model, artist: null, isCurrent: () => true }; },
         async writeDbgenPrompt(request) {
             writes.push(request);
             const captions = request.promptTask.slots.map(({ slotId, tokens, identityMode }) => {
@@ -1507,6 +1519,44 @@ async function consistencyFixture(count = 2, storeOverride) {
         query: { chatId: floor.chatId, messageId: 5, swipeId: 0, slot: 7 } };
 }
 
+for (const code of ['PROMPT_LLM_UNSET', 'NAI_429', 'WORKBENCH_CAPTION_INVALID', 'DBGEN_PROMPT_EXCEPTION']) {
+    test(`gate:cg-consistency:写词失败保留安全诊断-${code}`, async () => {
+        const { createImageBackend } = await import('../src/generated-images/image-backend.js');
+        const { createImageJobLog } = await import('../src/generated-images/image-job-log.js');
+        const f = await consistencyFixture(), requests = [];
+        const adapter = createImageBackend({ getBridge: () => ({ imageApi: { mode: 'dbgen' } }),
+            global: { NaiDbGen: { getPromptCapabilities: () => ({ appearanceCorrection: 1 }),
+                async generate() { assert.fail('写词失败不得生图'); },
+                async generateSinglePrompt(req) {
+                    requests.push(req);
+                    if (code === 'DBGEN_PROMPT_EXCEPTION') throw new Error('PRIVATE-REPLY-KEY');
+                    return { ok: false, error: { code, message: 'PRIVATE-REPLY-KEY', hint: 'PRIVATE-HINT',
+                        traceId: 'trace_safe', context: {
+                            stage: code === 'WORKBENCH_CAPTION_INVALID' ? 'prompt-parse' : 'prompt-write',
+                            ...(code === 'NAI_429' && { status: 429 }),
+                            ...(code === 'WORKBENCH_CAPTION_INVALID' && { field: 'caption', issue: 'invalid' }),
+                            rawText: 'PRIVATE-REPLY-KEY', characterKey: 'PRIVATE-NAME',
+                        } } };
+                } } } });
+        f.backend.writeDbgenPrompt = (req) => adapter.writeDbgenPrompt(req);
+        const result = await f.service.redrawConsistency(f.query);
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, code);
+        assert.equal(result.diagnostics.slotId, 1);
+        assert.equal(requests.length, f.names.length + 1);
+        assert.ok(requests.every((req) => req.messageId === f.floor.messageId));
+        assert.equal(f.calls.length, 0);
+        assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
+        const recovered = createImageJobLog({ storage: f.logStorage }).list();
+        const error = recovered.find((entry) => entry.level === 'error').message;
+        assert.ok(error.includes(code), error);
+        assert.match(error, /阶段 write.*slotid 1.*原图保持不变/);
+        if (code === 'NAI_429') assert.match(error, /HTTP 429.*traceId trace_safe/);
+        if (code === 'WORKBENCH_CAPTION_INVALID') assert.match(error, /prompt-parse.*caption.*invalid/);
+        assert.doesNotMatch(JSON.stringify(result) + error, /PRIVATE-|rawText|coat-A|new-A/);
+    });
+}
+
 for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-candidate-accept-roundtrip`, async () => {
     const f = await consistencyFixture(count);
     const candidate = await f.service.redrawConsistency(f.query);
@@ -1514,6 +1564,7 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-candid
     assert.equal(candidate.reason, 'candidate');
     assert.equal(f.calls.length, count);
     assert.equal(f.writes.length, count + 1, '正式场景与各工作轮次独立并发写词');
+    assert.ok(f.writes.every((request) => request.messageId === f.floor.messageId), '每轮写词绑定原 CG 楼层，不读取最新楼');
     assert.equal(f.writes[0].promptTask.purpose, 'consistency');
     assert.match(f.writes[0].description, /保姿优先于身份相似度/);
     assert.match(f.writes[0].description, /不得据此重塑原 CG 的身体轮廓、骨架、肢体长度或躯干比例/);
@@ -2112,7 +2163,7 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
     };
     const codec = { ...f.codec, async encodePixels(pixels) { return png(pixels).url; } };
     const settings = { ...defaultPluginSettings(), activeNaiConfigId: 'fake', activeArtistId: 'artist' };
-    settings.naiParams = { ...settings.naiParams, model: 'nai-diffusion-5-full' };
+    settings.naiParams = { ...settings.naiParams, model: options.model || 'nai-diffusion-5-full' };
     const gateway = createNaiGateway({ transports: { direct: createDirectTransport({ fetch: async (_url, init) => {
         wires.push(JSON.parse(init.body));
         return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -2132,10 +2183,10 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
         artistRepo: { get: async () => Ok({ positivePrompt: 'artist:test', negativePrompt: 'artist-uc' }), onChanged: () => () => {} },
         newTraceId: () => 'consistency-offline' });
 
-    const api = { getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, generationConfig: 1, generationConfigLease: 1, infillImg2imgStrength: 1, appearanceCorrection: 1 }),
+    const api = { getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, generationConfig: 1, generationConfigLease: 1, infillImg2imgStrength: 1, appearanceCorrection: 1, infillModelNegotiation: 1 }),
         getGenerationConfig: () => imageService.getGenerationConfig(),
         isGenerationConfigCurrent: (token) => imageService.isGenerationConfigCurrent(token),
-        describeInfill: () => imageService.describeInfill(),
+        describeInfill: (request) => imageService.describeInfill(request),
         async generateSinglePrompt(request) {
             writes.push(request);
             const output = await f.backend.writeDbgenPrompt(request);
@@ -2164,7 +2215,11 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
                                 ])];
                     })].join('\n');
             }).join('\n---\n');
-            pipeline = buildPipeline({ llmComplete: async () => Ok({ text: reply, json: null }) });
+            pipeline = buildPipeline({ llmComplete: async () => Ok({ text: reply, json: null }),
+                hostOpts: { aiMessages: [
+                    { messageId: 9, name: 'Bot', text: 'Later unrelated scene.', isUser: false, isSystem: false },
+                    { messageId: f.floor.messageId, name: 'Bot', text: f.floor.text, isUser: false, isSystem: false },
+                ] } });
             pipelines.push(pipeline);
             options.preparePipeline?.(pipeline, request);
             return pipeline.workbench.writePrompt({ mode: 'floor', skipRecall: request.skipRecall, messageId: request.messageId,
@@ -2179,6 +2234,7 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
         async edit(request) { edits.push(request); return backend.edit(request); } }, codec,
         getSceneAssets: () => f.assets,
         consistencyStrength: () => f.igsSettings.autoIllustration?.consistencyStrength,
+        consistencyModel: () => f.igsSettings.autoIllustration?.consistencyModel,
         resolveReference: options.resolveReference || ((key, assets) => assets.characters[key].默认),
         ...(options.onAccepted && { onAccepted: options.onAccepted }),
         targetStillLive: () => true, writingRequirements: () => ({ transparent: false,
@@ -2190,11 +2246,17 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
 }
 
 
-for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-adapter-wire-and-idb`, async () => {
+for (const model of ['nai-diffusion-5-full', 'nai-diffusion-4-5-full', 'nai-diffusion-4-5-curated',
+    'nai-diffusion-4-full', 'nai-diffusion-4-curated-preview', 'nai-diffusion-5-curated'])
+for (const selectedModel of [undefined, 'nai-diffusion-4-5-full-inpainting'])
+for (const count of [2, 3]) test(`gate:cg-consistency:${model}:${selectedModel || 'default-v5'}:${count}-characters-real-adapter-wire-and-idb`, async () => {
+    const infillModel = selectedModel || 'nai-diffusion-5-full-inpainting';
     const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
     const { promptSnapshotFromBody } = await import('../src/generated-images/final-caption.js');
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
-    const f = await consistencyAdapterFixture(count);
+    const f = await consistencyAdapterFixture(count, undefined, { model });
+    if (selectedModel !== undefined) f.igsSettings.autoIllustration = { consistencyModel: selectedModel };
+    const settingsBefore = structuredClone(f.settings);
     try {
         const original = prepareCharacterCaption({ ...f.before, caption: f.before.promptRecipe.caption,
             characterContext: f.names.map((characterKey) => ({ characterKey, dna: f.assets.characterDna[characterKey] })) });
@@ -2209,6 +2271,12 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
         assert.equal(f.wires.length, count);
         assert.equal(f.edits.length, count);
         assert.equal(f.writes[0].skipRecall, true);
+        assert.ok(f.writes.every((request) => request.messageId === f.floor.messageId));
+        for (const pipeline of f.pipelines) {
+            assert.equal(pipeline.host.resolveWorldInfoCalls.length, 1);
+            assert.ok(pipeline.host.resolveWorldInfoCalls[0].some((m) => m.messageId === f.floor.messageId));
+            assert.ok(pipeline.host.resolveWorldInfoCalls[0].every((m) => m.messageId <= f.floor.messageId));
+        }
         assert.equal(f.writes[0].imageDataUrl, undefined, '不向写词模型发送图片定位');
         assert.ok(f.writes.every((request) => request.promptTask.slots.length === 1));
         assert.match(f.pipeline.llmCalls[0].messages.at(-1).content, /High quality illustration/);
@@ -2217,6 +2285,8 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
             const prepared = prepareCharacterCaption(f.edits[i]);
             assert.equal(prepared.ok, true, prepared.error);
             assert.equal(wire.action, 'infill');
+            assert.equal(wire.model, infillModel);
+            assert.equal(f.edits[i].model, infillModel);
             assert.equal(wire.input, 'artist:test, ' + prepared.caption.v4_prompt.caption.base_caption);
             assert.doesNotMatch(wire.input, /reference inset|frame|border|split screen|collage/i);
             assert.equal(wire.parameters.negative_prompt, 'artist-uc, ' + prepared.caption.v4_negative_prompt.caption.base_caption);
@@ -2259,6 +2329,7 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
             assert.equal(round.slotId, i + 2);
             assert.equal(round.characterKey, f.names[i]);
             assert.equal(round.sentPrompt.action, 'infill');
+            assert.equal(round.sentPrompt.model, infillModel);
             assert.deepEqual(round.sentPrompt.caption.v4_prompt.caption, f.wires[i].parameters.v4_prompt.caption);
             assert.deepEqual(round.sentPrompt.caption.v4_negative_prompt.caption, f.wires[i].parameters.v4_negative_prompt.caption);
             assert.ok(round.dnaSnapshot.characters.every((c) => c.source === 'saved'));
@@ -2266,6 +2337,7 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
             assert.ok(round.dnaSnapshot.characters.every(c => c.application === 'appearance_correction'));
         }
         assert.deepEqual(f.assets, f.originalAssets, '全过程不写 DNA 或衣装');
+        assert.deepEqual(f.settings, settingsBefore, '局部重绘不改变全局模型或配置');
         assert.equal(JSON.stringify(saved.consistencyPrompt).includes('fake-key'), false);
     } finally { f.dispose(); }
 });
@@ -2936,8 +3008,10 @@ for (const duplicate of [false, true]) test(`gate:cg-consistency:单轮清单双
 
 for (const mode of ['nai', 'dbgen']) {
     for (const fault of ['none', 'save', 'scope', 'owner', 'wire', 'missing', 'revision', 'wardrobe']) {
-        test(`gate:cg-outfit:${mode}:${fault}:权威回读与衣装保存门禁`, async () => {
-            const { captureOutfitScope, prepareCgOutfitAdoption, savedCharacterOutfits } = await import('../src/scene/outfit-identity.js');
+        test(`gate:cg-outfit:${mode}:${fault}:权威回读与衣装确认门禁`, async () => {
+const { captureOutfitScope, prepareCgOutfitCandidates, prepareStoryOutfitAdoption, savedCharacterOutfits } = await import('../src/scene/outfit-identity.js');
+            const { loadStoryOutfitCandidates, saveStoryOutfitCandidates } = await import('../src/scene/outfit-review-store.js');
+            const { createMemoryStorage } = await import('../src/index.js');
             const { effectiveSceneAssets } = await import('../src/scene/asset-scope.js');
             const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
             const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
@@ -2945,6 +3019,7 @@ for (const mode of ['nai', 'dbgen']) {
             const assets = effectiveSceneAssets(root, scope), before = structuredClone(root);
             const raw = createIndexedDbIllustrationStore({ indexedDB: createTransactionalIdb() });
             const reports = [], adopted = [];
+            const storage = createMemoryStorage();
             let saves = 0, reads = 0;
             const store = { ...raw, async getSlotRecord(key) {
                 const record = await raw.getSlotRecord(key);
@@ -2967,16 +3042,17 @@ for (const mode of ['nai', 'dbgen']) {
                 store, deps: {
                     report: (...args) => reports.push(args),
                     captureCgOutfitScope: keys => captureOutfitScope(root, scope, keys),
-                    async adoptCgOutfits(record) {
+                    async stageCgOutfits(record, floor) {
                         adopted.push(record);
-                        const prepared = prepareCgOutfitAdoption(root, scope, record);
-                        if (!prepared.ok || !prepared.changed) return prepared;
+                        const prepared = prepareCgOutfitCandidates(root, scope, record, floor);
+                        if (!prepared.ok) return prepared;
+                        const loaded = loadStoryOutfitCandidates(storage);
+                        const fresh = prepared.items.filter(row => !loaded.items.some(old => old.id === row.id));
+                        if (!fresh.length) return { ok: true };
                         saves++;
                         await Promise.resolve();
                         if (fault === 'save') return { ok: false, reason: 'settings-save-failed' };
-                        root = prepared.sceneAssets;
-                        Object.assign(assets, effectiveSceneAssets(root, scope));
-                        return { ok: true };
+                        return saveStoryOutfitCandidates(storage, fresh);
                     },
                 },
             });
@@ -2993,6 +3069,15 @@ for (const mode of ['nai', 'dbgen']) {
                     assert.equal(saves, 1);
                     assert.equal(adopted.length, 1);
                     assert.equal(adopted[0].revisionToken, record.revisionToken);
+                    assert.deepEqual(root, before, 'CG 成功不自动改写衣柜');
+                    const rows = loadStoryOutfitCandidates(storage).items;
+                    assert.equal(rows.length, 2);
+                    for (const row of rows) {
+                        const confirmed = prepareStoryOutfitAdoption(root, scope, row);
+                        assert.equal(confirmed.ok, true);
+                        root = confirmed.sceneAssets;
+                    }
+                    Object.assign(assets, effectiveSceneAssets(root, scope));
                     for (const name of ['Alice', 'Bob']) assert.deepEqual(savedCharacterOutfits(
                         root.cards['card:Source'], name), [{ name: 'Coat', description: 'wears a blue coat' }]);
                     assert.equal(root.cards['card:Active'], undefined, '借用角色写回冻结来源卡');
@@ -3003,7 +3088,8 @@ for (const mode of ['nai', 'dbgen']) {
                     assert.equal(saves, 1, '已有衣装复用不重写');
                     assert.deepEqual(root, saved);
                 } else {
-                    assert.ok(reports.some(args => args[0] === 'warn' && args[1].includes('衣装候选未登记')));
+                    assert.ok(reports.some(args => args[0] === 'warn' && args[1].includes('衣装候选未暂存')));
+                    assert.equal(loadStoryOutfitCandidates(storage).items.length, 0, '暂存失败不留下部分候选');
                     assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Bob').length, 0,
                         '多人物任一冲突不留下部分登记');
                     if (fault === 'wardrobe') assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Alice')[0].description, 'wears a red coat');
@@ -3014,3 +3100,84 @@ for (const mode of ['nai', 'dbgen']) {
         });
     }
 }
+
+for (const model of ['nai-diffusion-5-curated', 'nai-diffusion-3', 'unknown']) {
+    test(`gate:cg-consistency:${model}:unsupported-before-writing`, async () => {
+        const f = await consistencyAdapterFixture(2);
+        f.igsSettings.autoIllustration = { consistencyModel: model };
+        try {
+            const before = await f.store.getSlotRecord(f.target.key);
+            const result = await f.service.run(f.target);
+            assert.equal(result.ok, false);
+            assert.equal(result.reason, 'consistency-model-invalid');
+            assert.equal(f.writes.length, 0);
+            assert.equal(f.wires.length, 0);
+            assert.deepEqual(await f.store.getSlotRecord(f.target.key), before);
+            assert.deepEqual(f.assets, f.originalAssets);
+        } finally { f.dispose(); }
+    });
+}
+
+test('gate:cg-consistency:模型归一与协商拒发保留设置和原图', async () => {
+    const { normalizeAutoIllustrationSettings, isConsistencyModelValid } = await import('../src/generated-images/illustration/auto-illustration-settings.js');
+    for (const value of [undefined, null, ''])
+        assert.equal(normalizeAutoIllustrationSettings({ consistencyModel: value }).consistencyModel, 'nai-diffusion-5-full-inpainting');
+    for (const value of ['unknown', true, {}, 5]) {
+        assert.equal(normalizeAutoIllustrationSettings({ consistencyModel: value }).consistencyModel, value);
+        assert.equal(isConsistencyModelValid(value), false);
+    }
+    for (const mode of ['legacy', 'mismatch', 'unsupported']) {
+        const f = await consistencyAdapterFixture(1);
+        try {
+            const capabilities = f.api.getPromptCapabilities;
+            if (mode === 'legacy') f.api.getPromptCapabilities = () => {
+                const { infillModelNegotiation, ...legacy } = capabilities();
+                return legacy;
+            };
+            else f.api.describeInfill = () => mode === 'mismatch'
+                ? { supported: true, model: 'nai-diffusion-4-5-full-inpainting', reason: '' }
+                : { supported: false, reason: 'infill-model-unsupported' };
+            const expected = mode === 'legacy' ? 'dbgen-infill-model-required'
+                : mode === 'mismatch' ? 'dbgen-infill-model-mismatch' : 'infill-model-unsupported';
+            assert.equal((await f.service.run(f.target)).reason, expected);
+            assert.equal(f.writes.length, 0);
+            assert.equal(f.edits.length, 0);
+            assert.equal(f.wires.length, 0);
+            assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
+            assert.deepEqual(f.assets, f.originalAssets);
+        } finally { f.dispose(); }
+    }
+});
+
+
+test('gate:cg-consistency:切换独立模型停止发送与候选提交', async () => {
+    for (const phase of ['write', 'queued', 'candidate', 'commit']) {
+        const f = await consistencyAdapterFixture(2);
+        const mutate = () => { f.igsSettings.autoIllustration = { consistencyModel: 'nai-diffusion-4-5-full-inpainting' }; };
+        const stable = structuredClone(f.settings);
+        try {
+            if (phase === 'write') {
+                const write = f.backend.writeDbgenPrompt;
+                f.backend.writeDbgenPrompt = async (request) => { const result = await write(request); mutate(); return result; };
+            }
+            if (phase === 'queued') {
+                const generate = f.api.generate;
+                f.api.generate = async (request) => { mutate(); return generate(request); };
+            }
+            const result = await f.service.run(f.target);
+            if (phase === 'candidate' || phase === 'commit') {
+                assert.equal(result.ok, true, JSON.stringify(result));
+                if (phase === 'candidate') mutate();
+                else {
+                    const update = f.store.updateSlot;
+                    f.store.updateSlot = async (...args) => { mutate(); return update(...args); };
+                }
+                assert.equal((await f.service.accept(result.candidateId)).reason, 'stale-config', phase);
+            } else assert.equal(result.reason, 'stale-config', phase);
+            assert.equal(f.wires.length, ['write', 'queued'].includes(phase) ? 0 : 2, phase);
+            assert.deepEqual(f.settings, stable, '独立模型切换不修改全局配置');
+            assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before, phase);
+            assert.deepEqual(f.assets, f.originalAssets);
+        } finally { f.dispose(); }
+    }
+});

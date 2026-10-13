@@ -96,7 +96,7 @@ const IMAGE_SOURCE_TEMPLATE = `
     </div>
     <div class="igs-settings-sub" data-image-source="dbgen"{{sourceDbgenHidden}}>
       {{dbgenSpriteTransparentField}}
-      {{consistencyStrengthField}}
+      <div class="igs-source-filter-grid">{{consistencyStrengthField}}{{consistencyModelField}}</div>
     </div>
     <div class="igs-settings-row"><button class="igs-settings-action" data-action="test-image" type="button">{{imageTestActionLabel}}</button><button class="igs-settings-action" data-action="open-dbgen-settings" type="button"{{sourceDbgenHidden}}>插件设置</button></div>
     <div class="igs-settings-result" data-result="image">{{imageTestHelp}}</div>

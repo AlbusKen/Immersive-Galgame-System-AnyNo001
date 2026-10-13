@@ -28,12 +28,14 @@ export function normalizeImageSourceMode(value) {
 
 // 插件调用不带超时会一直挂着：设置页按钮锁住、单张重画再点也没反应。超时只是不再等，插件那边可能仍在跑。
 export const DBGEN_TIMEOUTS = Object.freeze({ write: 5 * 60 * 1000, paint: 3 * 60 * 1000 });
+const timeoutMarker = Symbol('dbgen-timeout');
 
 function withTimeout(promise, ms) {
     if (!(ms > 0)) return promise;
     let timer;
     const expired = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`超过 ${Math.round(ms / 1000)} 秒没有返回，已放弃等待`)), ms);
+        timer = setTimeout(() => reject(Object.assign(
+            new Error(`超过 ${Math.round(ms / 1000)} 秒没有返回，已放弃等待`), { [timeoutMarker]: true })), ms);
     });
     return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
 }
@@ -73,7 +75,8 @@ export function mergeLegacyNaiSettings(autoIllustration, imageApi) {
 // 公开诊断只接收协议字段、受控原因与有效索引；不复制模型载荷。
 function promptDiagnostic(result, stage, slotId) {
     const error = result?.error;
-    const source = result?.diagnostic || (error && typeof error === 'object' ? error.context : {}) || {};
+    const source = { ...(error && typeof error === 'object' ? error.context : {}),
+        ...result?.diagnostic, ...result?.diagnostics };
     const diagnostic = {};
     const code = result?.reason || source.code || error?.code;
     if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) diagnostic.code = code;
@@ -101,7 +104,9 @@ function promptDiagnostic(result, stage, slotId) {
     for (const key of ['characterIndex', 'captionIndex']) {
         if (Number.isInteger(source[key]) && source[key] >= 0 && source[key] < 16) diagnostic[key] = source[key];
     }
-    const traceId = error?.traceId;
+    if (Number.isInteger(source.status) && source.status >= 100 && source.status <= 599)
+        diagnostic.status = source.status;
+    const traceId = source.traceId ?? error?.traceId;
     if (typeof traceId === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(traceId)) diagnostic.traceId = traceId;
     return diagnostic;
 }
@@ -113,11 +118,20 @@ function describePromptFailure(result, stage, slotId, prefix = '') {
         'igs-prompt-input': 'IGS 输入校验', 'igs-prompt-output': 'IGS 输出校验' };
     const details = [labels[diagnostic.stage], diagnostic.code,
         diagnostic.field && `字段=${diagnostic.field}`, diagnostic.issue && `原因=${diagnostic.issue}`];
-    for (const key of ['slotId', 'characterIndex', 'captionIndex', 'traceId']) {
+    for (const key of ['slotId', 'characterIndex', 'captionIndex', 'status', 'traceId']) {
         if (diagnostic[key] !== undefined) details.push(`${key}=${diagnostic[key]}`);
     }
+    // 外部 message/hint 可能含请求或模型正文，仅展示固定文案与受控诊断。
     return { ok: false, ...(diagnostic.code && { reason: diagnostic.code }), diagnostic,
-        error: `${prefix}${describeResultError(result, '未返回提示词')} [${details.filter(Boolean).join('；')}]` };
+        error: `${prefix}未返回可用提示词 [${details.filter(Boolean).join('；')}]` };
+}
+
+function describePromptException(error) {
+    const code = error?.[timeoutMarker] === true ? 'DBGEN_PROMPT_TIMEOUT' : 'DBGEN_PROMPT_EXCEPTION';
+    return describePromptFailure({ reason: code, error }, 'prompt-write', undefined,
+        code === 'DBGEN_PROMPT_TIMEOUT'
+            ? '数据库生图插件写词等待超时，插件可能仍在运行：'
+            : '数据库生图插件写词接口异常：');
 }
 
 function describeResultError(result, fallback) {
@@ -279,10 +293,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                 ...(meta.signal && { signal: meta.signal }),
             }), timeouts.write);
         } catch (error) {
-            return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${(error && error.message) || error}` };
+            return describePromptException(error);
         }
         if (!written || !written.ok || !written.value || !written.value.caption) {
-            return describePromptFailure(written, 'prompt-write', undefined, `${DBGEN_LABEL}写提示词失败：`);
+            return describePromptFailure(written || { reason: 'DBGEN_PROMPT_EMPTY' }, 'prompt-write', undefined, `${DBGEN_LABEL}写提示词失败：`);
         }
         const captions = Array.isArray(written.value.captions) && written.value.captions.length
             ? written.value.captions.filter((item) => item && item.caption)
@@ -333,10 +347,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                 ...(meta.signal && { signal: meta.signal }),
             }), timeouts.write);
         } catch (error) {
-            return { ok: false, error: `${DBGEN_LABEL}写提示词失败：${(error && error.message) || error}` };
+            return describePromptException(error);
         }
         if (!written || !written.ok || !written.value || !written.value.caption) {
-            return describePromptFailure(written, 'prompt-write', undefined, `${DBGEN_LABEL}写提示词失败：`);
+            return describePromptFailure(written || { reason: 'DBGEN_PROMPT_EMPTY' }, 'prompt-write', undefined, `${DBGEN_LABEL}写提示词失败：`);
         }
         const captions = (Array.isArray(written.value.captions) && written.value.captions.length
             ? written.value.captions
@@ -665,18 +679,29 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
 
     // 局部重绘能力协商：与普通 generate 分开；只有内置 NAI 且客户端提供 edit 时可用。
     // 不支持时返回 image-edit-unsupported，绝不静默退化为整张重画。
-    function describeEdit(bridgeOverride) {
+    function describeEdit(bridgeOverride, request = {}) {
         const base = describe(bridgeOverride);
         if (base.mode === 'dbgen') {
             const api = findDbgenApi(globalObject);
-            const cap = typeof api?.describeInfill === 'function' ? api.describeInfill() : null;
-            const strengthCapability = api?.getPromptCapabilities?.()?.infillImg2imgStrength;
-            const correctionCapability = api?.getPromptCapabilities?.()?.appearanceCorrection;
+            const capabilities = api?.getPromptCapabilities?.();
+            const explicitModel = Object.hasOwn(request, 'model');
+            if (explicitModel && capabilities?.infillModelNegotiation !== 1)
+                return { supported: false, reason: 'dbgen-infill-model-required',
+                    message: '请升级数据库生图插件以支持独立选择一致性重绘模型' };
+            const cap = typeof api?.describeInfill === 'function'
+                ? explicitModel ? api.describeInfill({ model: request.model }) : api.describeInfill() : null;
+            if (explicitModel && cap?.supported && cap.model !== request.model)
+                return { supported: false, reason: 'dbgen-infill-model-mismatch',
+                    message: '数据库生图插件未确认所选重绘模型，本次任务未开始' };
+            const strengthCapability = capabilities?.infillImg2imgStrength;
+            const correctionCapability = capabilities?.appearanceCorrection;
             return cap?.supported ? { supported: true, reason: '', via: 'dbgen',
+                ...(explicitModel && { model: cap.model }),
+                ...(capabilities?.infillModelNegotiation !== undefined && { infillModelNegotiation: capabilities.infillModelNegotiation }),
                 ...(correctionCapability !== undefined && { appearanceCorrection: correctionCapability }),
                 ...(strengthCapability !== undefined && { infillImg2imgStrength: strengthCapability }) }
                 : { supported: false, reason: cap?.reason || 'dbgen-upgrade-required',
-                    message: '请升级数据库生图插件并选择 V5 Full NAI 配置以启用局部重绘' };
+                    message: '请升级数据库生图插件，并选择已适配局部重绘的 V4／V4.5 或 V5 Full NAI 配置' };
         }
         if (base.mode !== 'nai') {
             return { supported: false, reason: 'image-edit-unsupported', message: base.mode === 'dbgen'
@@ -696,7 +721,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
 
     // 一致性任务只拿脱敏配置租约与实际画师，不读取或保存上游凭据。
     async function getEditConfig(meta = {}) {
-        if (describeEdit().via !== 'dbgen') return { ok: false, reason: 'stale-config' };
+        if (describeEdit(undefined, meta).via !== 'dbgen') return { ok: false, reason: 'stale-config' };
         const api = findDbgenApi(globalObject);
         const capabilities = api.getPromptCapabilities?.();
         if (capabilities?.generationConfig !== 1 || capabilities?.generationConfigLease !== 1
@@ -718,11 +743,12 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             const override = selection(), overrideSignature = JSON.stringify(override);
             const artist = override !== undefined ? override : config.artist;
             return { ok: true, version: 1, configToken: config.configToken,
+                ...(Object.hasOwn(meta, 'model') && { model: meta.model }),
                 artist: artist === null ? null : { positivePrompt: artist.positivePrompt, negativePrompt: artist.negativePrompt },
                 // 运行时租约守卫不进入来源、wire 或持久化；事务内只能同步判断。
                 isCurrent() {
                     try {
-                        const cap = describeEdit();
+                        const cap = describeEdit(undefined, meta);
                         return cap.supported === true && cap.via === 'dbgen'
                             && findDbgenApi(globalObject) === api
                             && api.isGenerationConfigCurrent(config.configToken) === true
@@ -736,7 +762,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
 
     // request：{ sourceDataUrl, maskDataUrl, prompt, negative, width, height }；不记录原图与请求体。
     async function edit(request = {}, bridgeOverride) {
-        const capability = describeEdit(bridgeOverride);
+        const capability = describeEdit(bridgeOverride, request);
         if (!capability.supported) return { ok: false, reason: capability.reason, error: capability.message };
         if (!request.sourceDataUrl || !request.maskDataUrl) return { ok: false, reason: 'invalid-edit-request', error: '缺少原图或修复区域' };
         const caption = request.caption || {
@@ -758,7 +784,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                     ...(final && { captionMode: 'final', capturePrompt: true }),
                     ...(artist !== undefined && { artist }),
                     ...(request.expectedConfigToken !== undefined && { expectedConfigToken: request.expectedConfigToken }),
-                    params: { width: request.width, height: request.height, straight_alpha: false, tag_hint_transparent_background: false },
+                    params: { width: request.width, height: request.height, straight_alpha: false, tag_hint_transparent_background: false,
+                        ...(Object.hasOwn(request, 'model') && { model: request.model }) },
                     inpaint: { image: request.sourceDataUrl, mask: request.maskDataUrl, strength: request.strength },
                     signal: request.signal, shouldStart: request.shouldStart,
                 }), timeouts.paint);

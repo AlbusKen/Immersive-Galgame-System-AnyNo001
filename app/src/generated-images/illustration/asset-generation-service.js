@@ -939,7 +939,7 @@ export function createAssetGenerationService(deps) {
     // 一批写完并逐张出完，再写下一批；某一张失败不影响后面的。
     // 插件少给某几份时只在这一批里补写；signal 中止后已画好的图保留，还没写的批不再写。
     // 一次点击里各批共用一颗新种子：衣服、画风接近；删掉重来、补画都是新种子，不会画回旧图。
-    async function generateExpressionSet({ name, basePrompt, moods, dna, outfit, note, nsfw, onProgress, signal } = {}) {
+    async function generateExpressionSet({ name, basePrompt, moods, dna, outfit, note, nsfw, onProgress, signal, messageId } = {}) {
         const labels = (Array.isArray(moods) ? moods : []).map((item) => String(item || '').trim()).filter(Boolean);
         if (!labels.length) return { ok: false, error: '没有表情分组' };
         if (!nai || typeof nai.writeDbgenPrompt !== 'function' || typeof nai.generateDbgenCaption !== 'function') {
@@ -986,6 +986,7 @@ export function createAssetGenerationService(deps) {
                         ...(template && { ...task, userPrompts: paintMeta.userPrompts,
                             writingRequirements: { size: paintMeta.size, transparent: paintMeta.transparent,
                                 framing: 'half_body', nsfw: paint.nsfw } }),
+                        ...(messageId !== undefined && { messageId }),
                         ...(signal && { signal }),
                     });
                 } catch (error) {
@@ -1307,14 +1308,15 @@ export function createAssetGenerationService(deps) {
         return { ok: true, imageId };
     }
 
-    async function writeWardrobePrompt({ character, outfit, nsfwBoost = false, note = '' } = {}) {
+    async function writeWardrobePrompt({ character, outfit, nsfwBoost = false, note = '', messageId, signal } = {}) {
         const name = String(character || '').trim();
         const clothes = String(outfit || '').trim();
         if (!clothes) return { ok: false, error: '没有待确认的服装' };
         if (!nai || typeof nai.writeDbgenPrompt !== 'function') return { ok: false, error: '当前图像来源不能写服装提示词' };
         let written;
         try {
-            written = await nai.writeDbgenPrompt({ description: buildWardrobeClothingDescription(name, clothes, { nsfwBoost, note }) });
+            written = await nai.writeDbgenPrompt({ description: buildWardrobeClothingDescription(name, clothes, { nsfwBoost, note }),
+                ...(messageId !== undefined && { messageId }), ...(signal && { signal }) });
         } catch (error) {
             return { ok: false, error: (error && error.message) || '写服装提示词失败' };
         }

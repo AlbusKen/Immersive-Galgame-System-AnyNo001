@@ -508,7 +508,8 @@ test('gate:image-backend:dbgen-missing-and-errors-are-readable', async () => {
         getBridge: () => ({ imageApi: { mode: 'dbgen' } }),
     });
     const result = await failing.generate({}, {}, { description: '一段' });
-    assert.match(result.error, /写提示词失败：召回失败：请检查预设/);
+    assert.match(result.error, /数据库生图插件写提示词失败/);
+    assert.doesNotMatch(result.error, /召回失败|请检查预设/, '不回显不可信上游正文');
 });
 
 test('gate:image-backend:extension-mode-uses-chatu8-with-nai-fallback', async () => {
@@ -1754,7 +1755,8 @@ test('gate:dbgen:plugin-calls-time-out-instead-of-hanging', async () => {
     assert.match(painted.error, /没有返回，已放弃等待/);
     const written = await backend.writeDbgenPrompt({ description: '画一张' });
     assert.equal(written.ok, false);
-    assert.match(written.error, /没有返回，已放弃等待/);
+    assert.equal(written.reason, 'DBGEN_PROMPT_TIMEOUT');
+    assert.match(written.error, /等待超时，插件可能仍在运行/);
 });
 
 test('gate:assets:stopped-expression-set-keeps-captions-and-resume-paints-without-rewriting', async () => {

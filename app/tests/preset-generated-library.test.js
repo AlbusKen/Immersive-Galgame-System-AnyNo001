@@ -15,3 +15,20 @@ test('gate:assets:image-refs-keep-global-cards-and-legacy-presets', () => {
     assert.deepEqual(releasedGeneratedImageIds(['sp-a'], { characters: {} }, null), ['sp-a']);
     assert.deepEqual(unreferencedGeneratedImageIds(['x'], { cards: { 'card:小雪': { characters: { 小雪: { 默认: 'igs-gen:x' } } } } }, null), []);
 });
+
+test('gate:assets:story-outfit-pending-image-is-held-until-confirmed', async () => {
+    const { saveStoryOutfitCandidate, removeStoryOutfitCandidate, storyOutfitId } = await import('../src/scene/outfit-review-store.js');
+    const storage = createMemoryStorage();
+    const row = { scopeKey: 'card:A', ownerKey: 'card:A', floorKey: 'chat|5|0', sourceHash: 'fixture',
+        messageId: 5, character: 'Alice', word: 'Dress', prompt: 'wears a white dress', imageId: 'pending' };
+    row.id = storyOutfitId(row);
+    assert.equal(saveStoryOutfitCandidate(storage, row).ok, true);
+    assert.deepEqual(unreferencedGeneratedImageIds(['pending', 'drop'], {}, storage), ['drop']);
+    assert.deepEqual(releasedGeneratedImageIds(['pending', 'drop'], {}, storage), ['drop']);
+    assert.equal(removeStoryOutfitCandidate(storage, row.id).ok, true);
+    assert.deepEqual(releasedGeneratedImageIds(['pending'], { characterOutfits: { Alice: { Dress: {
+        moods: { 平和: 'igs-gen:pending' } } } } }, storage), []);
+    assert.deepEqual(releasedGeneratedImageIds(['pending'], {}, storage), ['pending']);
+    storage.setItem('igs:story-outfit-review:v1', '{invalid');
+    assert.deepEqual(unreferencedGeneratedImageIds(['pending'], {}, storage), [], '读取失败不冒充无人引用');
+});

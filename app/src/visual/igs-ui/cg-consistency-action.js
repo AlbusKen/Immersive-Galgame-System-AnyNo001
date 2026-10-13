@@ -1,5 +1,5 @@
 // 阅读器只协调任务与弹窗，不处理提示词、像素或持久化。
-export async function runCgConsistencyAction({ service, query, modal, signal, stillCurrent }) {
+export async function runCgConsistencyAction({ service, query, modal, signal, stillCurrent, onProgress }) {
     let candidateId = '';
     const cancelled = () => signal.aborted || !stillCurrent();
     const stop = () => modal.cancel();
@@ -10,6 +10,7 @@ export async function runCgConsistencyAction({ service, query, modal, signal, st
         if (cancelled()) return { ok: true, reason: 'cancelled' };
         const result = await service.redrawConsistency(query, {
             signal, shouldStart: () => !cancelled(),
+            ...(onProgress && { onProgress: (detail) => { if (!cancelled()) onProgress(detail); } }),
         });
         if (!result?.ok) return result || { ok: false, reason: 'consistency-failed' };
         candidateId = result.candidateId;

@@ -14,7 +14,7 @@ import { isGeneratedAssetUrl, normalizeGeneratedLibrary } from '../../scene/asse
 import { createOutfitResolver } from '../../scene/character-outfits.js';
 import { renderEventCgList } from './settings-event-cg.js';
 import { CHARACTER_ADD_MENU, renderDnaCandidateBar, renderDnaOnlyCharacterList, kindModelPicker } from './settings-fields.js';
-import { NSFW_COUNT_MAX, normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
+import { NSFW_COUNT_MAX, CONSISTENCY_MODEL_OPTIONS, normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
 import { describeLlmReady } from '../../generated-images/illustration/caption-writer.js';
 import { normalizeImageSourceMode, mergeLegacyNaiSettings } from '../../generated-images/image-backend.js';
 import { getSettingsShellTemplate } from './settings-shell.js';
@@ -316,6 +316,7 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
                 autoNaiStepsField: field('bridge.autoIllustration.nai.steps', '步数', numberInput('bridge.autoIllustration.nai.steps', auto.nai.steps, 1, 50)),
                 autoNaiScaleField: field('bridge.autoIllustration.nai.scale', 'CFG', numberInput('bridge.autoIllustration.nai.scale', auto.nai.scale, 0, 10, false, 'any')),
                 consistencyStrengthField: field('bridge.autoIllustration.consistencyStrength', '一致性重绘强度（0.1–1，越低越保留原图；默认 0.75）', numberInput('bridge.autoIllustration.consistencyStrength', auto.consistencyStrength, 0.1, 1, false, '0.05')),
+                consistencyModelField: field('bridge.autoIllustration.consistencyModel', '一致性重绘模型（默认 V5）', selectInput('bridge.autoIllustration.consistencyModel', auto.consistencyModel, CONSISTENCY_MODEL_OPTIONS)),
                 autoNaiSamplerField: field('bridge.autoIllustration.nai.sampler', '采样器', textInput('bridge.autoIllustration.nai.sampler', auto.nai.sampler, 'k_euler_ancestral')),
                 autoNaiArtistField: field('bridge.autoIllustration.nai.artistPrefix', '画师串 / 固定前缀', autoTextarea('bridge.autoIllustration.nai.artistPrefix', auto.nai.artistPrefix, '可选，拼在每张图的正向提示词最前面')),
                 autoNaiNegativeField: field('bridge.autoIllustration.nai.negativePrompt', '负面提示词', autoTextarea('bridge.autoIllustration.nai.negativePrompt', auto.nai.negativePrompt, '')),

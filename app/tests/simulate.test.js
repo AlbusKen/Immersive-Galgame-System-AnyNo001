@@ -2421,6 +2421,9 @@ test('gate:illustration:image-settings-render-and-persist-roundtrip', () => {
         assert.equal(auto.assets.maxPerFloor, 2);
         assert.equal(auto.llm.source, 'tavern');
         assert.equal(auto.nai.transport, 'direct');
+        assert.equal(auto.consistencyModel, 'nai-diffusion-5-full-inpainting');
+        assert.match(initial.html, /<option value="nai-diffusion-5-full-inpainting" selected>V5 Inpainting<\/option>/);
+        assert.match(initial.html, /igs-source-filter-grid[^>]*>[\s\S]*?consistencyStrength[\s\S]*?consistencyModel/);
         assert.equal(initial.imageSubTab, 'source');
         assert.match(initial.html, /data-image-subtab="source"[^>]*aria-selected="true"/);
         assert.match(initial.html, /data-segment-path="bridge\.imageApi\.mode" data-segment-value="nai"/);
@@ -2465,6 +2468,7 @@ test('gate:illustration:image-settings-render-and-persist-roundtrip', () => {
         assert.equal(opened.controller.setValue('bridge.autoIllustration.nai.apiKey', 'test-nai-secret').ok, true);
         assert.equal(opened.controller.setValue('bridge.autoIllustration.nai.scale', '5.5').ok, true);
         assert.equal(opened.controller.setValue('bridge.autoIllustration.nai.transport', 'st-proxy').ok, true);
+        assert.equal(opened.controller.setValue('bridge.autoIllustration.consistencyModel', 'nai-diffusion-4-5-full-inpainting').ok, true);
         assert.equal(opened.controller.setValue('bridge.autoIllustration.assets.templates.background', '{tags}, custom scene').ok, true);
         assert.equal(opened.controller.setValue('bridge.autoIllustration.assets.templates.backgroundNegative', 'no people').ok, true);
         assert.equal(opened.controller.setValue('bridge.autoIllustration.assets.templates.sprite', '{tags}, custom character').ok, true);
@@ -2475,6 +2479,7 @@ test('gate:illustration:image-settings-render-and-persist-roundtrip', () => {
         assert.equal(opened.controller.close().ok, true);
         const saved = vn.getUnifiedSettings({ mode: 'pc' }).bridge.autoIllustration;
         assert.equal(saved.nsfwEnabled, true);
+        assert.equal(saved.consistencyModel, 'nai-diffusion-4-5-full-inpainting');
         assert.equal(saved.assets.templates.background, '{tags}, custom scene');
         assert.equal(saved.assets.templates.backgroundNegative, 'no people');
         assert.equal(saved.assets.templates.sprite, '{tags}, custom character');
@@ -2492,6 +2497,11 @@ test('gate:illustration:image-settings-render-and-persist-roundtrip', () => {
         assert.equal(saved.nai.scale, 5.5);
         assert.equal(saved.nai.transport, 'st-proxy');
         const reopenedController = vn.openSettings({ tab: 'image', mode: 'pc' }).controller;
+        reopenedController.switchImageSubTab('source');
+        assert.equal(reopenedController.getSnapshot().draft.bridge.autoIllustration.consistencyModel, 'nai-diffusion-4-5-full-inpainting');
+        assert.match(reopenedController.getSnapshot().html, /<option value="nai-diffusion-4-5-full-inpainting" selected>V4.5 Inpainting<\/option>/);
+        assert.equal(reopenedController.setValue('bridge.imageApi.mode', 'dbgen').ok, true);
+        assert.match(reopenedController.getSnapshot().html, /data-image-source="dbgen"(?![^>]*\shidden)/);
         reopenedController.switchImageSubTab('llm');
         const reopened = reopenedController.getSnapshot();
         assert.equal(reopened.draft.bridge.autoIllustration.nsfwCount, 2);
@@ -7626,6 +7636,7 @@ function createFakeElement(tagName, ownerDocument) {
         parentNode: null,
         parentElement: null,
         children: [],
+        get firstChild() { return element.children[0] || null; },
         attributes: new Map(),
         style,
         innerHTML: '',
@@ -10224,6 +10235,7 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
             async redrawConsistency(query, options) {
                 calls.push(['run', query]);
                 assert.equal(document.querySelector('.igs-page-modal'), null, '生成期间不弹模态框');
+                options.onProgress({ phase: 'write', done: 0, total: 3 });
                 started();
                 await new Promise((resolve) => {
                     finish = resolve;
@@ -10248,6 +10260,10 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
         const pending = opened.controller.invokeAction('consistency-cg');
         await ready;
         assert.equal(document.querySelector('.igs-page-modal'), null, '无前置确认或进度弹窗');
+        const strip = document.getElementById('igs-gen-strip');
+        assert.ok(strip);
+        assert.equal(strip.getAttribute('data-state'), 'busy');
+        assert.match(host.getState().activeReader.generationTip, /一致性重绘：写提示词 0\/3/);
         const stopButton = document.getElementById('igs-btn-consistency-cg');
         assert.equal(stopButton.disabled, false);
         assert.match(stopButton.getAttribute('aria-label'), /停止/);
@@ -10275,4 +10291,164 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
         if (decision === 'accept') assert.equal(host.getState().activeReader.snapshot.content.illustrationUrl, displayed);
         else assert.equal(displayed, 'data:image/png;base64,b2xk');
     } finally { finish?.(); host.destroy(); }
+});
+
+
+for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch']) test(`gate:story-outfit:reader-${choice}`, async () => {
+    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
+    const { characterWriteFixture, characterViewsFixture } = await import('./helpers/prompt-provenance.js');
+    const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+    const { promptSnapshotFromBody } = await import('../src/generated-images/final-caption.js');
+    const { loadStoryOutfitCandidates } = await import('../src/scene/outfit-review-store.js');
+    const document = createFakeDocument({ innerWidth: 390, innerHeight: 844 }), storage = createMemoryStorage();
+    const raw = '[igs-char:Alice|平和|礼服|我换好了。]';
+    let activeText = raw;
+    let settings = { bridge: { sceneAssets: { enabled: true, characters: { Alice: { 默认: 'original.png' } },
+        characterDna: { Alice: { identity: 'saved Alice identity', defaultAppearance: 'saved original clothing',
+            negative: 'saved identity negative', triggerWords: 'Alice', identityInitialized: true, identitySource: 'saved-fixture',
+            version: 2, views: characterViewsFixture() } }, characterOutfits: {}, wardrobe: {} } }, readerSettings: {} };
+    const before = structuredClone(settings.bridge.sceneAssets);
+    let saves = 0, writes = 0, paints = 0, card = 'Current';
+    const assets = createAssetGenerationService({ store: createMemoryGeneratedAssetStore(),
+        messageHost: { getChatId: () => 'story-reader' }, llm: {}, getSettings: () => settings.bridge,
+        newId: () => 'story-sprite', matte: async url => url, nai: {
+            describe: () => ({ mode: 'dbgen' }),
+            async writeDbgenPrompt(req) {
+                writes++;
+                assert.equal(req.messageId, 39);
+                if (req.promptTask) return characterWriteFixture(req);
+                const caption = { v4_prompt: { caption: { base_caption: 'wears a white dress', char_captions: [] } } };
+                return { ok: true, caption };
+            },
+            async generateDbgenCaption(req) {
+                paints++;
+                const prepared = prepareCharacterCaption(req);
+                assert.equal(prepared.ok, true, prepared.error);
+                if (choice === 'switch') card = 'Other';
+                return { ...prepared, dataUrl: 'data:image/png;base64,QQ==',
+                    sentPrompt: promptSnapshotFromBody({ model: 'nai-diffusion-5-full', action: 'generate', parameters: prepared.caption }, null) };
+            },
+        } });
+    const host = createIgsReaderHost({ global: { document, localStorage: storage,
+        SillyTavern: { getContext: () => ({ name2: card }) } }, generatedAssets: assets,
+        getUnifiedSettings: () => settings,
+        getIllustrationSource: messageId => ({ chatId: 'story-reader', messageId, swipeId: 0, isAi: true, text: activeText }),
+        saveUnifiedSettings(next) { saves++; if (choice === 'save-failed' && saves === 1) return { ok: false, reason: 'save-failed' };
+            settings = structuredClone(next); return { ok: true }; } });
+    const open = () => host.openReader({ messageId: 39, message: { id: 39, text: raw }, raw }, { mode: 'phone' });
+    const flush = async () => { for (let i = 0; i < 30; i++) await new Promise(resolve => setTimeout(resolve, 0)); };
+    const click = act => { const button = document.querySelector(`[data-outfit-ask-act="${act}"]`);
+        assert.ok(button); assert.equal(button.disabled, false); return button.dispatchEvent({ type: 'click', target: button }); };
+    try {
+        assert.equal(open().ok, true); await flush();
+        assert.equal(writes, 1); assert.equal(saves, 0);
+        assert.deepEqual(settings.bridge.sceneAssets, before);
+        if (choice === 'later') {
+            await click('later');
+            assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), '');
+            assert.equal(loadStoryOutfitCandidates(storage).items.length, 1);
+            open(); await flush(); assert.equal(writes, 1);
+        }
+        document.getElementById('igs-asset-review').querySelector('select').value = ['save', 'later'].includes(choice) ? 'save' : 'sprite';
+        await click('ok'); await flush();
+        if (choice === 'switch') {
+            assert.equal(saves, 0); assert.deepEqual(settings.bridge.sceneAssets, before);
+            assert.ok(loadStoryOutfitCandidates(storage).items[0].imageId); return;
+        }
+        if (choice === 'save-failed') {
+            assert.deepEqual(settings.bridge.sceneAssets, before);
+            document.getElementById('igs-asset-review').querySelector('select').value = 'sprite';
+            await click('ok'); await flush();
+        }
+        assert.equal(loadStoryOutfitCandidates(storage).items.length, 0);
+        assert.equal(settings.bridge.sceneAssets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
+        assert.deepEqual(settings.bridge.sceneAssets.characters, before.characters);
+        assert.deepEqual(settings.bridge.sceneAssets.characterDna, before.characterDna);
+        assert.equal(paints, ['save', 'later'].includes(choice) ? 0 : 1);
+        if (paints) {
+            assert.equal(host.getState().activeReader.snapshot.content.spriteOutfit, '礼服');
+            assert.equal(host.getState().activeReader.snapshot.content.spriteImage, 'data:image/png;base64,QQ==');
+            const completedWrites = writes;
+            activeText = '[igs-char:Alice|平和|礼服|又穿着这件衣服见面了。]';
+            assert.equal(host.openReader({ messageId: 40, message: { id: 40, text: activeText }, raw: activeText }, { mode: 'phone' }).ok, true);
+            await flush();
+            assert.equal(host.getState().activeReader.snapshot.content.spriteImage, 'data:image/png;base64,QQ==');
+            assert.equal(writes, completedWrites, '后续同衣装不再写词');
+            assert.equal(paints, 1, '后续同衣装复用已采用立绘');
+        }
+    } finally { host.destroy(); }
+});
+
+test('gate:story-outfit:bootstrap-cg-stages-before-user-adoption', async () => {
+    const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
+    const { characterWriteFixture, characterViewsFixture } = await import('./helpers/prompt-provenance.js');
+    const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+    const { promptSnapshotFromBody } = await import('../src/generated-images/final-caption.js');
+    const { loadStoryOutfitCandidates, storyOutfitSourceHash } = await import('../src/scene/outfit-review-store.js');
+    const storage = createMemoryStorage(), document = createFakeDocument();
+    let text = '[igs-scene:卧室|夜晚|晴|NSFW]\n[igs-char:Alice|平和|你好。]\n她站在窗边，等着远处的灯光亮起来。';
+    const message = () => ({ id: 5, text });
+    const floor = () => ({ chatId: 'bootstrap-story', messageId: 5, swipeId: 0, isAi: true, isLatest: true, text });
+    storage.setItem('igs_bridge_config', JSON.stringify({ imageApi: { mode: 'dbgen' },
+        autoIllustration: { nsfwEnabled: true, nsfwCount: 1 }, sceneAssets: { enabled: true,
+            characters: { Alice: { 默认: 'original.png' } },
+            characterDna: { Alice: { identity: 'saved Alice identity', defaultAppearance: '',
+                negative: 'saved identity negative', triggerWords: 'Alice', identityInitialized: true,
+                identitySource: 'saved-fixture', version: 2, views: characterViewsFixture() } } } }));
+    let writes = 0, paints = 0;
+    const illustrationStore = createMemoryIllustrationStore();
+    const vn = bootstrapIGS({ global: { document, localStorage: storage,
+        SillyTavern: { getContext: () => ({ name2: 'Current' }) } }, storage, autoAttachMagicWand: false,
+        hostAdapter: { getCurrentMessage: async () => message(), getMessageById: async () => message(),
+            typeAndSend: async () => ({ ok: true }) },
+        illustrationMessageHost: { getChatId: () => 'bootstrap-story', readFloor: floor, readPreviousAiTexts: () => [],
+            writeFloor: async (_id, next) => { text = next; return { ok: true }; },
+            on: () => () => {}, ensureMarkerRegexes: async () => ({ ok: true }), attachPromptStrip() {}, destroy() {} },
+        illustrationStore, imageBackend: {
+            describe: () => ({ mode: 'dbgen', via: 'dbgen', ready: { ok: true } }),
+            async writeDbgenFloorPrompts(req) {
+                writes++;
+                const input = { ...req, promptTask: { ...req.promptTask,
+                    characters: req.promptTask.characters.map(c => ({ ...c, framing: 'half_body' })) } };
+                const result = characterWriteFixture(input, { outfitDescription: 'wears a white dress' });
+                return { ...result, captions: result.captions.map(c => ({ ...c, anchorSentence: '她站在窗边，等着远处的灯光亮起来。' })) };
+            },
+
+            async generateDbgenCaption(req) {
+                paints++;
+                const prepared = prepareCharacterCaption(req);
+                assert.equal(prepared.ok, true, prepared.error);
+                return { ...prepared, dataUrl: 'data:image/png;base64,QQ==',
+                    sentPrompt: promptSnapshotFromBody({ model: 'nai-diffusion-5-full', action: 'generate', parameters: prepared.caption }, null) };
+            },
+        } });
+    try {
+        const before = structuredClone(vn.getUnifiedSettings().bridge.sceneAssets);
+        const opened = await vn.openLatestAvailable('phone');
+        assert.equal(opened.ok, true);
+        const generated = await opened.reader.controller.invokeAction('regen');
+        assert.equal(generated.ok, true, JSON.stringify(generated));
+        assert.equal(writes, 1); assert.equal(paints, 1);
+        const rows = loadStoryOutfitCandidates(storage).items;
+        assert.equal(rows.length, 1, '实际 bootstrap 暂存候选');
+        assert.equal(rows[0].sourceHash, storyOutfitSourceHash(text));
+        assert.equal(rows[0].floorKey, 'bootstrap-story|5|0');
+        assert.deepEqual(vn.getUnifiedSettings().bridge.sceneAssets, before, 'CG 完成不自动入库');
+        const reopened = await vn.openViewerFromMessage(5, 'phone', { startAtEnd: true });
+        assert.equal(reopened.ok, true);
+        const panel = document.getElementById('igs-asset-review');
+        assert.ok(panel); assert.equal(panel.hasAttribute('hidden'), false);
+        panel.querySelector('select').value = 'save';
+        const button = panel.querySelector('[data-outfit-ask-act="ok"]');
+        assert.equal(button.disabled, false);
+        button.dispatchEvent({ type: 'click', target: button });
+        for (let i = 0; i < 30; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        assert.equal(loadStoryOutfitCandidates(storage).items.length, 0);
+        const saved = vn.getUnifiedSettings().bridge.sceneAssets;
+        assert.equal(saved.wardrobe['Alice·日常'].prompt, 'wears a white dress');
+        assert.deepEqual(saved.characterDna, before.characterDna);
+        assert.deepEqual(saved.characters, before.characters);
+        assert.equal(paints, 1);
+    } finally { vn.destroy(); }
 });

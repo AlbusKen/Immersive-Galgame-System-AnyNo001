@@ -116,3 +116,22 @@ test('生成细线：忙完时结果小字不跟着闪一下就熄', () => {
     assert.equal(strip.getState().phase, 'done');
     assert.equal(strip.getState().tip, '第 2 楼已生成 1 项素材，待确认');
 });
+
+test('一致性进度复用细线，各阶段有文字且终态只清理本任务', () => {
+    const t = fakeTimers(), strip = createGenerationStrip({ timers: t, now: t.now });
+    const task = {};
+    for (const [phase, text] of [['prepare', '准备'], ['reference', '读取参考立绘'],
+        ['write', '写提示词'], ['paint', '局部重绘'], ['compose', '合成候选']]) {
+        strip.progress(task, { phase, done: 1, total: 3 });
+        assert.equal(strip.getState().phase, 'busy');
+        assert.equal(strip.getState().tip, `一致性重绘：${text} 1/3…`);
+    }
+    strip.activity({ type: 'start', id: 'other', kind: 'cg' });
+    strip.progress(task, { phase: 'done' });
+    assert.equal(strip.getState().jobs, 1);
+    strip.activity({ type: 'end', id: 'other', ok: true });
+    assert.equal(strip.getState().phase, 'done');
+    t.advance(1300);
+    assert.equal(strip.getState().phase, 'idle');
+    strip.dispose();
+});

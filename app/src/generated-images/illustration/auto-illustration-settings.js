@@ -33,6 +33,15 @@ export const normalizeConsistencyStrength = (value) => {
 };
 export const isConsistencyStrengthValid = (value) => Number.isFinite(value) && value >= 0.1 && value <= 1;
 
+export const CONSISTENCY_MODEL_OPTIONS = Object.freeze([
+    ['nai-diffusion-4-5-full-inpainting', 'V4.5 Inpainting'],
+    ['nai-diffusion-5-full-inpainting', 'V5 Inpainting'],
+]);
+// 缺省兼容旧设置；显式非法值保留，执行时拒发，不静默换模型。
+export const normalizeConsistencyModel = (value) => value == null || value === ''
+    ? 'nai-diffusion-5-full-inpainting' : value;
+export const isConsistencyModelValid = (value) => CONSISTENCY_MODEL_OPTIONS.some(([model]) => model === value);
+
 // 模板留空视为恢复内置模板；背景/立绘正向模板必须含 {tags}，否则 LLM 的内容会被丢掉。
 // 旧内置立绘模板带双手下垂，存下来的原样副本换成新内置的。
 const LEGACY_SPRITE_TEMPLATE = '{tags}, solo, cowboy shot, standing, facing viewer, looking at viewer, straight-on, arms at sides, centered, {matte}';
@@ -66,6 +75,7 @@ export function normalizeAutoIllustrationSettings(value) {
     const assets = src.assets && typeof src.assets === 'object' ? src.assets : {};
     return {
         consistencyStrength: normalizeConsistencyStrength(src.consistencyStrength),
+        consistencyModel: normalizeConsistencyModel(src.consistencyModel),
         nsfwEnabled: bool(src.nsfwEnabled),
         nsfwCount: clampInt(src.nsfwCount, 1, NSFW_COUNT_MAX, 1),
         interludeEnabled: bool(src.interludeEnabled),

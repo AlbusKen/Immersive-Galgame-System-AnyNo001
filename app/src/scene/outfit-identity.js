@@ -6,6 +6,7 @@ import { assetOwnerKey, effectiveSceneAssets, ensureCardLibrary } from './asset-
 import { prefixFinalArtist } from '../generated-images/final-caption.js';
 import { promptFromCaption } from '../generated-images/generation-prompt.js';
 import { normalizeCharacterDna } from './character-dna.js';
+import { storyOutfitId, storyOutfitSourceHash } from './outfit-review-store.js';
 
 const outfitRows = rows => (rows || []).map(o => [o.name, o.description, o.default === true])
     .sort((a, b) => a[0].localeCompare(b[0]));
@@ -182,5 +183,44 @@ export function prepareCgOutfitAdoption(root, scopeKey, record) {
         target.wardrobe = { ...target.wardrobe, ...Object.fromEntries(Object.entries(patch.wardrobe)
             .filter(([key]) => !Object.hasOwn(effective.wardrobe || {}, key))) };
     }
+    return { ok: true, sceneAssets: next, changed: true };
+}
+// CG 权威回读仍按原采用契约核验；只输出候选，不提交准备出的衣柜补丁。
+export function prepareCgOutfitCandidates(root, scopeKey, record, floor) {
+    const checked = prepareCgOutfitAdoption(root, scopeKey, record);
+    if (!checked.ok) return checked;
+    if (!floor || record.floorKey !== `${floor.chatId}|${floor.messageId}|${floor.swipeId ?? 0}`)
+        return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT' };
+    const rows = (record.outfitSnapshot?.characters || []).filter(c => c.source === 'candidate' && !isBuiltinNudeOutfit(c.name))
+        .map(c => {
+            const row = { character: c.characterKey, word: c.name, prompt: c.description, status: 'ready',
+                scopeKey, ownerKey: record.outfitScope.owners.find(o => o.characterKey === c.characterKey).ownerKey,
+                floorKey: record.floorKey, messageId: Number(floor.messageId), sourceHash: storyOutfitSourceHash(floor.text) };
+            return { ...row, id: storyOutfitId(row) };
+        });
+    return { ok: true, items: rows };
+}
+
+// 剧情衣装词不依赖图片成功；用户明确采用后才登记，并沿冻结归属写回。
+export function prepareStoryOutfitAdoption(root, scopeKey, candidate) {
+    const { character, word, prompt, ownerKey } = candidate;
+    const fail = () => ({ ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '衣装或角色归属已变化，候选保留，原资料不变' });
+    if (!isValidOutfitName(word) || isBuiltinNudeOutfit(word) || !character
+        || ['__proto__', 'prototype', 'constructor'].includes(character)
+        || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4096 || /<<\s*(?:dna|outfit)/i.test(prompt)) return fail();
+    if (ownerKey !== assetOwnerKey(root, scopeKey, ['characters', 'characterDna', 'characterOutfits'], character)) return fail();
+    const effective = effectiveSceneAssets(root, scopeKey);
+    if (!effective.characters?.[character] && !effective.characterDna?.[character]) return fail();
+    const existing = effective.characterOutfits?.[character]?.[word];
+    const saved = resolveWardrobePrompt(effective.wardrobe, existing, word);
+    if (saved?.prompt) return saved.prompt === prompt
+        ? { ok: true, sceneAssets: root, changed: false } : fail();
+    const next = structuredClone(root), target = ownerKey ? ensureCardLibrary(next, ownerKey) : next;
+    let key = `${character}·${word}`, suffix = 1;
+    while (Object.hasOwn(effective.wardrobe || {}, key)) key = `${character}·${word}·${++suffix}`;
+    target.wardrobe = { ...target.wardrobe, [key]: { prompt } };
+    target.characterOutfits = { ...target.characterOutfits, [character]: {
+        ...target.characterOutfits?.[character], [word]: { words: [], moods: {}, ...existing, wardrobe: key },
+    } };
     return { ok: true, sceneAssets: next, changed: true };
 }

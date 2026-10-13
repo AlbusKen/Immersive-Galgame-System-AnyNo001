@@ -411,6 +411,7 @@ export function createAutoIllustrationService(deps) {
     const consistency = createCgConsistencyService({
         store, nai, codec: deps.imageCodec, getSceneAssets: readSceneAssets,
         consistencyStrength: () => settings().consistencyStrength,
+        consistencyModel: () => settings().consistencyModel,
         resolveReference: deps.resolveCgReference, targetStillLive, now, report,
         writingRequirements: () => {
             const snapshot = settings();
@@ -481,13 +482,13 @@ export function createAutoIllustrationService(deps) {
                 if (!authoritative?.dataUrl || authoritative.revision !== saved.record.revision
                     || authoritative.revisionToken !== saved.record.revisionToken
                     || !targetStillLive(floor, request.slot)) throw new Error('OUTFIT_ADOPTION_CONFLICT');
-                const adopted = typeof deps.adoptCgOutfits === 'function'
-                    ? await deps.adoptCgOutfits(authoritative, floor)
+                const adopted = typeof deps.stageCgOutfits === 'function'
+                    ? await deps.stageCgOutfits(authoritative, floor)
                     : { ok: false, reason: 'OUTFIT_ADOPTION_UNAVAILABLE' };
                 if (!adopted?.ok) throw new Error(adopted?.reason || 'OUTFIT_ADOPTION_CONFLICT');
             } catch {
-                // 图片已提交，不因衣装登记失败重发收费请求；保留证据供诊断。
-                report('warn', 'CG 已保存，但衣装候选未登记；原衣装资料保持不变');
+                // 图片已提交，不因候选暂存失败重发收费请求；原快照保留。
+                report('warn', 'CG 已保存，但衣装候选未暂存；原衣装资料保持不变');
             }
         }
         remember(`${key}|${request.slot}`, { status: saved.record.status, dataUrl: saved.record.dataUrl || '' });

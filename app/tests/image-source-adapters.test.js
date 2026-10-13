@@ -867,3 +867,40 @@ test('gate:scene-only:DBGen 双入口接受无人场景及非身份主体，不�
         }
     }
 });
+
+
+for (const method of ['writeDbgenPrompt', 'writeDbgenFloorPrompts']) {
+    test(`gate:prompt-diagnostic:${method}:失败异常超时只返回受控诊断`, async () => {
+        const fixture = templateWritingFixture(), requests = [];
+        const secret = 'PRIVATE-REPLY-KEY';
+        for (const fault of ['http', 'plural', 'throw', 'timeout', 'empty']) {
+            const backend = createImageBackend({ getBridge: () => ({ imageApi: { mode: 'dbgen' } }),
+                dbgenTimeouts: { write: 10 },
+                global: { NaiDbGen: { async generate() { assert.fail('写词失败不得出图'); },
+                    async generateSinglePrompt(req) {
+                        requests.push(req);
+                        if (fault === 'throw') throw new Error(secret);
+                        if (fault === 'timeout') return new Promise(() => {});
+                        if (fault === 'empty') return undefined;
+                        const diagnostic = { stage: 'prompt-write', status: 429, traceId: 'trace_safe',
+                            field: 'caption', issue: 'missing', rawText: secret };
+                        return fault === 'plural'
+                            ? { ok: false, reason: 'NAI_429', diagnostics: diagnostic, error: secret }
+                            : { ok: false, error: { code: 'NAI_429', message: secret, hint: secret,
+                                traceId: 'trace_safe', context: diagnostic } };
+                    } } } });
+            const result = await backend[method]({ ...fixture, description: 'fixture', messageId: 5 });
+            assert.equal(result.ok, false);
+            assert.equal(requests.at(-1).messageId, 5);
+            assert.equal(result.reason, { throw: 'DBGEN_PROMPT_EXCEPTION', timeout: 'DBGEN_PROMPT_TIMEOUT',
+                empty: 'DBGEN_PROMPT_EMPTY' }[fault] || 'NAI_429');
+            assert.equal(result.diagnostic.stage, 'prompt-write');
+            if (fault === 'http' || fault === 'plural') {
+                assert.equal(result.diagnostic.status, 429);
+                assert.equal(result.diagnostic.traceId, 'trace_safe');
+                assert.equal(result.diagnostic.field, 'caption');
+            }
+            assert.doesNotMatch(JSON.stringify(result), /PRIVATE-REPLY-KEY|rawText|Alice|blue coat/);
+        }
+    });
+}

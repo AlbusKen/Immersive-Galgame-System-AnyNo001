@@ -12,8 +12,9 @@ import { handleSettingsAction } from './settings-actions.js';
 import { normalizeBridgeConfig, normalizeReaderSettings } from './settings-host-normalize.js';
 import { extractSceneDirectives, resolveSceneAtSourceOffset, resolveIllustrationForPage, resolveHeldSourceOffsets, locateNarrativeOffset, stripIllustrationMarkers } from '../../scene/scene-directives.js';
 import { classifySceneKey, resolveCharacterKey } from '../../scene/scene-directives.js';
-import { recordOutfitReview, dropConfirmedOutfitReview, removeOutfitReview } from '../../scene/outfit-review-store.js';
-import { assetOwnerKey, draftAssetLibrary, ensureCardLibrary, relocateLegacyCard, rememberAssetScope, resolveAssetScope, sceneAssetsForContext } from '../../scene/asset-scope.js';
+import { recordOutfitReview, dropConfirmedOutfitReview, removeOutfitReview, storyOutfitSourceHash } from '../../scene/outfit-review-store.js';
+import { assetOwnerKey, draftAssetLibrary, effectiveSceneAssets, ensureCardLibrary, relocateLegacyCard, rememberAssetScope, resolveAssetScope, sceneAssetsForContext } from '../../scene/asset-scope.js';
+import { createStoryOutfitService } from '../../generated-images/illustration/story-outfit-service.js';
 import { getSillyTavernContext } from '../../host/tavern-helper-adapter.js';
 
 import { isMarkerDirectiveLine, stripMarkerDirectives } from '../../scene/directive-tags.js';
@@ -535,9 +536,21 @@ export function createIgsReaderHost(options = {}) {
     let renderConfigCache = null;
     // 正文出现衣柜没有的新衣服：排队到本楼最后一页，和新素材入库同一个面板里问。
     const pendingOutfitAsks = [];
+    const storyOutfits = options.generatedAssets?.writeWardrobePrompt && (options.global || globalThis).localStorage
+        ? createStoryOutfitService({
+            storage: (options.global || globalThis).localStorage,
+            assets: options.generatedAssets,
+            getContext: storyOutfitContext,
+            commit: commitStoryOutfit,
+            onChanged() {
+                const current = state.activeReader;
+                if (current) syncAssetReviewAfterRender(current, current.snapshot);
+            },
+        }) : null;
     return host;
 
     function openReader(payload = {}, openOptions = {}) {
+        storyOutfits?.resume();
         closeReader({ keepFullscreen: true });
         unparkAudioBus();
         const nextMode = normalizeReaderMode(
@@ -987,6 +1000,7 @@ export function createIgsReaderHost(options = {}) {
         offImageActivity();
         generationStrip.dispose();
         offGeneratedAssetUpdated();
+        storyOutfits?.dispose();
         offItemImageUpdated();
         offImageJobLog();
         teardownStatusHudSubscription();
@@ -1569,6 +1583,7 @@ export function createIgsReaderHost(options = {}) {
     // 插图服务的楼层进度（含写词阶段）：任何楼都点亮生成细线，不再只认当前楼、不弹提示。
     function showIllustrationProgress(payload) {
         if (!payload || payload.messageId == null) return;
+        if (payload.kind === 'consistency') return; // 当前任务由阅读器身份绑定的回调展示。
         generationStrip.floor(payload.messageId, payload.phase === 'done');
     }
 
@@ -2345,7 +2360,11 @@ export function createIgsReaderHost(options = {}) {
         rerenderActiveReader();
         try {
             const result = await runCgConsistencyAction({ service, query, modal: pageModal,
-                signal: controller.signal, stillCurrent });
+                signal: controller.signal, stillCurrent,
+                onProgress: (detail) => {
+                    if (current.consistencyTask === task && stillCurrent())
+                        generationStrip.progress(task, detail);
+                } });
             if (state.activeReader === current && !controller.signal.aborted) {
                 if (result?.ok && result.reason === 'accepted') {
                     rerenderActiveReader();
@@ -2358,6 +2377,7 @@ export function createIgsReaderHost(options = {}) {
             return result;
         } finally {
             controller.abort();
+            generationStrip.progress(task, { phase: 'done' });
             if (current.consistencyTask === task) current.consistencyTask = null;
             current.illustrationPending = false;
             if (state.activeReader === current) rerenderActiveReader();
@@ -4302,14 +4322,22 @@ export function createIgsReaderHost(options = {}) {
     function syncAssetReviewAfterRender(current, snapshot) {
         const overlay = current && current.dom && current.dom.overlay;
         const service = options.generatedAssets;
-        if (!overlay || !overlay.querySelector || !service || typeof service.listReview !== 'function') return;
+        if (!overlay || !overlay.querySelector || !service) return;
+        const context = storyOutfitContext();
+        if (storyOutfits && context && snapshot.readerSettings?._sceneAssets) {
+            const assets = effectiveSceneAssets(context.root, context.scopeKey);
+            storyOutfits.observe(extractSceneDirectives(context.text, { outfitResolver: createOutfitResolver(assets) }).directives);
+        }
         let container = overlay.querySelector('#igs-asset-review');
         const floorKey = currentFloorKey(current);
         const lastPage = isReaderLastPage(snapshot);
         const items = floorKey && lastPage
-            ? service.listReview(floorKey)
+            ? service.listReview?.(floorKey) || []
             : [];
-        const outfitAsks = lastPage ? pendingOutfitAsks : [];
+        const storyAsks = lastPage ? storyOutfits?.list() || [] : [];
+        const allStoryAsks = storyOutfits?.list({ includeDeferred: true }) || [];
+        const outfitAsks = lastPage ? [...storyAsks, ...pendingOutfitAsks.filter(ask =>
+            !allStoryAsks.some(row => row.character === ask.character && row.word === ask.word))] : [];
         if (!items.length && !outfitAsks.length) {
             if (container) container.setAttribute('hidden', '');
             return;
@@ -4333,8 +4361,58 @@ export function createIgsReaderHost(options = {}) {
         });
     }
 
+    function storyOutfitContext() {
+        const current = state.activeReader;
+        if (!current) return null;
+        const { floor } = readManualFloor(current);
+        if (!floor) return null;
+        const scope = resolveAssetScope(getSillyTavernContext(options.global || globalThis));
+        const root = cloneData(resolveBridgeConfigSnapshot({ mode: current.mode }).bridge.sceneAssets || {});
+        relocateLegacyCard(root, scope.key, scope.legacyKey);
+        return { root, scopeKey: scope.key, floorKey: floorKeyOf(floor), messageId: Number(floor.messageId),
+            sourceHash: storyOutfitSourceHash(floor.text), text: floor.text };
+    }
+
+    function commitStoryOutfit(next, expected, guard) {
+        const context = storyOutfitContext();
+        if (!guard() || !context || JSON.stringify(context.root) !== JSON.stringify(expected))
+            return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT' };
+        if (state.activeSettings) {
+            const draft = state.activeSettings.draft.bridge;
+            if (JSON.stringify(draft.sceneAssets) !== JSON.stringify(expected))
+                return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT' };
+            const previous = draft.sceneAssets;
+            draft.sceneAssets = next;
+            const result = persistSettingsDraft();
+            if (!result?.ok) draft.sceneAssets = previous;
+            else rerenderSettings();
+            return result;
+        }
+        return saveBridgePatch(() => guard() ? { sceneAssets: next } : null);
+    }
+
+    async function resolveStoryOutfit(ask, picked) {
+        if (!picked) {
+            storyOutfits.defer(ask.id);
+            return;
+        }
+        const result = picked === 'retry' ? await storyOutfits.retry(ask.id) : await storyOutfits.adopt(ask.id, picked);
+        if (result?.ok && picked !== 'retry') {
+            for (let i = pendingOutfitAsks.length - 1; i >= 0; i--)
+                if (pendingOutfitAsks[i].character === ask.character && pendingOutfitAsks[i].word === ask.word)
+                    pendingOutfitAsks.splice(i, 1);
+            writeToastSafe(picked === 'sprite' ? '衣装和对应立绘已入库' : '衣装已入库衣柜');
+            if (state.activeReader) rerenderActiveReader();
+        } else if (!result?.ok) {
+            const code = typeof result?.reason === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(result.reason) ? result.reason : 'story-outfit-failed';
+            writeToastSafe(`衣装处理未完成，候选和已生成图片保留，请重试。（${code}）`);
+        }
+        return result;
+    }
+
     // 段末新衣服面板的确认：加别名原地完成；用衣柜 / 生成新衣服要出图，交给素材页的自动衣柜流程（带上已选项，不再二次询问）。
     function resolveOutfitAsk(ask, picked) {
+        if (ask.id && storyOutfits) return resolveStoryOutfit(ask, picked);
         const at = pendingOutfitAsks.indexOf(ask);
         if (at >= 0) pendingOutfitAsks.splice(at, 1);
         if (picked && picked.startsWith('o:')) {
