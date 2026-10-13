@@ -50,6 +50,37 @@ test('gate:marker-layout:legacy-native-marker-before-dialogue-close-does-not-cre
     assert.deepEqual(result.textSegments, ['[白墨]：先把画挂起来，你觉得呢？']);
 });
 
+test('gate:marker-layout:legacy-igs-marker-before-dialogue-close-does-not-leak-bracket', () => {
+    const raw = '<content>\n[igs-char:白墨|温和|先把画挂起来，你觉得呢？\n[igs-img:19]\n]\n</content>';
+    const result = buildIgsTextPayload({ text: raw }, { sceneAssets: { enabled: true, characters: { 白墨: { 默认: 'base.png' } } } });
+    assert.equal(result.raw, raw, '原文与槽位不得修改');
+    assert.match(result.markerLayoutSource, /\[igs-img:19\]/);
+    assert.deepEqual(result.textSegments, ['[白墨]：先把画挂起来，你觉得呢？']);
+});
+
+test('gate:marker-layout:legacy-marker-after-closed-dialogue-leaves-no-orphan-bracket-page', () => {
+    const raw = '<content>\n[igs-char:白墨|温和|先把画挂起来，你觉得呢？]\n[igs-img:19]\n]\n下一句。\n</content>';
+    const result = buildIgsTextPayload({ text: raw }, { sceneAssets: { enabled: true, characters: { 白墨: { 默认: 'base.png' } } } });
+    assert.equal(result.raw, raw);
+    assert.match(result.markerLayoutSource, /\[igs-img:19\]/);
+    assert.deepEqual(result.textSegments, ['[白墨]：先把画挂起来，你觉得呢？', '下一句。']);
+});
+
+test('gate:marker-layout:only-an-adjacent-legacy-close-after-a-closed-directive-is-removed', () => {
+    const prefix = '[igs-thought:白墨|平和|先看看。]';
+    for (const marker of ['[igs-img:19]', '<IMG>19</IMG>']) {
+        const raw = `<content>\r\n${prefix}\r\n${marker}\r\n]\r\n下一句。\r\n</content>`;
+        const normalized = normalizeImageMarkerLayout(raw);
+        assert.equal(normalized.includes(`\r\n${marker}\r\n]\r\n`), false);
+        assert.equal(normalizeImageMarkerLayout(normalized), normalized);
+        assert.deepEqual(buildIgsTextPayload({ text: raw }, { sceneAssets: { enabled: true } }).textSegments, ['*先看看。*', '下一句。']);
+    }
+    const unrelated = '<content>\n普通文字。\n[igs-img:19]\n]\n下一句。\n</content>';
+    assert.match(normalizeImageMarkerLayout(unrelated), /\[igs-img:19\]\n\]\n/);
+    const distant = `<content>\n${prefix}\n另一行。\n[igs-img:19]\n]\n</content>`;
+    assert.match(normalizeImageMarkerLayout(distant), /\[igs-img:19\]\n\]\n/);
+});
+
 test('gate:marker-layout:normalization-is-idempotent-and-keeps-native-slot-identities', () => {
     const raw = '<content>\n[igs-char:白墨|温和|第一句。\n<IMG>\n19\n</IMG>\n第二句。]\n[igs-img:20]\n</content>';
     const expected = '<content>\n[igs-char:白墨|温和|第一句。第二句。]\n<IMG>19</IMG>\n[igs-img:20]\n</content>';

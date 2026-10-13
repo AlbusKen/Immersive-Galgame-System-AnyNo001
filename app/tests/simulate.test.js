@@ -1442,6 +1442,26 @@ test('gate:simulation:legacy-native-marker-inside-dialogue-keeps-one-page-and-vi
     } finally { host.destroy(); }
 });
 
+test('gate:simulation:legacy-cg-marker-after-closed-dialogue-hides-orphan-bracket-without-losing-slot', () => {
+    const document = createFakeDocument();
+    const raw = '<content>\n[igs-char:白墨|温和|先把画挂起来，你觉得呢？]\n[igs-img:19]\n]\n下一句。\n</content>';
+    const host = createIgsReaderHost({
+        global: { document },
+        getUnifiedSettings: () => ({ bridge: { sceneAssets: { enabled: true, characters: { 白墨: { 默认: 'data:image/png;base64,QkFJ' } } } }, readerSettings: { titleScreen: false } }),
+        getIllustrationUrl: () => '',
+    });
+    try {
+        const opened = host.openReader({ messageId: 22, message: { id: 22, text: raw }, raw }, { mode: 'fullscreen' });
+        assert.equal(opened.ok, true);
+        const content = () => host.getState().activeReader.snapshot.content;
+        assert.deepEqual(content().segments, ['[白墨]：先把画挂起来，你觉得呢？', '下一句。']);
+        assert.equal(content().illustrationSlot, 19);
+        assert.equal(content().cgWaiting, true);
+        opened.controller.invokeAction('next');
+        assert.equal(content().text, '下一句。');
+    } finally { host.destroy(); }
+});
+
 test('gate:simulation:pending-current-sprite-survives-one-image-cache-and-floor-prefetch', async () => {
     const { localImageCacheFor } = await import('../src/media/tavern-image-cache.js');
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');

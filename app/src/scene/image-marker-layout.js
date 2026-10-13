@@ -90,7 +90,13 @@ export function normalizeImageMarkerLayout(raw) {
         const ownLine = !source.slice(lineStart, from).trim() && !source.slice(to, lineEnd < 0 ? source.length : lineEnd).trim();
         const token = marker[1] ? `[igs-img:${marker[1]}]` : `<IMG>${marker[2]}</IMG>`;
         if (ownLine && !enclosing.length) {
-            source = source.slice(0, from) + token + source.slice(to);
+            // 旧楼在已闭合的对白/心理后插入独占行 CG 标记时，可能还留下一行多余的闭括号。
+            // 只清理紧贴标记的孤立闭符，保留原消息及其他位置的括号文本。
+            const previousLine = source.slice(0, from).trimEnd().split(/\r?\n/).at(-1).trim();
+            const closedDialogue = /^\[igs-(?:char|thought):[^\]\r\n]*\]$/i.test(previousLine);
+            const following = source.slice(to);
+            const orphanClose = closedDialogue ? following.match(/^\r?\n[ \t]*\][ \t]*(?=\r?\n|$)/) : null;
+            source = source.slice(0, from) + token + (orphanClose ? following.slice(orphanClose[0].length) : following);
             continue;
         }
         let before = source.slice(0, from), after = source.slice(to);
