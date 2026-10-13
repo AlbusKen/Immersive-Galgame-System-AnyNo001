@@ -385,7 +385,8 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
         const found = outfitsOfCharacter(userAssets.characterOutfits, userAssets.characterAliases, name);
         const rawEntry = found.outfits[outfitName];
         // 已丢失的内部图槽先摘掉再查：命中已丢的槽不应挡住平和/任意槽/原装兜底。
-        const entry = rawEntry && rawEntry.moods ? { ...rawEntry, moods: liveSlots(rawEntry.moods, ctx) } : rawEntry;
+        const liveMoods = rawEntry && rawEntry.moods ? liveSlots(rawEntry.moods, ctx) : null;
+        const entry = liveMoods && liveMoods !== rawEntry.moods ? { ...rawEntry, moods: liveMoods } : rawEntry;
         if (entry && entry.moods) {
             const hit = lookupAssetValue(entry.moods, mood, userAssets.moodGroups, userAssets.moodFuzzyMatch === true, false);
             const nudeBase = isBuiltinNudeOutfit(entry.wardrobe) ? String(entry.base || '').trim() : '';
@@ -400,7 +401,8 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
         }
     }
     // 原装查表前先摘掉已丢失的内部图槽：未命中情绪照样落到组/同向档/平和/默认，不被死链截断。
-    const liveUserAssets = typeof ctx.isMissingImage === 'function' ? { ...userAssets, characters: liveCharacters(userAssets.characters, ctx) } : userAssets;
+    const liveChars = liveCharacters(userAssets.characters, ctx);
+    const liveUserAssets = liveChars !== userAssets.characters ? { ...userAssets, characters: liveChars } : userAssets;
     const user = lookupSceneAssetUrls({ character: name, mood }, liveUserAssets);
     if (lostImage(user.spriteUrl, ctx)) {
         // 兜底本身也已丢失时才标记缺图；否则 liveSlots 已摘掉死槽、由正常兜底链接管。

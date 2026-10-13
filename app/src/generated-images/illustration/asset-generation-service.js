@@ -60,6 +60,8 @@ export function createAssetGenerationService(deps) {
     const locks = new Map();
     const cache = requireMediaCache(deps.mediaCache, 'asset-generation', deps.thumbStore?.mediaCache);
     const pendingImages = new Set();
+    // 读回为空的图本体：记一次、通知一次，之后不再重读；舞台按缺图走平和/默认兜底。
+    const lostImages = new Set();
     const thumbStore = deps.thumbStore || null;
     const makeThumb = typeof deps.makeThumb === 'function' ? deps.makeThumb : null;
     const smallThumbs = Boolean(thumbStore && makeThumb);
@@ -69,7 +71,7 @@ export function createAssetGenerationService(deps) {
     let tempCursor = {}, retryTarget = null;
     const tempCache = createAssetRecordCache({ store, mediaCache: cache, owner: 'asset-records',
         onChanged: chatId => emit({ chatId, reason: 'hydrated' }),
-        onClear: () => { pendingImages.clear(); pendingThumbs.clear(); tempCursor = {}; },
+        onClear: () => { pendingImages.clear(); lostImages.clear(); pendingThumbs.clear(); tempCursor = {}; },
         onError: () => report('error', '素材记录读取失败，本次补图暂停；可在素材 → 待确认中重新读取。'),
         pendingCount: () => pendingImages.size + pendingThumbs.size,
     });
@@ -105,8 +107,10 @@ export function createAssetGenerationService(deps) {
         void cache.drop(thumbKey(id)).catch(() => {});
         if (smallThumbs) void thumbStore.remove([id]).catch(() => {});
     }
-    function forgetImage(id) { cache.forget(imageKey(id)); }
-    function rememberImage(id, dataUrl) { if (!stopped) { cache.forget(imageKey(id)); cache.remember(imageKey(id), dataUrl); } }
+    function forgetImage(id) { lostImages.delete(id); cache.forget(imageKey(id)); }
+    function rememberImage(id, dataUrl) { if (!stopped) { lostImages.delete(id); cache.forget(imageKey(id)); cache.remember(imageKey(id), dataUrl); } }
+    const isMissingImage = (url) => lostImages.size > 0 && isGeneratedAssetUrl(url) && lostImages.has(generatedAssetIdOf(url));
+    const hasMissingImages = () => lostImages.size > 0;
 
     async function persistTempRecord(record) {
         let old;
@@ -167,12 +171,16 @@ export function createAssetGenerationService(deps) {
         if (stopped) return '';
         const id = generatedAssetIdOf(url), key = imageKey(id), hit = cache.peek(key);
         if (hit) return hit;
-        if (!pendingImages.has(id)) {
+        if (!pendingImages.has(id) && !lostImages.has(id)) {
             pendingImages.add(id);
             const generation = tempCache.epoch();
             const stamp = cache.token(key);
             cache.load(key, async () => (await store.getImage(id, { fields: ['dataUrl'] }))?.dataUrl || '', { persist: false })
-                .then(value => { if (value && tempCache.epoch() === generation && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' }); })
+                .then(value => {
+                    if (tempCache.epoch() !== generation || cache.token(key) !== stamp) return;
+                    if (value) emit({ imageId: id, reason: 'image-loaded' });
+                    else { lostImages.add(id); emit({ imageId: id, reason: 'image-lost' }); }
+                })
                 .catch(() => {}).finally(() => { if (tempCache.epoch() === generation) pendingImages.delete(id); });
         }
         return '';
@@ -1183,7 +1191,7 @@ export function createAssetGenerationService(deps) {
     }
 
     return {
-        processMessage, resolveUrl, resolveThumbUrl, thumbSourceId, tempBackground, tempSceneTime, tempSprite, tempSpriteTags, listReview, reviewPage, listTemp, tempPage, changeTempPage, retryMetadata, readRecord, setStatus, deleteImages, getImageDataUrl, getImagePrompt, saveImagePrompt, readStoredImage, writeStoredImage, importAssetImage,
+        processMessage, resolveUrl, isMissingImage, hasMissingImages, resolveThumbUrl, thumbSourceId, tempBackground, tempSceneTime, tempSprite, tempSpriteTags, listReview, reviewPage, listTemp, tempPage, changeTempPage, retryMetadata, readRecord, setStatus, deleteImages, getImageDataUrl, getImagePrompt, saveImagePrompt, readStoredImage, writeStoredImage, importAssetImage,
         generateExpressionSet, generateExpressionImage, paintExpressionCaptions, generateSceneVariants, generateCharacterSprite, generateCharacterAvatar, writeWardrobePrompt, paintWardrobeReference,
         getEditableImage, saveMatteEdit,
         getRecord: (key) => !stopped && currentChat() ? tempCache.peek(tempCache.scope, key) : null,

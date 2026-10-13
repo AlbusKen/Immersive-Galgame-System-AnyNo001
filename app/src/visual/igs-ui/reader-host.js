@@ -289,6 +289,12 @@ function normalizeReaderSettingsCached(settings, legacyTheme) {
     return { ...value };
 }
 
+// 只在确有图本体读空时才交给素材匹配：平时不传，匹配不必逐槽检查、也不复制素材表。
+function missingImageProbe(generatedAssets) {
+    return generatedAssets && typeof generatedAssets.hasMissingImages === 'function' && generatedAssets.hasMissingImages()
+        ? generatedAssets.isMissingImage : undefined;
+}
+
 export function createIgsReaderHost(options = {}) {
     bindImageCacheDocument(getRootDocument(options.global), options.media?.cache);
     let statusHudClient = null;
@@ -460,9 +466,12 @@ export function createIgsReaderHost(options = {}) {
     const offGeneratedAssetUpdated = typeof options.onGeneratedAssetUpdated === 'function'
         ? options.onGeneratedAssetUpdated((detail) => {
             const settings = state.activeSettings;
-            const imageLoaded = Boolean(detail && detail.reason === 'image-loaded');
+            const imageLost = Boolean(detail && detail.reason === 'image-lost');
+            // 图本体读空跟读回一样走合并重绘；预热计划作废，重绘时按兜底图重算一次。
+            const imageLoaded = imageLost || Boolean(detail && detail.reason === 'image-loaded');
             if (state.activeReader) {
-                if (imageLoaded) warmActiveFloorImages(null, detail.imageId);
+                if (imageLost) floorAssetPlan.key = '';
+                else if (imageLoaded) warmActiveFloorImages(null, detail.imageId);
                 if (settings) readerStaleBehindSettings = true;
                 if (imageLoaded) {
                     if (waitStage.isOpen() || !settings) scheduleImageRefresh({ reader: true });
@@ -934,6 +943,7 @@ export function createIgsReaderHost(options = {}) {
                         tempBackground: generatedAssets ? generatedAssets.tempBackground : null,
                         tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
                         tempSprite: generatedAssets ? generatedAssets.tempSprite : null,
+                        isMissingImage: missingImageProbe(generatedAssets),
                     },
                 }),
             };
@@ -3410,6 +3420,7 @@ export function createIgsReaderHost(options = {}) {
             tempBackground: generatedAssets ? generatedAssets.tempBackground : null,
             tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
             tempSprite: generatedAssets ? generatedAssets.tempSprite : null,
+            isMissingImage: missingImageProbe(generatedAssets),
         };
         const sceneDirectives = Array.isArray(extracted.sceneDirectives) ? extracted.sceneDirectives
             : Array.isArray(payload.sceneDirectives) ? payload.sceneDirectives : [];
