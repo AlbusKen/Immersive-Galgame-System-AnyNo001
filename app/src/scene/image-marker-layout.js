@@ -90,13 +90,15 @@ export function normalizeImageMarkerLayout(raw) {
         const ownLine = !source.slice(lineStart, from).trim() && !source.slice(to, lineEnd < 0 ? source.length : lineEnd).trim();
         const token = marker[1] ? `[igs-img:${marker[1]}]` : `<IMG>${marker[2]}</IMG>`;
         if (ownLine && !enclosing.length) {
-            // 旧楼在已闭合的对白/心理后插入独占行 CG 标记时，可能还留下一行多余的闭括号。
-            // 只清理紧贴标记的孤立闭符，保留原消息及其他位置的括号文本。
-            const previousLine = source.slice(0, from).trimEnd().split(/\r?\n/).at(-1).trim();
-            const closedDialogue = /^\[igs-(?:char|thought):[^\]\r\n]*\]$/i.test(previousLine);
-            const following = source.slice(to);
-            const orphanClose = closedDialogue ? following.match(/^\r?\n[ \t]*\][ \t]*(?=\r?\n|$)/) : null;
-            source = source.slice(0, from) + token + (orphanClose ? following.slice(orphanClose[0].length) : following);
+            // 旧楼插入独占行 CG 标记时，可能在标记前后留下一行没有配对的闭括号。
+            // 只清理紧贴标记、且不闭合任何括号的孤立闭符，保留原消息及其他位置的括号文本。
+            const paired = at => ranges.some(range => range.kind === 'bracket' && range.end === at + 1);
+            let preceding = source.slice(0, from), following = source.slice(to);
+            const orphanAfter = following.match(/^(?:[ \t]*\r?\n)+[ \t]*[\]】］][ \t]*(?=\r?\n|$)/);
+            if (orphanAfter && !paired(to + orphanAfter[0].search(/[\]】］]/))) following = following.slice(orphanAfter[0].length);
+            const orphanBefore = preceding.match(/(?:^|\r?\n)[ \t]*([\]】］])[ \t]*(?:\r?\n[ \t]*)+$/);
+            if (orphanBefore && !paired(orphanBefore.index + orphanBefore[0].indexOf(orphanBefore[1]))) preceding = preceding.slice(0, orphanBefore.index) + (orphanBefore.index ? preceding.slice(orphanBefore.index).match(/^\r?\n/)[0] : '');
+            source = preceding + token + following;
             continue;
         }
         let before = source.slice(0, from), after = source.slice(to);

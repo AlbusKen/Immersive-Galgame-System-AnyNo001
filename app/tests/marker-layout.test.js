@@ -75,10 +75,13 @@ test('gate:marker-layout:only-an-adjacent-legacy-close-after-a-closed-directive-
         assert.equal(normalizeImageMarkerLayout(normalized), normalized);
         assert.deepEqual(buildIgsTextPayload({ text: raw }, { sceneAssets: { enabled: true } }).textSegments, ['*先看看。*', '下一句。']);
     }
-    const unrelated = '<content>\n普通文字。\n[igs-img:19]\n]\n下一句。\n</content>';
-    assert.match(normalizeImageMarkerLayout(unrelated), /\[igs-img:19\]\n\]\n/);
-    const distant = `<content>\n${prefix}\n另一行。\n[igs-img:19]\n]\n</content>`;
-    assert.match(normalizeImageMarkerLayout(distant), /\[igs-img:19\]\n\]\n/);
+    const narration = '<content>\n普通文字。\n[igs-img:19]\n]\n下一句。\n</content>';
+    assert.equal(normalizeImageMarkerLayout(narration), '<content>\n普通文字。\n[igs-img:19]\n下一句。\n</content>');
+    assert.deepEqual(buildIgsTextPayload({ text: narration }, { sceneAssets: { enabled: true } }).textSegments, ['普通文字。', '下一句。']);
+    const before = '<content>\n普通文字。\n]\n\n[igs-img:19]\n下一句。\n</content>';
+    assert.equal(normalizeImageMarkerLayout(before), '<content>\n普通文字。\n[igs-img:19]\n下一句。\n</content>');
+    const distant = '<content>\n普通文字。\n]\n另一行。\n[igs-img:19]\n下一句。\n</content>';
+    assert.equal(normalizeImageMarkerLayout(distant), distant);
 });
 
 test('gate:marker-layout:normalization-is-idempotent-and-keeps-native-slot-identities', () => {
