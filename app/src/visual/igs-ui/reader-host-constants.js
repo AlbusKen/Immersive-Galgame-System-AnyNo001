@@ -271,6 +271,8 @@ export const SETTINGS_PANEL_TAB_CONTRACT = Object.freeze({
     perf: Object.freeze({
         label: '演出',
         requiredPaths: frozen([
+            'bridge.sentencePaging',
+            'bridge.dialogueSentencePaging',
             'readerSettings.cgHoldPages',
             'readerSettings.cinemaBars',
             'readerSettings.typewriter.enabled',

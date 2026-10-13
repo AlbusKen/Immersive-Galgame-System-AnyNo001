@@ -370,6 +370,10 @@ export function resolveSpriteLayout(layouts, mode, character, mood, outfit = '',
             const moodKey = `${mode}::${character}::${mood}`;
             if (layouts[moodKey]) return placed(layouts[moodKey]);
         }
+        // 原装默认槽：未命中情绪的页把 spriteMood 改写成「默认」，但旁白/无情绪页 mood 为空，
+        // 不写这一层的话，调整「默认」立绘的缩放只在带情绪词的页生效，其余页全部回弹。
+        const baseSlotKey = `${mode}::${character}::默认`;
+        if (identity === character && (!mood || mood === '默认') && layouts[baseSlotKey]) return placed(layouts[baseSlotKey]);
         const charKey = `${mode}::${character}`;
         if (layouts[charKey]) return placed(layouts[charKey]);
     }

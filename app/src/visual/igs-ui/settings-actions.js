@@ -375,9 +375,9 @@ function applyOutfitExpression(sceneAssets, name, outfitName, item) {
     sceneAssets.generated = library;
 }
 
-function persistGeneratedLibrary(persistSettingsDraft) {
+function persistGeneratedLibrary(persistSettingsDraft, options = {}) {
     try {
-        return persistSettingsDraft();
+        return persistSettingsDraft(options);
     } catch (error) {
         return { ok: false, reason: 'generated-asset-persist-failed' };
     }
@@ -1135,11 +1135,11 @@ export async function handleSettingsAction(action, ctx) {
             if (!bound.ok) return rerenderSettings();
             sceneAssets.characters = bound.characters;
             sceneAssets.characterAliases = bound.characterAliases;
-            const persisted = persistGeneratedLibrary(persistSettingsDraft);
+            const persisted = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: true });
             if (operationFailed(persisted)) {
                 sceneAssets.characters = previousCharacters;
                 sceneAssets.characterAliases = previousAliases;
-                const rolled = persistGeneratedLibrary(persistSettingsDraft);
+                const rolled = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: true });
                 if (operationFailed(rolled)) {
                     return generatedOperationFailure(dialogs, globalObj, '角色立绘入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
                 }
@@ -1162,7 +1162,7 @@ export async function handleSettingsAction(action, ctx) {
             } else if (previousCharacters) {
                 sceneAssets.characters = previousCharacters;
                 sceneAssets.characterAliases = previousAliases;
-                const rolled = persistGeneratedLibrary(persistSettingsDraft);
+                const rolled = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: true });
                 if (operationFailed(rolled)) {
                     return generatedOperationFailure(dialogs, options.global || globalThis, '角色立绘入库失败，且无法恢复原设置。', 'generated-asset-accept-rollback-failed');
                 }
@@ -1237,7 +1237,7 @@ export async function handleSettingsAction(action, ctx) {
         delete library.characters[name];
         delete library.characterAliases[name];
         sceneAssets.generated = library;
-        const persisted = persistGeneratedLibrary(persistSettingsDraft);
+        const persisted = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: true });
         if (operationFailed(persisted)) return persisted;
         const boundMessage = `已把这张图设为「${adopted.name}」的默认立绘。`;
         if (globalObj.toastr && typeof globalObj.toastr.success === 'function') globalObj.toastr.success(boundMessage, 'IGS');
@@ -1455,7 +1455,7 @@ export async function handleSettingsAction(action, ctx) {
         if (String(spriteNote || '').trim()) spriteNotes[name] = String(spriteNote).trim();
         else delete spriteNotes[name];
         ensureCharacterAliases(settingsState, editTarget);
-        const persisted = persistGeneratedLibrary(persistSettingsDraft);
+        const persisted = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: true });
         if (operationFailed(persisted)) {
             progress.end();
             return persisted;
@@ -1513,7 +1513,7 @@ export async function handleSettingsAction(action, ctx) {
         all[name] = mine;
         liveAssets.characterOutfits = all;
         ensureCharacterAliases(settingsState, editTarget);
-        const persisted = persistGeneratedLibrary(persistSettingsDraft);
+        const persisted = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: true });
         if (operationFailed(persisted)) {
             progress.end();
             restoreBusy();
@@ -1729,13 +1729,13 @@ export async function handleSettingsAction(action, ctx) {
             if (outfitMode) applyOutfitExpression(liveAssets, name, outfitName, item);
             else applyCharacterExpression(liveAssets, name, item);
         }
-        const persisted = persistGeneratedLibrary(persistSettingsDraft);
+        const painted = (result.items || []).filter((item) => item.ok && item.imageId).length;
+        const persisted = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: painted > 0 });
         if (operationFailed(persisted)) {
             progress.end();
             restoreBusy();
             return persisted;
         }
-        const painted = (result.items || []).filter((item) => item.ok).length;
         const failedItems = (result.items || []).filter((item) => !item.ok && item.error !== '已停止' && item.error !== '已跳过');
         const firstError = errorText(failedItems[0] && failedItems[0].error, '未返回原因');
         const rendered = await rerenderSettings();

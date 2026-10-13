@@ -709,6 +709,49 @@ function watchSliceScale(dialog, win) {
     update();
 }
 
+// Each page starts at its configured height. Only a measured text overflow may expand the
+// frame; the next render resets it, and the stage boundary remains the hard safety limit.
+export function growDialogForOverflow(root, dialog, textEl, { comic = false } = {}) {
+    if (!dialog || !textEl || !dialog.style || !textEl.style) return false;
+    textEl.style.overflowY = '';
+    if (comic || !root || typeof dialog.getBoundingClientRect !== 'function'
+        || typeof root.getBoundingClientRect !== 'function') return false;
+    const textHeight = Number(textEl.clientHeight);
+    const overflow = Number(textEl.scrollHeight) - textHeight;
+    if (!(textHeight > 0 && overflow > 1)) return false;
+    const frame = dialog.getBoundingClientRect();
+    const stage = root.getBoundingClientRect();
+    if (!(frame.height > 0 && stage.height > 0)) return false;
+    const bottomGap = Math.max(0, stage.bottom - frame.bottom);
+    const limit = Math.floor(stage.height - bottomGap - 16);
+    const target = Math.min(limit, Math.ceil(frame.height + overflow + 2));
+    if (!(target > frame.height + 1)) return false;
+    dialog.style.maxHeight = `${target}px`;
+    dialog.style.height = `${target}px`;
+    // Keep auto overflow: a fitting page shows no scrollbar; late font reflow must not clip text.
+    return true;
+}
+
+const fontDialogRechecks = new WeakMap();
+
+// Font loading can change line wrapping after this page's synchronous measurement.
+// Recheck the same page once when its fonts settle; never redraw or poll the reader.
+export function recheckDialogAfterFonts(root, dialog, textEl, key, { comic = false } = {}) {
+    if (!dialog || !textEl || comic) return;
+    const fonts = textEl.ownerDocument && textEl.ownerDocument.fonts;
+    if (fonts?.status !== 'loading' || typeof fonts.ready?.then !== 'function') return;
+    const previous = fontDialogRechecks.get(dialog);
+    if (previous?.key === key && previous?.ready === fonts.ready) return;
+    const job = { key, ready: fonts.ready };
+    fontDialogRechecks.set(dialog, job);
+    fonts.ready.then(() => {
+        if (fontDialogRechecks.get(dialog) !== job || root?.isConnected === false) return;
+        if (root?.querySelector?.('#igs-dialog') !== dialog || root?.querySelector?.('#igs-text') !== textEl) return;
+        if (textEl.dataset?.igsTextRenderKey !== key) return;
+        growDialogForOverflow(root, dialog, textEl);
+    }).catch(() => { /* Font failure keeps the existing scroll fallback. */ });
+}
+
 function clearFrozenDialogHeight(current) {
     if (current) current.dialogHeightFreeze = null;
 }
@@ -2211,6 +2254,8 @@ export function applyReaderSnapshotToDom(root, snapshot, current, ctx = {}) {
     }
     applyToolbarState(root, current);
     applyReaderSettingsToDom(root, snapshot, current, { dialog, textEl, toolbar });
+    growDialogForOverflow(root, dialog, textEl, { comic: comicActive });
+    recheckDialogAfterFonts(root, dialog, textEl, typewriterRenderKey, { comic: comicActive });
     applyReaderModeRuntime(root, snapshot, current, {
         isActiveReader: (reader) => (typeof ctx.isActiveReader === 'function' ? ctx.isActiveReader(reader) : true),
         requestClose: () => { if (typeof ctx.closeReader === 'function') ctx.closeReader(); },

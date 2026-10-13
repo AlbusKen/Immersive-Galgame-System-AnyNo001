@@ -65,3 +65,32 @@ test('asset-thumbs: 图被覆盖或删掉时旧小图作废', async () => {
     await settle();
     assert.equal(await thumbStore.get('a'), '');
 });
+
+test('gate: 图本体读空只读一次、只通知一次，舞台改落平和兜底', async () => {
+    const { service, store, events } = setup();
+    const { resolveSpriteAsset } = await import('../src/scene/asset-match.js');
+    assert.equal(service.hasMissingImages(), false);
+    assert.equal(service.resolveUrl('igs-gen:gone'), '');
+    await settle(); await settle();
+    assert.equal(events.list.filter((e) => e.imageId === 'gone' && e.reason === 'image-lost').length, 1);
+    assert.equal(service.isMissingImage('igs-gen:gone'), true);
+    assert.equal(service.isMissingImage('igs-gen:a'), false);
+    const reads = store.reads;
+    service.resolveUrl('igs-gen:gone');
+    await settle(); await settle();
+    assert.equal(store.reads, reads, '已知丢失不再重读');
+    assert.equal(events.list.filter((e) => e.reason === 'image-lost').length, 1, '不再重复通知');
+    const sceneAssets = { characters: { 小雪: { 开心: 'igs-gen:gone', 平和: 'igs-gen:a' } } };
+    assert.equal(resolveSpriteAsset('小雪', '开心', { sceneAssets, isMissingImage: service.isMissingImage }).url, 'igs-gen:a');
+    await service.writeStoredImage({ id: 'gone', type: 'sprite', dataUrl: 'data:image/png;base64,TkVX' });
+    assert.equal(service.isMissingImage('igs-gen:gone'), false, '重新写入后解除丢失');
+});
+
+test('gate: 没有丢图时换衣服照常命中衣服槽', async () => {
+    const { resolveSpriteAsset } = await import('../src/scene/asset-match.js');
+    const moods = { 开心: 'igs-gen:a' };
+    const sceneAssets = { characters: { 小雪: { 默认: 'igs-gen:b' } }, characterOutfits: { 小雪: { 校服: { moods } } } };
+    const hit = resolveSpriteAsset('小雪', '开心', { sceneAssets, isMissingImage: () => false }, '校服');
+    assert.equal(hit.url, 'igs-gen:a');
+    assert.equal(hit.source, 'user-outfit');
+});

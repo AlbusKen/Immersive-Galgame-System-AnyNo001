@@ -89,7 +89,7 @@ for (const kind of DAILY_FX_KINDS) {
     if (item) items.push({ pack, kind, item });
 }
 
-const html = `<!doctype html><meta charset="utf-8"><title>fxshot</title>
+const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>fxshot</title>
 <style>html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:"Microsoft YaHei",sans-serif;}
 #igs-overlay{position:absolute;inset:0;overflow:hidden;font-size:16px;color:#fff;}
 #igs-stage-motion{position:absolute;inset:0;}
@@ -160,7 +160,11 @@ window.fxReady = true;
 
 const server = http.createServer((req, res) => {
     const url = decodeURIComponent(req.url.split('?')[0]);
-    if (url === '/__fxshot.html') { res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(html.replace('window.fxReady = true;', `${sprite ? 'window.fxSprite = true;\n' : ''}${bg ? 'window.fxBg = true;\n' : ''}window.fxReady = true;`)); return; }
+    if (url === '/__fxshot.html') {
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.end(html.replace('window.fxReady = true;', `${sprite ? 'window.fxSprite = true;\n' : ''}${bg ? 'window.fxBg = true;\n' : ''}window.fxReady = true;`));
+        return;
+    }
     if (url === '/__bg') { if (bg) { const e = path.extname(bg).toLowerCase(); res.setHeader('content-type', e === '.png' ? 'image/png' : e === '.webp' ? 'image/webp' : 'image/jpeg'); fs.createReadStream(bg).pipe(res); } else { res.statusCode = 404; res.end(); } return; }
     if (url === '/__sprite') { if (sprite) { res.setHeader('content-type', 'image/png'); fs.createReadStream(sprite).pipe(res); } else { res.statusCode = 404; res.end(); } return; }
     if (url.startsWith('/__out/')) { const f = path.join(outRoot, url.slice(7)); if (fs.existsSync(f)) { res.setHeader('content-type', 'image/png'); fs.createReadStream(f).pipe(res); } else { res.statusCode = 404; res.end(); } return; }
