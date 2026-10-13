@@ -48,9 +48,9 @@ import { formatImageJobLogText } from '../../generated-images/image-job-log.js';
 import { addGeneratedAssetToLibrary, bindGeneratedBackground, bindGeneratedSprite, collectGeneratedImageIds, generatedAssetIdOf, isGeneratedAssetUrl, normalizeGeneratedLibrary, removeGeneratedLibraryEntry, renameGeneratedLibraryEntry, setGeneratedExpressionNote } from '../../scene/asset-match.js';
 import { resolveCharacterDna } from '../../scene/character-dna.js';
 import { prepareSpriteIdentityAdoption } from '../../scene/character-identity.js';
-import { prepareOutfitAdoption } from '../../scene/outfit-identity.js';
+import { prepareOutfitAdoption, prepareOutfitDnaSave } from '../../scene/outfit-identity.js';
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
-import { normalizeCharacterDna, normalizeCharacterDnaMap, removeCharacterDna, renameCharacterDna } from '../../scene/character-dna.js';
+import { normalizeCharacterDna, normalizeCharacterDnaMap, readCharacterDnaView, removeCharacterDna, renameCharacterDna } from '../../scene/character-dna.js';
 import { normalizeCharacterHouses } from './magic-house.js';
 import { normalizeCharacterVoice, normalizeCharacterVoices, normalizeVoiceBarkSettings, previewVoicePack, resolveCharacterVoice } from './voice-bark.js';
 import { clearTtsCache, listSystemVoices, previewTts, resolveTtsVoice } from './tts.js';
@@ -365,13 +365,14 @@ function generationFailure(globalObj, dialogs, message, reason) {
 }
 
 // 已有提示词的先补画，不重写；剩下没有词的再写再画。补画中途停下就不再写。
-async function paintThenWriteExpressions({ service, name, paintItems, writeLabels, basePrompt, dna, outfit, note, nsfw, onProgress, signal }) {
+async function paintThenWriteExpressions({ service, name, paintItems, writeLabels, basePrompt, dna, outfit, note, nsfw, onProgress, signal, shouldStart, onOutfitDna }) {
     const paint = paintItems.length && typeof service.paintExpressionCaptions === 'function'
         ? await service.paintExpressionCaptions({ name, items: paintItems, basePrompt, dna, outfit, nsfw, onProgress, signal })
         : null;
     if (paint && !paint.ok) return paint;
     if (paint && (paint.stopped || (signal && signal.aborted))) return paint;
-    const written = await service.generateExpressionSet({ name, basePrompt, moods: writeLabels, dna, outfit, note, nsfw, onProgress, signal });
+    const written = await service.generateExpressionSet({ name, basePrompt, moods: writeLabels, dna, outfit, note, nsfw, onProgress, signal,
+        ...(shouldStart && { shouldStart }), ...(onOutfitDna && { onOutfitDna }) });
     if (!paint) return written;
     const paintedItems = paint.items || [];
     const wroteItems = written && written.items;
@@ -1729,12 +1730,15 @@ export async function handleSettingsAction(action, ctx) {
             ? moodTierLabels(tier, { nsfw })
             : allGroups.map((group) => group.label);
         const ownUrl = outfitMode ? firstGeneratedOutfitUrl(outfitEntry) : '';
+        const dna = characterExpressionDna(sceneAssets, name);
+        const hasIdentity = readCharacterDnaView(dna, 'half_body').ok;
         const baseUrl = ownUrl || String(character['默认'] || '');
         const defaultId = generatedAssetIdOf(baseUrl);
         let basePrompt = null;
-        try { basePrompt = defaultId ? await service.getImagePrompt(defaultId) : null; }
+        // 新差分只读保存 DNA；旧图正文仅供无身份资料的历史兼容和逐图重画。
+        try { basePrompt = !hasIdentity && defaultId ? await service.getImagePrompt(defaultId) : null; }
         catch (error) { basePrompt = null; }
-        if (!basePrompt) {
+        if (!basePrompt && !hasIdentity) {
             const originId = generatedAssetIdOf(String(character['默认'] || ''));
             if (originId && originId !== defaultId) {
                 try { basePrompt = await service.getImagePrompt(originId); }
@@ -1772,7 +1776,6 @@ export async function handleSettingsAction(action, ctx) {
                 savedExact = note.edited === true;
             }
         }
-        const dna = characterExpressionDna(sceneAssets, name);
         const nude = outfitMode && isBuiltinNudeOutfit(outfitEntry.wardrobe);
         const clothes = outfitMode && !nude ? resolveWardrobePrompt(draftEffectiveAssets(settingsState).wardrobe || {}, outfitEntry, outfitName) : null;
         const outfit = outfitMode ? { name: outfitName, words: nude ? [] : outfitEntry.words, ownImage: Boolean(ownUrl), prompt: nude ? '' : (clothes ? clothes.prompt : ''), nude, nsfwBoost: Boolean(!nude && clothes && clothes.nsfwBoost), form: outfitEntry.form || null } : null;
@@ -1799,12 +1802,12 @@ export async function handleSettingsAction(action, ctx) {
             showGeneratedNotice(globalObj, '没有已写好提示词但尚未出图的表情。');
             return rerenderSettings();
         }
-        if (!retry && !resume && writeLabels.length && !basePrompt) {
+        if (!retry && !resume && writeLabels.length && !basePrompt && !hasIdentity) {
             return generationFailure(globalObj, dialogs, outfitMode
                 ? '请先将一张带提示词的生成立绘放入这套服装，或绑定到该角色的原装。'
                 : '请先将一张带提示词的生成立绘绑定到该角色。', 'expression-prompt-missing');
         }
-        if (retry && !savedCaption && !basePrompt) {
+        if (retry && !savedCaption && !basePrompt && !hasIdentity) {
             endProgress();
             return generationFailure(globalObj, dialogs, outfitMode
                 ? '请先将一张带提示词的生成立绘放入这套服装，或绑定到该角色的原装。'
@@ -1833,14 +1836,36 @@ export async function handleSettingsAction(action, ctx) {
         }
         let result;
         const sourceScope = String(settingsState.asyncState?.assetScopeKey || '');
-        const sourceState = JSON.stringify({ character: sceneAssets.characters?.[name],
-            dna, outfits: sceneAssets.characterOutfits?.[name],
+        const targetState = () => JSON.stringify({ character: sceneAssets.characters?.[name],
+            dna: characterExpressionDna(sceneAssets, name), outfits: sceneAssets.characterOutfits?.[name],
             wardrobe: draftEffectiveAssets(settingsState).wardrobe });
+        let sourceState = targetState();
         const targetUnchanged = () => String(settingsState.asyncState?.assetScopeKey || '') === sourceScope
             && draftAssetLibrary(settingsState, editTarget) === sceneAssets
-            && JSON.stringify({ character: sceneAssets.characters?.[name],
-                dna: characterExpressionDna(sceneAssets, name), outfits: sceneAssets.characterOutfits?.[name],
-                wardrobe: draftEffectiveAssets(settingsState).wardrobe }) === sourceState;
+            && targetState() === sourceState;
+        const onOutfitDna = outfitMode && !nude ? async (clothing) => {
+            if (!targetUnchanged() || clothing.name !== outfitName)
+                return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '角色、衣装或作用域已变化，未保存服装 DNA' };
+            const prepared = prepareOutfitDnaSave(sceneAssets, name, outfitName, clothing.description,
+                { readWardrobe: draftEffectiveAssets(settingsState).wardrobe });
+            if (!prepared.ok) return prepared;
+            const previous = { characterOutfits: sceneAssets.characterOutfits, wardrobe: sceneAssets.wardrobe };
+            Object.assign(sceneAssets, prepared.patch);
+            const persisted = persistGeneratedLibrary(persistSettingsDraft);
+            if (operationFailed(persisted)) {
+                for (const [key, value] of Object.entries(previous)) {
+                    if (value === undefined) delete sceneAssets[key]; else sceneAssets[key] = value;
+                }
+                return { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存失败，未发起绘图' };
+            }
+            const saved = resolveWardrobePrompt(draftEffectiveAssets(settingsState).wardrobe,
+                sceneAssets.characterOutfits?.[name]?.[outfitName], outfitName);
+            if (saved?.prompt !== clothing.description)
+                return { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存回读不一致，未发起绘图' };
+            outfit.prompt = saved.prompt;
+            sourceState = targetState();
+            return { ok: true };
+        } : undefined;
         if (!progress) progress = startExpressionProgress(globalObj, subject);
         const onProgress = progress.onProgress;
         // 单张重画的按钮由宿主按 settingsBusyLabel 锁住，这里只锁整套差分的按钮。
@@ -1865,9 +1890,11 @@ export async function handleSettingsAction(action, ctx) {
                     ...characterPromptRecovery(savedHistory), ...(savedHistory && { history: savedHistory }),
                     basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
                 : retry
-                    ? await service.generateExpressionImage({ name, mood, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
+                    ? await service.generateExpressionImage({ name, mood, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal,
+                        shouldStart: targetUnchanged, ...(onOutfitDna && { onOutfitDna }) })
                     : await paintThenWriteExpressions({
                         service, name, paintItems, writeLabels, basePrompt, dna, outfit, note: moodNote, nsfw, onProgress, signal: stopControl.signal,
+                        shouldStart: targetUnchanged, ...(onOutfitDna && { onOutfitDna }),
                     });
         } catch (error) {
             stopControl.done();

@@ -1,6 +1,6 @@
 import { esc } from './reader-value-utils.js';
 import { resolveSpriteAsset } from '../../scene/asset-match.js';
-import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit } from '../../scene/character-outfits.js';
+import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit, resolveWardrobePrompt } from '../../scene/character-outfits.js';
 import { characterPromptRecovery } from '../../generated-images/illustration/character-prompt-task.js';
 import { promptProvenance } from '../../generated-images/generation-prompt.js';
 
@@ -229,6 +229,11 @@ function renderOutfitPanel(charName, name, entry, baseMoods, sceneAssets, icons,
     const notes = expressionNotes && typeof expressionNotes === 'object' ? expressionNotes[`${charName}\u0001${name}`] : null;
     const metaKey = `outfit-meta:${charName}\u0001${name}`;
     const metaOpen = isOpen(metaKey);
+    const clothing = resolveWardrobePrompt(sceneAssets.wardrobe, entry, name);
+    const dna = isBuiltinNudeOutfit(entry.wardrobe) || isBuiltinNudeOutfit(name) ? ''
+        : `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">服装 DNA</span>`
+            + `<button type="button" class="igs-settings-action" data-action="scene-outfit-dna:${c}:${o}" title="查看和编辑本套服装 DNA；后续模板按保存值展开">${clothing?.prompt ? '查看 / 编辑' : '填写'}</button>`
+            + `<span>${clothing?.prompt ? '已保存，后续差分复用' : '首次生成立绘时同次生成并保存'}</span></div>`;
     const meta = !metaOpen ? '' : `<div class="igs-outfit-meta-body"><div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">衣柜</span>${wardrobeChoices(charName, name, entry, sceneAssets.wardrobe)}</div>`
         + `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">变身形态</span>${formChoices(charName, name, entry)}</div>`
         + `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">说明</span><input class="igs-scene-url-input" data-scene-outfit-note-char="${esc(charName)}" data-scene-outfit-note="${esc(name)}" value="${esc(note)}" placeholder="什么情形穿这套"></div>`
@@ -246,7 +251,7 @@ function renderOutfitPanel(charName, name, entry, baseMoods, sceneAssets, icons,
         const imageId = raw.startsWith('igs-gen:') ? raw.slice('igs-gen:'.length) : '';
         const canPrompt = Boolean(imageId) || Boolean(note && (note.caption || note.positive || note.negative));
         const acts = slotActions([
-            imageId || (note && note.error) ? [`outfit-expression-retry:${c}:${o}:${encSeg(mood)}`, '重新生成', 'retry'] : null,
+            !raw || imageId || (note && note.error) ? [`outfit-expression-retry:${c}:${o}:${encSeg(mood)}`, filled ? '重新生成' : '生成立绘', 'retry'] : null,
         ]);
         const slotMenu = acts.inline + transferIcons(raw, `${charName}-${name}-${mood}-立绘.png`, [`scene-pick-outfit-mood:${c}:${o}:${encSeg(mood)}`, `上传${mood}立绘`]) + renderRowMenu([
             canPrompt ? menuItem(`outfit-expression-prompt:${c}:${o}:${encSeg(mood)}`, '提示词') : '',
@@ -277,7 +282,7 @@ function renderOutfitPanel(charName, name, entry, baseMoods, sceneAssets, icons,
         ? `<div class="igs-outfit-fill-all"><button type="button" class="igs-review-link" data-action="scene-outfit-copy-slots:${c}:${o}">缺的 ${missing.length} 格全部补上</button></div>`
         : '';
     const rows = ownRows + fallbackRows || '<div class="igs-scene-empty">暂无情绪槽，可点击右上角「+」添加</div>';
-    return `<div class="igs-outfit-panel" data-outfit-panel="${esc(name)}">${meta}<div class="igs-btn-mgr-list igs-outfit-slots">${rows}</div>${fillAll}</div>`;
+    return `<div class="igs-outfit-panel" data-outfit-panel="${esc(name)}">${dna}${meta}<div class="igs-btn-mgr-list igs-outfit-slots">${rows}</div>${fillAll}</div>`;
 }
 
 // 角色卡的立绘区：「原装 · 服装…」标签切换。原装标签显示原有情绪槽；服装标签显示该服装的槽、词、场景、头像与缺图预览。

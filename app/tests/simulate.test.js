@@ -10294,7 +10294,7 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
 });
 
 
-for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch']) test(`gate:story-outfit:reader-${choice}`, async () => {
+for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'inflight-save', 'inflight-sprite', 'write-failed', 'paint-failed', 'close', 'switch-writing']) test(`gate:story-outfit:reader-${choice}`, async () => {
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const { characterWriteFixture, characterViewsFixture } = await import('./helpers/prompt-provenance.js');
@@ -10310,6 +10310,9 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch']) test(
             version: 2, views: characterViewsFixture() } }, characterOutfits: {}, wardrobe: {} } }, readerSettings: {} };
     const before = structuredClone(settings.bridge.sceneAssets);
     let saves = 0, writes = 0, paints = 0, card = 'Current';
+    let releaseWrite;
+    const writing = new Promise(resolve => { releaseWrite = resolve; });
+    const holdWrite = ['inflight-save', 'inflight-sprite', 'write-failed', 'switch-writing'].includes(choice);
     const assets = createAssetGenerationService({ store: createMemoryGeneratedAssetStore(),
         messageHost: { getChatId: () => 'story-reader' }, llm: {}, getSettings: () => settings.bridge,
         newId: () => 'story-sprite', matte: async url => url, nai: {
@@ -10318,11 +10321,18 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch']) test(
                 writes++;
                 assert.equal(req.messageId, 39);
                 if (req.promptTask) return characterWriteFixture(req);
+                if (holdWrite && writes === 1) {
+                    await writing;
+                    if (choice === 'write-failed') return { ok: false, reason: 'fixture-write', error: 'fixture' };
+                }
                 const caption = { v4_prompt: { caption: { base_caption: 'wears a white dress', char_captions: [] } } };
                 return { ok: true, caption };
             },
             async generateDbgenCaption(req) {
                 paints++;
+                assert.equal(settings.bridge.sceneAssets.wardrobe['Alice·礼服'].prompt, 'wears a white dress', '绘图前衣装已入库');
+                if (choice === 'paint-failed') return { ok: false, reason: 'fixture-paint', error: 'fixture' };
+                if (choice === 'close') host.closeReader();
                 const prepared = prepareCharacterCaption(req);
                 assert.equal(prepared.ok, true, prepared.error);
                 if (choice === 'switch') card = 'Other';
@@ -10350,22 +10360,71 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch']) test(
             assert.equal(loadStoryOutfitCandidates(storage).items.length, 1);
             open(); await flush(); assert.equal(writes, 1);
         }
-        document.getElementById('igs-asset-review').querySelector('select').value = ['save', 'later'].includes(choice) ? 'save' : 'sprite';
-        await click('ok'); await flush();
+        const select = document.getElementById('igs-asset-review').querySelector('select');
+        assert.equal(select.disabled, false, '写词在途也可选择去向');
+        select.value = ['save', 'later', 'inflight-save'].includes(choice) ? 'save' : 'sprite';
+        click('ok');
+        assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), '', '点击同步收起，不等待后台完成');
+        if (holdWrite) {
+            assert.equal(saves, 0); assert.equal(paints, 0);
+            if (choice === 'switch-writing') card = 'Other';
+            releaseWrite();
+        }
+        await flush();
+        if (choice === 'switch-writing') {
+            assert.equal(saves, 0); assert.equal(paints, 0);
+            assert.deepEqual(settings.bridge.sceneAssets, before);
+            card = 'Current'; open(); await flush();
+            assert.ok(document.querySelector('[data-outfit-ask-act="ok"]'));
+            return;
+        }
+        if (choice === 'write-failed') {
+            assert.equal(paints, 0); assert.equal(saves, 0);
+            assert.deepEqual(settings.bridge.sceneAssets, before);
+            assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), null);
+            assert.equal(loadStoryOutfitCandidates(storage).items.length, 1);
+            document.getElementById('igs-asset-review').querySelector('select').value = 'save';
+            click('ok'); await flush();
+            assert.equal(writes, 2); assert.equal(paints, 0);
+        }
+        if (choice === 'close') {
+            assert.equal(saves, 1); assert.equal(host.getState().activeReader, null);
+            assert.deepEqual(settings.bridge.sceneAssets.characterOutfits.Alice.礼服.moods, {});
+            assert.ok(loadStoryOutfitCandidates(storage).items[0].imageId);
+            return;
+        }
         if (choice === 'switch') {
-            assert.equal(saves, 0); assert.deepEqual(settings.bridge.sceneAssets, before);
+            assert.equal(saves, 1, '切卡前衣装已入库，迟到立绘不得提交');
+            assert.equal(settings.bridge.sceneAssets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
+            assert.deepEqual(settings.bridge.sceneAssets.characterOutfits.Alice.礼服.moods, {});
+            assert.deepEqual(settings.bridge.sceneAssets.characterDna, before.characterDna);
             assert.ok(loadStoryOutfitCandidates(storage).items[0].imageId); return;
         }
         if (choice === 'save-failed') {
             assert.deepEqual(settings.bridge.sceneAssets, before);
+            assert.equal(paints, 0); assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), null);
             document.getElementById('igs-asset-review').querySelector('select').value = 'sprite';
             await click('ok'); await flush();
+        }
+        if (choice === 'paint-failed') {
+            const library = settings.bridge.sceneAssets;
+            assert.equal(library.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
+            assert.equal(library.characterOutfits.Alice.礼服.moods.平和, '');
+            assert.ok(library.generated.expressionNotes['Alice\u0001礼服'].平和.promptRecipe);
+            assert.deepEqual(library.characterDna, before.characterDna);
+            assert.deepEqual(library.characters, before.characters);
+            assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), '');
+            assert.equal(loadStoryOutfitCandidates(storage).items[0].status, 'saved');
+            assert.match(document.getElementById('igs-gen-strip').querySelector('.igs-gen-tip').textContent, /衣装已入库/);
+            open(); await flush();
+            assert.equal(document.querySelector('[data-outfit-ask-act="ok"]'), null, '重开不再确认已入库衣装');
+            return;
         }
         assert.equal(loadStoryOutfitCandidates(storage).items.length, 0);
         assert.equal(settings.bridge.sceneAssets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
         assert.deepEqual(settings.bridge.sceneAssets.characters, before.characters);
         assert.deepEqual(settings.bridge.sceneAssets.characterDna, before.characterDna);
-        assert.equal(paints, ['save', 'later'].includes(choice) ? 0 : 1);
+        assert.equal(paints, ['save', 'later', 'inflight-save', 'write-failed'].includes(choice) ? 0 : 1);
         if (paints) {
             assert.equal(host.getState().activeReader.snapshot.content.spriteOutfit, '礼服');
             assert.equal(host.getState().activeReader.snapshot.content.spriteImage, 'data:image/png;base64,QQ==');
@@ -10377,7 +10436,7 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch']) test(
             assert.equal(writes, completedWrites, '后续同衣装不再写词');
             assert.equal(paints, 1, '后续同衣装复用已采用立绘');
         }
-    } finally { host.destroy(); }
+    } finally { releaseWrite(); host.destroy(); }
 });
 
 test('gate:story-outfit:bootstrap-cg-stages-before-user-adoption', async () => {

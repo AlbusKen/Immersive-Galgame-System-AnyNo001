@@ -4396,17 +4396,34 @@ export function createIgsReaderHost(options = {}) {
             storyOutfits.defer(ask.id);
             return;
         }
-        const result = picked === 'retry' ? await storyOutfits.retry(ask.id) : await storyOutfits.adopt(ask.id, picked);
-        if (result?.ok && picked !== 'retry') {
+        // adopt 同步登记在途选择并通知面板收起，随后等待后台处理。
+        const pending = picked === 'retry' ? storyOutfits.retry(ask.id) : storyOutfits.adopt(ask.id, picked);
+        const current = state.activeReader;
+        if (current) syncAssetReviewAfterRender(current, current.snapshot);
+        const result = await pending;
+        if (result?.saved || (result?.ok && picked !== 'retry')) {
             for (let i = pendingOutfitAsks.length - 1; i >= 0; i--)
                 if (pendingOutfitAsks[i].character === ask.character && pendingOutfitAsks[i].word === ask.word)
                     pendingOutfitAsks.splice(i, 1);
-            writeToastSafe(picked === 'sprite' ? '衣装和对应立绘已入库' : '衣装已入库衣柜');
             if (state.activeReader) rerenderActiveReader();
+        }
+        if (result?.ok && picked !== 'retry') {
+            imageNotice('success', picked === 'sprite' ? '衣装和对应立绘已入库' : '衣装已入库衣柜');
         } else if (!result?.ok) {
             const code = typeof result?.reason === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(result.reason) ? result.reason : 'story-outfit-failed';
-            writeToastSafe(`衣装处理未完成，候选和已生成图片保留，请重试。（${code}）`);
+            const recovery = result?.recoverySaved
+                ? '补画提示词已保存，可在素材页继续生图。' : '可在素材页检查资料后补画。';
+            imageNotice('error', result?.saved
+                ? `衣装已入库，换装立绘未完成；衣装保持不变。${recovery}（${code}）`
+                : `衣装写词或入库未完成，候选保留，请重新确认。（${code}）`);
         }
+        if (result?.warning) {
+            const code = /^[A-Za-z0-9_-]{1,80}$/.test(result.warning) ? result.warning : 'save-failed';
+            imageNotice('error', result.ok
+                ? `衣装已入库，但候选清理未完成，请检查存储。（${code}）`
+                : `衣装处理的恢复资料或状态保存未完成，请检查存储；已入库衣装不回滚。（${code}）`);
+        }
+        if (state.activeReader) syncAssetReviewAfterRender(state.activeReader, state.activeReader.snapshot);
         return result;
     }
 

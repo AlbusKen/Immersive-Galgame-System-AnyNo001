@@ -1398,9 +1398,9 @@ test('gate:assets:wardrobe-prompt-writes-once-and-does-not-paint', async () => {
         writeDbgenPrompt: async (meta) => {
             const spicy = meta.description.includes('情趣内衣');
             assert.match(meta.description, spicy ? /情趣内衣/ : /浴衣/);
-            assert.match(meta.description, /一套衣服，而不是角色，没有角色/);
-            assert.match(meta.description, /从上到下写完整/);
-            assert.match(meta.description, /不要只写其中一件/);
+            assert.match(meta.description, /独立服装 DNA.*服装占位符的替换值/);
+            assert.match(meta.description, /不写角色主体、固定外貌、表情、动作、背景或完整立绘提示词/);
+            assert.match(meta.description, /未知细节不编造/);
             assert.equal(meta.description.includes('不要回避'), spicy);
             assert.equal(meta.description.includes('这是色情服装'), spicy);
             assert.equal(meta.description.includes('冬月'), false);

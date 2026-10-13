@@ -9,7 +9,7 @@ export const EXPRESSION_DIFF_BATCH_MAX = 9;
 // 数据库生图模式下的前端提示词接线：写词接口只说明画什么。
 // 正负模板在出图前合并进插件返回的 NaiCaption，不交给写词模型照抄。
 const OUTFIT_TEMPLATE_RULE = '任务 outfitMode 为 template 时，每份写 outfit_mode: template；named Char 在身份占位后恰写本人的 <<outfit:token>> 一次，再写动作与表情，不重复衣装说明。'
-    + 'meta_outfit_name 与 meta_outfit_description 独立旁路：已登记衣装按角色 outfits 原样引用，新装同次提供名称和英文穿着谓语；动作、表情不进入衣装说明。'
+    + 'meta_outfit_name 与 meta_outfit_description 是独立服装 DNA：已保存的当次衣装或角色 outfits 按原值复用，不改写或重新设计；缺服装 DNA 的新装在同次回复提供名称和英文穿着谓语，不增加写词请求。固定外貌、动作、表情和背景不进入服装 DNA。'
     + 'reference 的两项 meta_outfit_* 在自己的索引各写一次空值，reference、scene 与 UC 不使用衣装占位。';
 
 const WEIGHT_RE = /^-?\d*\.?\d+::|::$/g;
@@ -103,6 +103,7 @@ export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit
         `为角色「${name || ''}」写 ${moods.length} 份独立表情动态模板，按本次 slots 映射输出。`,
         OUTFIT_TEMPLATE_RULE,
         '只引用已保存的 half_body 身份，不生成候选、不重复固定外貌。',
+        '每份 Char 正文为 <<dna:token>> <<outfit:token>> 加当次表情与动作；服装 DNA 已有则直接复用，缺失则同次写入独立 meta_outfit_*，不要重写包含外貌和衣装的完整正文。',
         outfit?.nude ? '本次不穿衣服；保留基础身份和标志性特征。'
             : outfit?.name ? `当次服装：${outfit.name}。服装名、词池和具体穿着说明以本次角色资料为准。`
             : '当次衣装沿用角色资料中的默认穿着，不复制旧立绘的固定外貌。',
@@ -293,16 +294,16 @@ export function nsfwClothingBoostLine(kind = 'clothes') {
         : BUILTIN_PROMPTS.wardrobe.nsfwBoostClothes;
 }
 
-// 待确认服装：只写这一套衣服的生图标签，不写出图。
+// 剧情入柜：提取独立服装 DNA，不生成角色立绘正文。
 export function buildWardrobeClothingDescription(_character, outfitName, { nsfwBoost = false, note = '' } = {}) {
     const outfit = String(outfitName || '').trim();
     const request = String(note || '').trim();
     return [
-        `为服装「${outfit}」写一份生图用的服装提示词。`,
+        `为服装「${outfit}」提取一份独立服装 DNA，作为后续服装占位符的替换值。`,
         request ? `用户对这套服装的具体要求（必须照办）：${request}` : '',
-        '一定要注意：生成的是一套衣服，而不是角色，没有角色。',
-        '这是一整套穿着，从上到下写完整：头上、上身、下身、腿和脚，以及配套的饰品。不要只写其中一件。',
-        '每件都写清款式、颜色和材质。',
+        '只写英文穿着描述，不写角色主体、固定外貌、表情、动作、背景或完整立绘提示词。',
+        '服装和配套饰品仅按本次依据描述，不为凑齐全套而编造未提供的衣物。',
+        '有依据的款式、颜色、材质和配饰保留；未知细节不编造。',
         nsfwBoost ? nsfwClothingBoostLine('clothes') : '',
         '不要写人，不要写表情、姿势、背景。',
         '只写一份，slotid 为 1。',

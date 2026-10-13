@@ -43,9 +43,21 @@ export function preflightCharacterTask(context, purpose, framing, outfit) {
 
 // 仅复制发送所需字段；历史审计字段不能成为本次发送指令。
 export function characterTemplateInput(entry, task, context) {
+    const metadata = entry.characterMeta === undefined ? undefined : structuredClone(entry.characterMeta);
+    // 新生成仍核对原回复；显式续画才把衣装旁路绑定到当前已保存资料。
+    if (entry.rebindOutfit === true && entry.promptRecipe?.outfitMode === 'template') {
+        for (const character of metadata?.characters || []) {
+            const source = context.find(c => c.characterKey === character.characterKey);
+            const outfit = source?.outfit;
+            const saved = source?.outfits?.find(o => o.name === outfit?.name);
+            if (character.outfit?.name === outfit?.name
+                && (outfit?.description || saved?.description))
+                character.outfit = { name: outfit.name, description: outfit.description || saved.description };
+        }
+    }
     return { caption: entry.promptRecipe?.caption || entry.caption,
         ...(entry.slotId !== undefined && { slotId: entry.slotId }),
-        ...(entry.characterMeta !== undefined && { characterMeta: entry.characterMeta }),
+        ...(metadata !== undefined && { characterMeta: metadata }),
         ...(entry.promptRecipe !== undefined && { promptRecipe: entry.promptRecipe }),
         ...(entry.dnaCandidates !== undefined && { dnaCandidates: entry.dnaCandidates }),
         ...(task !== undefined && { promptTask: task }), characterContext: context };

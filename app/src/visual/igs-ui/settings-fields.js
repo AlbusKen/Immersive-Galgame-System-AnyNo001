@@ -492,7 +492,7 @@ export function renderCharacterAssetList(characters, options = {}) {
             const c = encSeg(charName);
             const m = encSeg(mood);
             const acts = slotActions([
-                mood !== '默认' && (imageId || (note && note.error)) ? [`char-expression-retry:${c}:${m}`, '重新生成', 'retry'] : null,
+                mood !== '默认' && (!rawUrl || imageId || (note && note.error)) ? [`char-expression-retry:${c}:${m}`, rawUrl ? '重新生成' : '生成立绘', 'retry'] : null,
                 mood === '默认' && rawUrl ? [`char-generate-sprite:${c}`, '重新生成', 'retry'] : null,
             ]);
             const slotMenu = renderRowMenu([

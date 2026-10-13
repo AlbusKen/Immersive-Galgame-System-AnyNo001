@@ -40,7 +40,7 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         label.textContent = `「${ask.character}」穿了「${ask.word}」`;
         const status = doc.createElement('div');
         if (ask.id) {
-            status.textContent = ask.busy ? (ask.status === 'painting' ? '正在生成换装立绘…' : '正在提取本楼衣装…')
+            status.textContent = ask.busy ? '正在提取本楼衣装，可先选择加入方式…'
                 : ask.reason ? `处理未完成（${ask.reason}），候选保留`
                 : ask.imageId ? '立绘已生成，等待入库' : ask.prompt ? '衣装描述已准备，确认后才入库' : '衣装描述尚未完成';
             body.appendChild(status);
@@ -61,17 +61,22 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         const actions = doc.createElement('div');
         actions.className = 'igs-asset-review-actions';
         const acts = [['ok', '加入'], ...(ask.id && !ask.prompt ? [['retry', '重试写词']] : []), ['later', '稍后']];
-        select.disabled = Boolean(ask.busy);
+        select.disabled = !ask.id && Boolean(ask.busy);
+        let submitted = false;
         for (const [act, text] of acts) {
             const button = doc.createElement('button');
             button.type = 'button';
             button.textContent = text;
             button.setAttribute('data-outfit-ask-act', act);
-            button.disabled = Boolean(ask.busy);
+            button.disabled = Boolean(ask.busy) && (!ask.id || act === 'retry');
             button.addEventListener('click', (event) => {
                 event.stopPropagation();
-                if (!button.disabled && typeof handlers.onOutfit === 'function')
+                if (!submitted && !button.disabled && typeof handlers.onOutfit === 'function') {
+                    submitted = true;
+                    select.disabled = true;
+                    for (const control of actions.querySelectorAll('button')) control.disabled = true;
                     handlers.onOutfit(ask, act === 'ok' ? select.value : act === 'retry' ? 'retry' : '');
+                }
             });
             actions.appendChild(button);
         }

@@ -1,4 +1,5 @@
-import { BUILTIN_NUDE_OUTFIT, normalizeOutfitForm, fuzzyOutfitName, isBuiltinNudeOutfit, isValidOutfitName, isValidOutfitWord, normalizeWardrobe, OUTFIT_RESET } from '../../scene/character-outfits.js';
+import { BUILTIN_NUDE_OUTFIT, normalizeOutfitForm, fuzzyOutfitName, isBuiltinNudeOutfit, isValidOutfitName, isValidOutfitWord, normalizeWardrobe, resolveWardrobePrompt, OUTFIT_RESET } from '../../scene/character-outfits.js';
+import { prepareOutfitDnaSave } from '../../scene/outfit-identity.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
 import { classifySceneKey } from '../../scene/scene-directives.js';
 import { clearOutfitReview, loadOutfitReview, removeOutfitReview } from '../../scene/outfit-review-store.js';
@@ -437,7 +438,7 @@ function handleOutfitReview(command, segs, ctx) {
     return rerenderSettings();
 }
 
-const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots)|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt))(?::(.*))?$/;
+const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots|dna)|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt))(?::(.*))?$/;
 
 // 服装区 action：返回 null 表示不归本模块处理。位置 / 头部标定 key 随改名迁移、随删除清理。
 export function handleOutfitAction(normalizedAction, ctx) {
@@ -515,6 +516,41 @@ async function runOutfitAction(match, ctx) {
     if (!entry) return rerenderSettings();
 
     switch (command) {
+    case 'scene-outfit-dna': {
+        if (isBuiltinNudeOutfit(entry.wardrobe) || isBuiltinNudeOutfit(outfitName)) return rerenderSettings();
+        const effective = draftEffectiveAssets(settingsState);
+        const current = resolveWardrobePrompt(effective.wardrobe, entry, outfitName);
+        const baseline = JSON.stringify({ entry, wardrobe: effective.wardrobe });
+        const scope = settingsState.asyncState?.assetScopeKey;
+        const dialogs = ctx.dialogs || createSettingsDialogs({ global: globalObj });
+        if (typeof dialogs.edit !== 'function') return rerenderSettings();
+        const edited = await dialogs.edit(`「${charName}」的「${outfitName}」服装 DNA（只写衣装，不含人物外貌、表情和动作）`, current?.prompt || '');
+        if (edited == null) return rerenderSettings();
+        if (settingsState.asyncState?.assetScopeKey !== scope
+            || draftAssetLibrary(settingsState, { collections: CHARACTER_FIELDS, name: charName }) !== sceneAssets
+            || JSON.stringify({ entry: sceneAssets.characterOutfits?.[charName]?.[outfitName],
+                wardrobe: draftEffectiveAssets(settingsState).wardrobe }) !== baseline)
+            return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '衣装资料或作用域已变化，请重新打开编辑' };
+        const description = String(edited).trim();
+        // 编辑本角色的独立版本，不覆盖其它衣装引用的共享衣柜 DNA。
+        const view = { ...sceneAssets, characterOutfits: { ...sceneAssets.characterOutfits,
+            [charName]: { ...outfits, [outfitName]: { ...entry, wardrobe: '' } } } };
+        const readWardrobe = { ...draftEffectiveAssets(settingsState).wardrobe };
+        delete readWardrobe[outfitName];
+        const prepared = prepareOutfitDnaSave(view, charName, outfitName, description, { readWardrobe });
+        if (!prepared.ok) { warn(ctx, prepared.error); return prepared; }
+        const previous = { characterOutfits: sceneAssets.characterOutfits, wardrobe: sceneAssets.wardrobe };
+        Object.assign(sceneAssets, prepared.patch);
+        let persisted;
+        try { persisted = persistSettingsDraft(); } catch { persisted = { ok: false, reason: 'outfit-dna-save-failed' }; }
+        if (!persisted || persisted === false || persisted.ok === false) {
+            for (const [key, value] of Object.entries(previous)) {
+                if (value === undefined) delete sceneAssets[key]; else sceneAssets[key] = value;
+            }
+            return persisted || { ok: false, reason: 'outfit-dna-save-failed' };
+        }
+        return rerenderSettings();
+    }
     case 'scene-rename-outfit': {
         const name = await ask(ctx, `重命名服装「${outfitName}」为：`, outfitName);
         if (!name || name === outfitName) return rerenderSettings();

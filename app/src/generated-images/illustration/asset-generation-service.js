@@ -17,6 +17,7 @@ import { resolveCharacterKey } from '../../scene/scene-directives.js';
 import { isCharacterDnaEmpty, resolveCharacterDna } from '../../scene/character-dna.js';
 import { buildCharacterContext, spriteAdoptionEvidence } from '../../scene/character-identity.js';
 import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
+import { prepareCharacterCaption } from '../character-caption.js';
 import { BUILTIN_PROMPTS } from '../prompt-registry.js';
 import { usesCharacterTemplates, characterPromptTask, singleCharacterContext, preflightCharacterTask, characterTemplateInput, characterPromptRecovery } from './character-prompt-task.js';
 
@@ -939,14 +940,14 @@ export function createAssetGenerationService(deps) {
     // 一批写完并逐张出完，再写下一批；某一张失败不影响后面的。
     // 插件少给某几份时只在这一批里补写；signal 中止后已画好的图保留，还没写的批不再写。
     // 一次点击里各批共用一颗新种子：衣服、画风接近；删掉重来、补画都是新种子，不会画回旧图。
-    async function generateExpressionSet({ name, basePrompt, moods, dna, outfit, note, nsfw, onProgress, signal, messageId } = {}) {
+    async function generateExpressionSet({ name, basePrompt, moods, dna, outfit, note, nsfw, onProgress, signal, messageId, shouldStart, onOutfitDna } = {}) {
         const labels = (Array.isArray(moods) ? moods : []).map((item) => String(item || '').trim()).filter(Boolean);
         if (!labels.length) return { ok: false, error: '没有表情分组' };
         if (!nai || typeof nai.writeDbgenPrompt !== 'function' || typeof nai.generateDbgenCaption !== 'function') {
             return { ok: false, error: '当前图像来源不能写表情差分' };
         }
         const template = usesCharacterTemplates(nai);
-        const context = template ? singleCharacterContext(name, dna, outfit, readSettings().sceneAssets) : null;
+        let context = template ? singleCharacterContext(name, dna, outfit, readSettings().sceneAssets) : null;
         const paintMeta = template ? expressionPaintMeta({ template: true }) : null;
         if (template) {
             const checked = preflightCharacterTask(context, 'derived', 'half_body', outfit);
@@ -962,7 +963,8 @@ export function createAssetGenerationService(deps) {
             nsfw: nsfw === true,
         };
         const paintDna = template ? dna : expressionPaintDna(dna, outfit);
-        const stopped = () => Boolean(signal && signal.aborted);
+        const stopped = () => Boolean(signal && signal.aborted)
+            || (typeof shouldStart === 'function' && shouldStart() !== true);
         const items = [];
         let painted = 0;
         let writeError = '';
@@ -1004,6 +1006,32 @@ export function createAssetGenerationService(deps) {
                     break;
                 }
                 const captions = Array.isArray(written.captions) ? written.captions : [];
+                if (template && typeof onOutfitDna === 'function') {
+                    // 整批校验后才保存独立服装 DNA；保存失败时不发任何绘图请求。
+                    let clothing;
+                    for (const slot of captions) {
+                        const checked = prepareCharacterCaption(characterTemplateInput(slot, task.promptTask, context));
+                        if (!checked.ok) return checked;
+                        const selected = checked.outfitSnapshot?.characters?.filter(c => c.characterKey === name);
+                        if (selected?.length !== 1 || (outfit?.name && selected[0].name !== outfit.name))
+                            return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '服装 DNA 无法唯一绑定当前衣装' };
+                        const signature = JSON.stringify([selected[0].name, selected[0].description]);
+                        if (clothing && signature !== JSON.stringify([clothing.name, clothing.description]))
+                            return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '同批服装 DNA 不一致，已停止出图' };
+                        clothing = selected[0];
+                    }
+                    if (clothing?.source === 'candidate') {
+                        if (stopped()) return { ok: false, reason: 'stale-target', error: '目标已变化，未保存服装 DNA' };
+                        const saved = await onOutfitDna({ name: clothing.name, description: clothing.description });
+                        if (!saved?.ok) return saved || { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存失败' };
+                        outfit = { ...outfit, name: clothing.name, prompt: clothing.description };
+                        // 只有已确认保存成功才更新本任务基线；当前批次与后续批次共用保存值。
+                        context = singleCharacterContext(name, dna, outfit, readSettings().sceneAssets);
+                        context[0].outfits = context[0].outfits.filter(c => c.name !== clothing.name)
+                            .concat({ name: clothing.name, description: clothing.description });
+                        task.characterContext = structuredClone(context);
+                    }
+                }
                 const missing = [];
                 for (let i = 0; i < pending.length; i += 1) {
                     if (stopped()) {
@@ -1071,10 +1099,10 @@ export function createAssetGenerationService(deps) {
                 }
             }
             const templateInput = !exact && item.promptRecipe
-                ? characterTemplateInput(item, item.promptTask, context) : undefined;
+                ? characterTemplateInput({ ...item, rebindOutfit: true }, item.promptTask, context) : undefined;
             results.push(await paintExpressionCaption(name, mood, caption, templateInput ? context[0].dna : paintDna,
                 { ...paint, exact, history: item, signal,
-                    ...(item.characterMeta !== undefined && { characterMeta: item.characterMeta }),
+                    ...(item.characterMeta !== undefined && { characterMeta: templateInput?.characterMeta || item.characterMeta }),
                     ...(templateInput && { templateInput, paintMeta: templateMeta }) }));
         }
         return { ok: true, items: results, stopped: stopped() };
@@ -1082,7 +1110,7 @@ export function createAssetGenerationService(deps) {
 
     // 单张重画：英文 DNA 可直接组合；需要转译或按服装名写词时用当前资料重新写词。
     // 无 DNA 或逐图手改时沿用旧图词，显式换一颗随机种子。
-    async function generateExpressionImage({ name, mood, caption, exact = false, basePrompt, dna, outfit, note, nsfw, onProgress, promptRecipe, characterMeta, history, signal, promptTask, slotId, dnaCandidates } = {}) {
+    async function generateExpressionImage({ name, mood, caption, exact = false, basePrompt, dna, outfit, note, nsfw, onProgress, promptRecipe, characterMeta, history, signal, promptTask, slotId, dnaCandidates, shouldStart, onOutfitDna } = {}) {
         const label = String(mood || '').trim();
         if (!label) return { ok: false, error: '没有表情' };
         if (caption && (exact || promptRecipe)) {
@@ -1097,7 +1125,8 @@ export function createAssetGenerationService(deps) {
             const item = await paintExpressionCaption(name, label, caption, expressionPaintDna(dna, outfit), { look, seed: randomSeed(), nsfw: nsfw === true, exact: exact === true });
             return { ok: true, items: [item] };
         }
-        return generateExpressionSet({ name, basePrompt, moods: [label], dna, outfit, note, nsfw, onProgress, signal });
+        return generateExpressionSet({ name, basePrompt, moods: [label], dna, outfit, note, nsfw, onProgress, signal,
+            ...(shouldStart && { shouldStart }), ...(onOutfitDna && { onOutfitDna }) });
     }
 
     // 场景时间/天气差分：读场景原图存下的提示词，换上目标时间天气标签直接出图，不写词。

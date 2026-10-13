@@ -133,17 +133,30 @@ export function prepareOutfitAdoption(assets, name, imageId, record = {},
     const candidate = candidates[0];
     if (!isValidOutfitName(candidate.name)) return fail('candidate-name', '衣装候选名称不合法');
     if (isBuiltinNudeOutfit(candidate.name)) return { ok: true, patch: {} };
-    const characterOutfits = { ...(assets.characterOutfits || {}) };
-    const outfits = { ...(characterOutfits[name] || {}) };
-    const existing = outfits[candidate.name];
+    const existing = assets.characterOutfits?.[name]?.[candidate.name];
     if (resolveWardrobePrompt(readWardrobe, existing, candidate.name)?.prompt)
         return fail('outfit-name-exists', '候选衣装名称已有保存说明，不能覆盖，请核对角色衣装资料');
+    return prepareOutfitDnaSave(assets, name, candidate.name, candidate.description, { readWardrobe });
+}
+
+// 服装 DNA 独立于图片保存；调用方负责归属、冻结基线与持久化。
+export function prepareOutfitDnaSave(assets, name, outfitName, description, { readWardrobe = assets.wardrobe } = {}) {
+    const fail = () => ({ ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '服装 DNA 或已有资料冲突，原资料保持不变' });
+    if (!name || ['__proto__', 'constructor', 'prototype'].includes(name)
+        || !isValidOutfitName(outfitName) || isBuiltinNudeOutfit(outfitName)
+        || typeof description !== 'string' || !description.trim() || description.length > 4096
+        || /<<\s*(?:dna|outfit)/i.test(description)) return fail();
+    const characterOutfits = { ...(assets.characterOutfits || {}) };
+    const outfits = { ...(characterOutfits[name] || {}) };
+    const existing = outfits[outfitName];
+    const saved = resolveWardrobePrompt(readWardrobe, existing, outfitName)?.prompt;
+    if (saved) return saved === description ? { ok: true, patch: {} } : fail();
     const wardrobe = { ...(assets.wardrobe || {}) };
-    let wardrobeKey = `${name}·${candidate.name}`, suffix = 1;
+    let wardrobeKey = `${name}·${outfitName}`, suffix = 1;
     while (Object.hasOwn(wardrobe, wardrobeKey) || Object.hasOwn(readWardrobe || {}, wardrobeKey))
-        wardrobeKey = `${name}·${candidate.name}·${++suffix}`;
-    wardrobe[wardrobeKey] = { prompt: candidate.description };
-    outfits[candidate.name] = { words: [], moods: {}, ...existing, wardrobe: wardrobeKey };
+        wardrobeKey = `${name}·${outfitName}·${++suffix}`;
+    wardrobe[wardrobeKey] = { prompt: description };
+    outfits[outfitName] = { words: [], moods: {}, ...existing, wardrobe: wardrobeKey };
     characterOutfits[name] = outfits;
     return { ok: true, patch: { characterOutfits, wardrobe } };
 }
