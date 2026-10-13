@@ -206,7 +206,7 @@ test('gate:illustration:anchor-uses-the-same-match-as-dbgen', async () => {
     assert.equal(paragraphNoForAnchor(raw, numbered.paragraphs, '完全对不上的另一段话'), 0);
 });
 
-test('gate:illustration:anchors-in-one-paragraph-stay-on-their-own-sentences', async () => {
+test('gate:illustration:anchors-in-one-paragraph-keep-the-paragraph-intact-and-order-points', async () => {
     const { insertMarkersAtAnchors } = await import('../src/generated-images/illustration/marker-placer.js');
     const raw = '前文。黒いエナメルの長い耳が、彼女の頭上でピンと立っている。中文。親指の腹で、張り詰めた乳頭をそっと転がす。后文。';
     const result = insertMarkersAtAnchors(raw, [
@@ -217,23 +217,23 @@ test('gate:illustration:anchors-in-one-paragraph-stay-on-their-own-sentences', a
     const thumb = result.indexOf('転がす。');
     assert.ok(ear >= 0 && thumb > ear);
     assert.ok(result.indexOf('[igs-img:4]') > ear);
-    assert.ok(result.indexOf('[igs-img:4]') < thumb);
+    assert.ok(result.indexOf('[igs-img:4]') > result.indexOf('后文。'));
     assert.ok(result.indexOf('[igs-img:3]') > thumb);
-    assert.equal(result.includes('[igs-img:4]\n[igs-img:3]'), false);
+    assert.equal(result, `${raw}\n[igs-img:4]\n[igs-img:3]`);
 });
 
-test('gate:illustration:insert-marker-before-paragraph', async () => {
+test('gate:illustration:insert-marker-after-complete-paragraph', async () => {
     const { numberParagraphs, insertMarkers } = await import('../src/generated-images/illustration/marker-placer.js');
     const raw = '[igs-scene:A|夜|晴]\n一\n二\n三';
     const result = insertMarkers(raw, numberParagraphs(raw).paragraphs, [{ slot: 1, at: 2 }, { slot: 2, at: 3 }]);
-    assert.ok(result.includes('一\n[igs-img:1]\n二\n[igs-img:2]\n三'));
+    assert.ok(result.includes('一\n二\n[igs-img:1]\n三\n[igs-img:2]'));
 });
 
-test('gate:illustration:insert-marker-after-leading-scene-tag', async () => {
+test('gate:illustration:insert-marker-on-own-line-after-leading-scene-and-body', async () => {
     const { numberParagraphs, insertMarkers } = await import('../src/generated-images/illustration/marker-placer.js');
     const raw = '[igs-scene:A|夜|晴]正文';
     const result = insertMarkers(raw, numberParagraphs(raw).paragraphs, [{ slot: 1, at: 1 }]);
-    assert.equal(result, '[igs-scene:A|夜|晴][igs-img:1]正文');
+    assert.equal(result, '[igs-scene:A|夜|晴]正文\n[igs-img:1]');
     assert.equal(resolveIllustrationAtSourceOffset(result, result.indexOf('正文')).slot, 1);
 });
 
@@ -583,7 +583,7 @@ test('gate:illustration:service-nsfw-generates-and-writes-marker', async () => {
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 } });
     const service = createAutoIllustrationService({ ...fake, store });
     assert.equal((await service.processMessage(5)).reason, 'done');
-    assert.ok(fake.calls.writes[0].includes('\n[igs-img:1]\n二段。'));
+    assert.ok(fake.calls.writes[0].includes('\n二段。\n[igs-img:1]'));
     assert.equal(fake.calls.nai, 1);
     assert.equal((await store.getSlots('c1|5|0'))[0].status, 'done');
     assert.ok(fake.calls.events.some(({ type }) => type === ILLUSTRATION_UPDATED_EVENT));
@@ -1126,7 +1126,7 @@ test('gate:illustration:service-mid-edit-during-planning-transplants-markers', a
     assert.equal(result.ok, true);
     assert.equal(fake.calls.writes.length, 1);
     assert.ok(fake.calls.writes[0].startsWith(head), '插件插的内容原样保留');
-    assert.ok(fake.calls.writes[0].includes('\n[igs-img:1]\n二段。'));
+    assert.ok(fake.calls.writes[0].includes('\n二段。\n[igs-img:1]'));
     assert.equal(fake.calls.nai, 1);
 });
 

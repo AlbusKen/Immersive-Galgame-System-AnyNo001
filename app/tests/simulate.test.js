@@ -1061,10 +1061,12 @@ test('gate:illustration:failed-cg-point-can-reroll-and-does-not-borrow-another-i
         const content = host.getState().activeReader.snapshot.content;
         assert.equal(content.illustrationSlot, 1);
         assert.equal(content.illustrationActive, false);
-        assert.equal(content.cgActive, true);
-        assert.equal(content.backgroundImage, '');
-        assert.equal(document.getElementById('igs-stage-motion').getAttribute('data-igs-cg'), '1');
-        assert.equal(document.getElementById('igs-bg').style.backgroundImage, '');
+        assert.equal(content.cgActive, false);
+        assert.equal(content.cgWaiting, true);
+        assert.equal(content.backgroundImage, 'https://example.com/room.png');
+        assert.notEqual(content.backgroundImage, 'https://example.com/other.png');
+        assert.notEqual(document.getElementById('igs-stage-motion').getAttribute('data-igs-cg'), '1');
+        assert.match(document.getElementById('igs-bg').style.backgroundImage, /room\.png/);
         const reroll = document.getElementById('igs-btn-reroll-cg');
         const clear = document.getElementById('igs-btn-clear-cg');
         assert.equal(reroll.disabled, false);
@@ -1336,7 +1338,7 @@ test('gate:illustration:reader-activates-only-after-marker-and-keeps-veil-withou
     host.destroy();
 });
 
-test('gate:illustration:cg-page-keeps-cg-and-does-not-paint-scene-background', () => {
+test('gate:illustration:cg-page-keeps-scene-until-image-arrives-and-then-shows-cg', () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const raw = '[igs-scene:Room|night|clear]\n[igs-img:1]\n这一页同时有背景和 CG。\n下一句。';
     let imageUrl = '';
@@ -1361,10 +1363,11 @@ test('gate:illustration:cg-page-keeps-cg-and-does-not-paint-scene-background', (
     assert.equal(opened.ok, true);
     const content = () => host.getState().activeReader.snapshot.content;
     const bg = document.getElementById('igs-bg');
-    assert.equal(content().backgroundImage, '');
-    assert.equal(content().cgActive, true);
-    assert.equal(bg.style.backgroundImage, '');
-    assert.equal(document.getElementById('igs-stage-motion').getAttribute('data-igs-cg'), '1');
+    assert.equal(content().backgroundImage, 'https://example.com/room.png');
+    assert.equal(content().cgActive, false);
+    assert.equal(content().cgWaiting, true);
+    assert.match(bg.style.backgroundImage, /room\.png/);
+    assert.notEqual(document.getElementById('igs-stage-motion').getAttribute('data-igs-cg'), '1');
 
     imageUrl = 'data:image/png;base64,CG';
     trigger({ chatId: 'chat-1', messageId: 52, swipeId: 0, slot: 1 });
@@ -1376,6 +1379,102 @@ test('gate:illustration:cg-page-keeps-cg-and-does-not-paint-scene-background', (
 });
 
 
+
+test('gate:illustration:unavailable-slot-19-keeps-both-speakers-through-page-75-and-switches-on-arrival', () => {
+    const document = createFakeDocument();
+    const lines = ['[igs-scene:东路宫道|晚上|晴天]'];
+    for (let i = 0; i < 75; i++) {
+        if (i === 72) lines.push('[igs-img:19]');
+        lines.push(`[igs-char:${i < 73 ? '小林' : '白墨'}|温和|这是第${i + 1}句台词。]`);
+    }
+    const raw = lines.join('\n');
+    let imageUrl = '', notify;
+    const host = createIgsReaderHost({
+        global: { document },
+        getUnifiedSettings: () => ({
+            bridge: { sceneAssets: { enabled: true, scenes: { 东路宫道: { url: 'data:image/png;base64,Qkc=' } }, characters: { 白墨: { 默认: 'data:image/png;base64,QkFJ' }, 小林: { 默认: 'data:image/png;base64,TElO' } } } },
+            readerSettings: { titleScreen: false, stageCast: { enabled: true } },
+        }),
+        getIllustrationSource: () => ({ chatId: 'fixture', messageId: 22, swipeId: 0, text: raw }),
+        getIllustrationUrl: ({ slot }) => slot === 19 ? imageUrl : '',
+        onIllustrationUpdated: handler => { notify = handler; return () => {}; },
+    });
+    try {
+        const opened = host.openReader({ messageId: 22, message: { id: 22, text: raw }, raw }, { mode: 'fullscreen' });
+        const content = () => host.getState().activeReader.snapshot.content;
+        assert.equal(content().segments.length, 75);
+        for (let i = 0; i < 75; i++) {
+            if (i) opened.controller.invokeAction('next');
+            assert.equal(content().spriteImage, i < 73 ? 'data:image/png;base64,TElO' : 'data:image/png;base64,QkFJ', `第 ${i + 1} 页`);
+            assert.equal(content().cgActive, false);
+            assert.equal(content().backgroundImage, 'data:image/png;base64,Qkc=');
+        }
+        assert.equal(content().illustrationSlot, 19);
+        assert.equal(content().imageAvailableCount, 0);
+        assert.ok(content().castSprites.some(member => member.character === '小林'));
+        imageUrl = 'data:image/png;base64,Q0c=';
+        notify({ chatId: 'fixture', messageId: 22, swipeId: 0, slot: 19 });
+        assert.equal(content().cgActive, true);
+        assert.equal(content().backgroundImage, imageUrl);
+        assert.equal(content().spriteImage, null);
+    } finally { host.destroy(); }
+});
+
+test('gate:simulation:legacy-native-marker-inside-dialogue-keeps-one-page-and-visible-speaker', () => {
+    const document = createFakeDocument();
+    const raw = '<content>\n[igs-char:白墨|温和|先把画挂起来，你觉得呢？\n<IMG>\n19\n</IMG>\n]\n</content>';
+    const host = createIgsReaderHost({
+        global: { document },
+        getUnifiedSettings: () => ({ bridge: { sceneAssets: { enabled: true, characters: { 白墨: { 默认: 'data:image/png;base64,QkFJ' } } } }, readerSettings: { titleScreen: false } }),
+        getIllustrationUrl: () => '',
+    });
+    try {
+        const opened = host.openReader({ messageId: 22, message: { id: 22, text: raw }, raw }, { mode: 'fullscreen' });
+        assert.equal(opened.ok, true);
+        const content = host.getState().activeReader.snapshot.content;
+        assert.deepEqual(content.segments, ['[白墨]：先把画挂起来，你觉得呢？']);
+        assert.equal(content.speaker, '白墨');
+        assert.equal(content.spriteImage, 'data:image/png;base64,QkFJ');
+        assert.equal(content.cgActive, false);
+        assert.equal(content.cgWaiting, true);
+        assert.equal(content.illustrationSlot, 19);
+        assert.equal(document.getElementById('igs-sprite').style.display, 'block');
+    } finally { host.destroy(); }
+});
+
+test('gate:simulation:pending-current-sprite-survives-one-image-cache-and-floor-prefetch', async () => {
+    const { localImageCacheFor } = await import('../src/media/tavern-image-cache.js');
+    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const document = createFakeDocument(), global = { document };
+    const cache = localImageCacheFor(global);
+    await cache.setMaxCount(1);
+    let notify = () => {}, reads = 0;
+    const service = createAssetGenerationService({
+        mediaCache: cache, llm: {}, nai: {}, getSettings: () => ({}),
+        messageHost: { getChatId: () => 'fixture', on: () => () => {} },
+        store: { getImage: async id => { reads++; return { dataUrl: `data:image/png;base64,${id}` }; } },
+        events: { emit: (_event, detail) => notify(detail) },
+    });
+    const raw = '[igs-char:白墨|平和|第一句。]\n[igs-char:白墨|喜悦|第二句。]\n[igs-char:白墨|愤怒|第三句。]';
+    const host = createIgsReaderHost({
+        global, media: { cache }, generatedAssets: service,
+        onGeneratedAssetUpdated: handler => { notify = handler; return () => {}; },
+        getUnifiedSettings: () => ({ bridge: { sceneAssets: { enabled: true, characters: { 白墨: { 平和: 'igs-gen:calm', 喜悦: 'igs-gen:joy', 愤怒: 'igs-gen:angry' } } } }, readerSettings: { titleScreen: false } }),
+    });
+    try {
+        const opened = host.openReader({ messageId: 22, message: { id: 22, text: raw }, raw }, { mode: 'fullscreen' });
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const content = () => host.getState().activeReader.snapshot.content;
+        assert.equal(content().spriteImage, 'data:image/png;base64,calm');
+        const steadyReads = reads;
+        await new Promise(resolve => setTimeout(resolve, 300));
+        assert.equal(reads, steadyReads, '预热图被淘汰后不得反复读图和整页重绘');
+        opened.controller.invokeAction('next');
+        await new Promise(resolve => setTimeout(resolve, 300));
+        assert.equal(content().spriteImage, 'data:image/png;base64,joy');
+        assert.equal(document.getElementById('igs-sprite').style.display, 'block');
+    } finally { host.destroy(); service.stop(); await cache.destroy(); }
+});
 
 test('gate:simulation:nsfw-scene-keeps-sprite-when-hide-toggle-off', async () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });

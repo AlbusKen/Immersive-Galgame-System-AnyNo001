@@ -50,7 +50,7 @@ export function createImageResourceCache(globalObject = globalThis, { limit = 96
             });
         }, { persist: false, timeoutMs: 15000 }).then(value => value ? cache.peek(key) || source : '').catch(() => source);
     }
-    return { load, get: url => cache.peek(keyOf(String(url || '').trim())),
+    return { load, get: url => cache.peek(keyOf(String(url || '').trim())), keyOf: url => keyOf(String(url || '').trim()),
         clear() { sources.clear(); }, destroy() { sources.destroy(); },
         size: () => [...sources.keys()].filter(key => cache.peek(key)).length };
 }

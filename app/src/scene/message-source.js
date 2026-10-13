@@ -9,6 +9,7 @@ import { DEFAULT_HTML_CARD_TAGS, extractHtmlCards } from './html-cards.js';
 import { extractChatBlocks } from './chat-blocks.js';
 import { IGS_DIRECTIVE_CLOSE_SOURCE, IGS_DIRECTIVE_LINE_RE, hasIgsDirectiveTags, normalizeIgsDirectiveLayout, stripOutfitFields } from './directive-tags.js';
 import { createOutfitResolver } from './character-outfits.js';
+import { normalizeImageMarkerLayout } from './image-marker-layout.js';
 
 export const DEFAULT_SOURCE_FILTER = Object.freeze({
     enabled: true,
@@ -430,7 +431,8 @@ export function readerBodyText(raw, sourceFilter) {
 export function buildIgsTextPayload(message, options = {}) {
     const originalRaw = getMessagePrimaryText(message);
     const sourceFilter = normalizeSourceFilter(options.sourceFilter);
-    const htmlCardResult = extractHtmlCards(originalRaw, parseTagList(sourceFilter.htmlCardTags));
+    const markerLayoutSource = normalizeImageMarkerLayout(originalRaw);
+    const htmlCardResult = extractHtmlCards(markerLayoutSource, parseTagList(sourceFilter.htmlCardTags));
     const chatResult = extractChatBlocks(htmlCardResult.text);
     // 指令写走样、或和旁白挤在同一行时先理顺：分页、正文格式化和指令归属都从这份文本出发，三者才对得上。
     const raw = normalizeIgsDirectiveLayout(chatResult.text);
@@ -586,6 +588,7 @@ export function buildIgsTextPayload(message, options = {}) {
 
     return {
         raw: originalRaw,
+        markerLayoutSource,
         htmlCards,
         chats,
         hasExcludedTextBlocks: Boolean(hasExcludedBlocks),

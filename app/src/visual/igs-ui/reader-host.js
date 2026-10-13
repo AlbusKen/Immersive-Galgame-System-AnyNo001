@@ -434,7 +434,7 @@ export function createIgsReaderHost(options = {}) {
     // 否则 N 张图触发 N 次整页重绘、每次又带上已到的全部 dataUrl，开销随张数平方增长。
     const IMAGE_REFRESH_BATCH_MS = 120;
     let imageRefreshTimer = 0;
-    let floorAssetPlan = { key: '', reader: null, urls: [], spriteUrls: new Set() };
+    let floorAssetPlan = { key: '', reader: null, urls: [] };
     let readerImageRefreshPending = false;
     let settingsImageRefreshPending = false;
     // 设置面板全屏盖住阅读器时不重绘后面的舞台，记一笔，关面板时补一次。
@@ -888,11 +888,16 @@ export function createIgsReaderHost(options = {}) {
         });
     }
 
+    function readerPageAssetUrls(content) {
+        if (!content) return [];
+        return [content.backgroundImage, content.spriteImage, content.pendingSpriteRef, content.nsfwCgPortrait,
+            content.fx && content.fx.foeImage,
+            ...(Array.isArray(content.castSprites) ? content.castSprites.map(member => member && member.image) : []),
+            ...(Array.isArray(content.pendingCastRefs) ? content.pendingCastRefs : [])].filter(Boolean);
+    }
+
     function pageUsesAsset(content, source) {
-        if (!content || !source) return false;
-        if (content.backgroundImage === source || content.spriteImage === source || content.nsfwCgPortrait === source) return true;
-        if (content.fx && content.fx.foeImage === source) return true;
-        return Array.isArray(content.castSprites) && content.castSprites.some((member) => member && member.image === source);
+        return Boolean(source) && readerPageAssetUrls(content).includes(source);
     }
 
     function concreteReaderAssetUrl(url) {
@@ -925,18 +930,15 @@ export function createIgsReaderHost(options = {}) {
         if (planChanged) {
             const sceneAssets = readerSettings._sceneAssets || null;
             const generatedAssets = options.generatedAssets || null;
-            const spriteUrls = new Set();
             floorAssetPlan = {
                 key,
                 reader: current,
-                spriteUrls,
                 urls: collectFloorAssetUrls({
                     source,
                     sceneAssets,
                     inheritedOutfits: payload.inheritedOutfits,
                     inheritedScene: payload.inheritedSceneState,
                     imageSlots: slots,
-                    onSpriteUrl: (url) => { if (isGeneratedAssetUrl(url)) spriteUrls.add(url); },
                     systemRole: readerSettings.systemRole,
                     readClues: (names) => collectOutfitClues(readStatusHudTablesSafe(), names),
                     assetMatchCtx: {
@@ -951,9 +953,10 @@ export function createIgsReaderHost(options = {}) {
                 }),
             };
         }
-        // 立绘像素读回后只预热这张图；背景、CG 和首屏仍沿用完整预热。
+        // 每楼只完整预热一次；缓存放不下的后续页图片由出场页按需读，不能在每次重绘中反复补满。
         const spriteRef = loadedImageId ? `igs-gen:${loadedImageId}` : '';
-        if (!planChanged && spriteRef && floorAssetPlan.spriteUrls.has(spriteRef)) {
+        if (!planChanged) {
+            if (!spriteRef || !floorAssetPlan.urls.includes(spriteRef)) return;
             const ready = concreteReaderAssetUrl(spriteRef);
             if (ready) imageResourceCache.load(ready);
             return;
@@ -1034,7 +1037,7 @@ export function createIgsReaderHost(options = {}) {
             exitDocumentFullscreen(getRootDocument(options.global));
         }
         current.assetLeases?.releaseAll();
-        if (floorAssetPlan.reader === current) floorAssetPlan = { key: '', reader: null, urls: [], spriteUrls: new Set() };
+        if (floorAssetPlan.reader === current) floorAssetPlan = { key: '', reader: null, urls: [] };
         current.imagePollToken += 1;
         streamObserver.stop();
         stopEmbeddedStoryWatch();
@@ -3507,6 +3510,7 @@ export function createIgsReaderHost(options = {}) {
         let spriteBackArt = false;
         let nsfwCgPortrait = '';
         let castSprites = [];
+        let pendingCastRefs = [];
         let spriteLeft = false;
         let speakerCastOrder = null;
         // 只给「复制本页诊断」用：记下立绘 / 背景这一页实际命中了哪一路。
@@ -3524,7 +3528,7 @@ export function createIgsReaderHost(options = {}) {
             : '';
         // 场景切换只看 [igs-scene] 标签：直接在原文里定位「当前页正文」，
         // 再取它前方最近的场景标签。不依赖段数、不做偏移累加。
-        const sceneSourceForOffset = String(payload.raw || text || '');
+        const sceneSourceForOffset = String(extracted.markerLayoutSource || payload.raw || text || '');
         // 说话页正文带「[名字]：」前缀，原文里找不到时先去掉前缀再找；仍找不到就借前面最近一页的位置。
         // 不按序号推断：说话指令常常没有序号，会一路读到本楼最后一个场景标签，说话页的背景就提前换掉。
         const locateSegment = (segment) => {
@@ -3665,7 +3669,7 @@ export function createIgsReaderHost(options = {}) {
             ? resolveEventCgForPage({ source: sceneSourceForOffset, segments, index: normalizedIndex, holdPages: readerSettings && readerSettings.cgHoldPages, eventCgs: sceneAssets.eventCgs })
             : null;
         const eventCgUrl = eventCg ? String(resolveGenerated(eventCg.url) || '') : '';
-        // 这一页挂了 CG。图还没从存储读回来时不要先铺场景背景，否则两张图先后写上同一层，对话框会跟着闪，最后往往只剩背景。
+        // 标记只定位 CG；没有可显示图片时保留正常舞台，读回后再切入 CG。
         const cgWaiting = Boolean(illustrationHit) && !illustrationUrl && !boundMarkerUrl;
         if (illustrationUrl) {
             finalBackgroundImage = illustrationUrl;
@@ -3675,10 +3679,6 @@ export function createIgsReaderHost(options = {}) {
             finalBackgroundImage = boundMarkerUrl;
             spriteImage = null;
             backgroundMatch = { source: 'bound-slot' };
-        } else if (cgWaiting) {
-            finalBackgroundImage = '';
-            spriteImage = null;
-            backgroundMatch = { source: 'cg' };
         } else if (eventCgUrl) {
             finalBackgroundImage = eventCgUrl;
             spriteImage = null;
@@ -3710,7 +3710,7 @@ export function createIgsReaderHost(options = {}) {
             }
             spriteImage = null;
         }
-        const cgActive = Boolean(illustrationUrl || boundMarkerUrl || cgWaiting || eventCgUrl);
+        const cgActive = Boolean(illustrationUrl || boundMarkerUrl || eventCgUrl);
         // Per-segment classification from the formatted segment text itself.
         // Order matters: thought (*...*) is checked before dialogue ([名字]：) because
         // a thought segment looks like *[名字]：...* and would otherwise match dialogue.
@@ -4028,6 +4028,7 @@ export function createIgsReaderHost(options = {}) {
                                 if (isReactMoodHit(reactHit)) hit = reactHit;
                             }
                             const image = resolveGenerated(hit.url);
+                            if (!image && isGeneratedAssetUrl(hit.url)) pendingCastRefs.push(hit.url);
                             return image ? { character: hit.character || m.character, mood: hit.slot || m.mood, outfit: hit.outfit || '', image } : null;
                         },
                     });
@@ -4049,6 +4050,7 @@ export function createIgsReaderHost(options = {}) {
             bubbleMood = '';
             if (hideChatSprite) spriteImage = null;
             castSprites = [];
+            pendingCastRefs = [];
             speakerCastOrder = null;
         }
         const statusSceneInfo = {
@@ -4123,6 +4125,7 @@ export function createIgsReaderHost(options = {}) {
                 spriteMatch,
                 backgroundMatch,
                 castSprites,
+                pendingCastRefs,
                 speakerCastOrder,
                 images: cloneData(displayImageState.images),
                 imageSlots: cloneData(displayImageState.slots),
@@ -4150,6 +4153,7 @@ export function createIgsReaderHost(options = {}) {
                 cgNsfw: Boolean(eventCgUrl && eventCg.nsfw),
                 illustrationActive: Boolean(illustrationUrl),
                 cgActive,
+                cgWaiting,
                 nsfwCgPortrait,
                 illustrationSlot: illustrationHit ? illustrationHit.slot : null,
                 illustrationUrl,
@@ -4601,7 +4605,13 @@ export function createIgsReaderHost(options = {}) {
     function updateMountedReader(snapshot) {
         const current = state.activeReader;
         if (!current) return;
-        current.assetLeases?.begin();
+        const leases = current.assetLeases ||= options.media?.cache ? createMediaLeaseScope(options.media.cache) : null;
+        leases?.begin();
+        for (const url of readerPageAssetUrls(snapshot.content)) {
+            const key = isGeneratedAssetUrl(url) ? `asset:${url.slice(8)}`
+                : options.media?.cache?.sourceId?.(url) || imageResourceCache.keyOf(url);
+            leases?.use(key);
+        }
         warmActiveFloorImages(snapshot);
         current.autoPlayer?.setSpeed(snapshot.readerSettings?.typewriter?.speed);
         noteReadingProgress(current, snapshot);

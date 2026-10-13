@@ -2,6 +2,12 @@
 
 本目录是 IGS 的 `Immersive Galgame System` 原版 UI 等价层。
 
+## 立绘与图片等待（v0.36.51）
+
+- `cgActive` 只表示已经取得显示地址的 CG；只有标记没有图片时 `cgWaiting=true`，背景与立绘继续按正常页匹配，诊断不报告 CG 显示中。
+- `pendingSpriteRef` 和 `pendingCastRefs` 保留当前页等待中的内部图身份；页面在整楼预热之前持有这些图及现有可见资源的中央缓存租约，翻页 / 关页按现有租约规则释放。
+- 整楼预热每份计划只执行一次；读图到达只预热对应图片，翻页缺图按需读取，不能因缓存无法容纳整楼而反复整楼读取和重绘。
+
 ## 边界
 
 - 保留原版 `.igs-*` selector、`#igs-overlay`、`#igs-unified-settings`、旧 `igs_*` 存储键语义。

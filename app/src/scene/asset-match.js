@@ -374,6 +374,17 @@ export function resolveBackgroundAsset(sceneState, ctx = {}) {
     return { url: user.url || '', source: user.url ? 'placeholder' : 'none', quality: user.quality, needsGeneration: true };
 }
 
+function lookupSpriteWithFallback(sceneState, sceneAssets) {
+    const hit = lookupSceneAssetUrls(sceneState, sceneAssets);
+    if (hit.spriteUrl || !hit.spriteCharacter) return hit;
+    const slots = sceneAssets.characters[hit.spriteCharacter];
+    if (!slots || typeof slots !== 'object') return hit;
+    // 正常表情链与默认都没有时，只在同角色原装内选平和或可用图，避免有图却整个人消失。
+    const slot = String(slots['平和'] || '').trim() ? '平和'
+        : Object.keys(slots).find(key => String(slots[key] || '').trim());
+    return slot ? { ...hit, spriteUrl: slots[slot], spriteSlot: slot, spriteQuality: 'default' } : hit;
+}
+
 export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
     const name = String(character || '').trim();
     if (!name) return { url: '', slot: '', character: '', source: 'none', needsGeneration: false };
@@ -389,7 +400,8 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
         const entry = liveMoods && liveMoods !== rawEntry.moods ? { ...rawEntry, moods: liveMoods } : rawEntry;
         if (entry && entry.moods) {
             const hit = lookupAssetValue(entry.moods, mood, userAssets.moodGroups, userAssets.moodFuzzyMatch === true, false);
-            const nudeBase = isBuiltinNudeOutfit(entry.wardrobe) ? String(entry.base || '').trim() : '';
+            const base = isBuiltinNudeOutfit(entry.wardrobe) ? String(entry.base || '').trim() : '';
+            const nudeBase = lostImage(base, ctx) ? '' : base;
             const calm = hit.url || nudeBase ? {} : lookupAssetValue(entry.moods, '平和', userAssets.moodGroups, false, false);
             const anySlot = hit.url || nudeBase || calm.url ? '' : Object.keys(entry.moods).find((slot) => String(entry.moods[slot] || '').trim());
             const own = hit.url ? hit
@@ -403,7 +415,7 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
     // 原装查表前先摘掉已丢失的内部图槽：未命中情绪照样落到组/同向档/平和/默认，不被死链截断。
     const liveChars = liveCharacters(userAssets.characters, ctx);
     const liveUserAssets = liveChars !== userAssets.characters ? { ...userAssets, characters: liveChars } : userAssets;
-    const user = lookupSceneAssetUrls({ character: name, mood }, liveUserAssets);
+    const user = lookupSpriteWithFallback({ character: name, mood }, liveUserAssets);
     if (lostImage(user.spriteUrl, ctx)) {
         // 兜底本身也已丢失时才标记缺图；否则 liveSlots 已摘掉死槽、由正常兜底链接管。
         return { url: '', slot: '', character: name, source: 'none', needsGeneration: true };
@@ -424,7 +436,7 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
         return { url: '', slot: '', character: name, source: 'none', quality: user.spriteQuality, needsGeneration: false };
     }
     const library = normalizeGeneratedLibrary(ctx.generatedAssets);
-    const generated = lookupSceneAssetUrls({ character: name, mood }, { characters: library.characters, characterAliases: library.characterAliases, moodGroups: userAssets.moodGroups, moodFuzzyMatch: userAssets.moodFuzzyMatch });
+    const generated = lookupSpriteWithFallback({ character: name, mood }, { characters: liveCharacters(library.characters, ctx), characterAliases: library.characterAliases, moodGroups: userAssets.moodGroups, moodFuzzyMatch: userAssets.moodFuzzyMatch });
     if (generated.spriteUrl && !lostImage(generated.spriteUrl, ctx)) {
         return { url: generated.spriteUrl, slot: generated.spriteSlot, character: generated.spriteCharacter || name, source: 'library', quality: generated.spriteQuality, needsGeneration: false };
     }

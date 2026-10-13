@@ -2634,8 +2634,7 @@ test('gate:igs-ui:generated-sprite-arrival-only-warms-that-sprite', () => {
         assert.equal(timers.length, 1, '保留原有合并重绘调度，不新增重绘');
         calls.length = 0;
         notify({ reason: 'image-loaded', imageId: 'unrelated' });
-        assert.ok(calls.includes('igs-gen:first'));
-        assert.ok(calls.includes('igs-gen:second'), '非立绘事件仍走原有整楼预热路径');
+        assert.deepEqual(calls, [], '无关图片到达不得再次读取整楼预热素材');
         assert.equal(timers.length, 1, '多个图片事件仍沿用合并重绘');
     } finally {
         host.destroy();

@@ -1,6 +1,7 @@
 import { requireMediaCache } from '../../media/media-cache-owner.js';
 import { floorHasEventCg } from '../../scene/event-cg.js';
 import { numberParagraphs, formatNumberedParagraphs, insertMarkers, insertMarkersAtAnchors, findAnchorInsertIndex, appendedTail, reattachTail, transplantMarkers } from './marker-placer.js';
+import { normalizeImageMarkerLayout } from '../../scene/image-marker-layout.js';
 import { MIN_AUTO_IMAGE_BODY_CHARS, floorBodyLength } from './floor-body-length.js';
 import { buildPlannerUserPrompt, formatTodayOutfitBlock } from './planner-prompt.js';
 import { summarizeFloorOutfits } from './floor-outfit-reference.js';
@@ -439,7 +440,7 @@ export function createAutoIllustrationService(deps) {
         }
         // 标记还在但记录丢了（换设备、清缓存）时先去掉旧标记再规划，避免重复插入；写回时仍按原文校验。
         const expected = floor;
-        if (/(?:\[igs-img:\s*\d+\s*\]|<IMG>\s*\d+\s*<\/IMG>)/i.test(floor.text)) floor = { ...floor, text: stripIllustrationMarkers(floor.text) };
+        if (/(?:\[igs-img:\s*\d+\s*\]|<IMG>\s*\d+\s*<\/IMG>)/i.test(floor.text)) floor = { ...floor, text: stripIllustrationMarkers(normalizeImageMarkerLayout(floor.text)) };
         const numbered = numberParagraphs(floor.text);
         // 本楼没写场景标签 = 场景延续：继承最近一个带场景标签的楼的 NSFW，不让 NSFW 掉进过场概率。
         if (!numbered.scenes.length) numbered.isNsfw = inheritedNsfw(messageId);

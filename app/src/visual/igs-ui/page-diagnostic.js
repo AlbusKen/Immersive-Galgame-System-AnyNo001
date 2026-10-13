@@ -45,6 +45,7 @@ function spriteLine(c) {
     const why = m.outfitOffset == null ? '' : `（来源 ${m.outfitSource || '无'}${m.outfitReason ? `/${m.outfitReason}` : ''} @${m.outfitOffset}）`;
     const want = `角色「${m.character}」表情「${m.mood || '无'}」服装「${m.outfit || '无'}」${why}`;
     if (c.spriteImage) return `${want} → ${label(m.source)}，槽位「${m.slot || '默认'}」${m.quality ? `，匹配度 ${m.quality}` : ''}`;
+    if (c.pendingSpriteRef) return `${want} → ${label(m.source)}，槽位「${m.slot || '默认'}」，原图读取中`;
     if (c.sceneNsfw) return `${want} → NSFW 场景隐藏立绘`;
     return `${want} → 未命中（${label(m.source)}${m.quality ? `，匹配度 ${m.quality}` : ''}）`;
 }
@@ -93,7 +94,7 @@ export function buildPageDiagnostic(snapshot, { version = '', worldview = '', pr
         `立绘 ${spriteLine(c)}`,
         `同台 ${cast.length ? cast.join('、') : '无'}`,
         `背景 ${backgroundLine(c)}`,
-        `CG ${c.cgActive ? `显示中（槽位 ${c.illustrationSlot ?? '?'}）` : c.illustrationSlot != null ? `有标记（槽位 ${c.illustrationSlot}）但没有图` : '无'} · 图片 期望${c.imageExpectedCount ?? 0}/绑定${c.imageBoundCount ?? 0}/未绑${c.imageUnboundCount ?? 0}/可用${c.imageAvailableCount ?? 0}${c.imageLoading ? ' · 出图中' : ''}`,
+        `CG ${c.cgActive ? `显示中（槽位 ${c.illustrationSlot ?? '?'}）` : c.cgWaiting ? `有标记（槽位 ${c.illustrationSlot}）但图片未就绪，保留场景与立绘` : c.illustrationSlot != null ? `有标记（槽位 ${c.illustrationSlot}）但没有图` : '无'} · 图片 期望${c.imageExpectedCount ?? 0}/绑定${c.imageBoundCount ?? 0}/未绑${c.imageUnboundCount ?? 0}/可用${c.imageAvailableCount ?? 0}${c.imageLoading ? ' · 出图中' : ''}`,
         `演出 ${summarizeFx(c.fx).join('、') || '无'}`,
     ];
     if (notes.length) lines.push(`提示 ${notes.join('、')}`);

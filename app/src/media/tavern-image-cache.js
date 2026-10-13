@@ -79,10 +79,14 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
     function trimMemory() {
         let bytes = [...memory.values()].reduce((sum, entry) => sum + entry.bytes, 0);
         const visible = new Set([...aliases].filter(([key]) => pins.has(key)).map(([, identity]) => identity));
-        for (const [id, entry] of memory) {
-            if (memory.size <= maxCount && bytes <= memoryBytes) break;
-            if (visible.has(id) && bytes <= memoryBytes) continue;
-            bytes -= entry.bytes; evict(id);
+        // 预热不能挤掉正在显示的图；只有活跃图本身超出硬字节预算才淘汰活跃资源。
+        for (const active of [false, true]) {
+            for (const [id, entry] of memory) {
+                if (memory.size <= maxCount && bytes <= memoryBytes) return;
+                if (visible.has(id) !== active) continue;
+                if (active && bytes <= memoryBytes) return;
+                bytes -= entry.bytes; evict(id);
+            }
         }
     }
     function remember(path, value) {
