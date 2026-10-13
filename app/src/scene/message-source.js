@@ -305,39 +305,75 @@ export function applySentencePaging(text, options = {}) {
     const source = String(text || '');
     if (!source.trim()) return source;
     const narrationOnly = Boolean(options.narrationOnly);
+    const splitNarration = options.splitNarration !== false;
     return source
         .split('\n')
-        .map((line) => splitSentenceLine(line, narrationOnly))
+        .map((line) => splitSentenceLine(line, narrationOnly, Boolean(options.dialogueAndThought), splitNarration))
         .join('\n');
 }
 
-function splitSentenceLine(line, narrationOnly) {
+function splitSentenceLine(line, narrationOnly, dialogueAndThought = false, splitNarration = true) {
     const trimmed = line.trim();
     if (!trimmed) return line;
     // 跳过非旁白行：场景素材模式下，对话([名字]：…)和心理活动(*…*)整行保留，
     // 只在旁白行按句号断页，否则会把对话/心理拆碎、丢失气泡样式和角色名归属。
-    if (narrationOnly && !isNarrationLine(trimmed)) return line;
+    if (narrationOnly && !isNarrationLine(trimmed)) {
+        if (!dialogueAndThought) return line;
+        const thought = line.match(/^(\s*\*+)([\s\S]*?)(\*+\s*)$/);
+        if (thought) {
+            const prefix = (thought[2].match(/^(\s*\[[^\]\n]+\]\s*[:：]\s*)/) || [])[1] || '';
+            const body = prefix ? thought[2].slice(prefix.length) : thought[2];
+            return splitSentenceBody(body).split('\n').map((part) => `${thought[1]}${prefix}${part}${thought[3]}`).join('\n');
+        }
+        const dialogue = line.match(/^(\s*(?:\[[^\]\n]+\]|[^:：\n]{1,24})\s*[:：]\s*)([\s\S]+)$/);
+        return dialogue ? splitSentenceBody(dialogue[2]).split('\n').map((part) => `${dialogue[1]}${part}`).join('\n') : line;
+    }
+    if (!splitNarration) return line;
+    return splitSentenceBody(line);
+}
+
+function splitSentenceBody(line) {
     // \x00IMG\x00 是图片占位，不能被句号切断；保护标签/心理/插图块内部的句号。
-    if (/\x00IMG\x00/.test(line) || /image###/i.test(line) || /^\s*\[[^\]]+\]\s*$/.test(trimmed)) return line;
+    if (/\x00IMG\x00/.test(line) || /image###/i.test(line) || /^\s*\[[^\]]+\]\s*$/.test(line.trim())) return line;
     // 逐字扫描：〖〗 译文块内部的句末符号不切（译文被切到下一页会丢失注音配对）；
     // 连续句末符号（……、？！）视作一个整体，在最后一个符号后断页。
     let out = '';
     let depth = 0;
     let thought = false;
+    let splitAfterTranslation = false;
     for (let i = 0; i < line.length; i++) {
         const ch = line[i];
         out += ch;
         if (ch === '〖') { depth += 1; continue; }
-        if (ch === '〗') { depth = Math.max(0, depth - 1); continue; }
+        if (ch === '〗') {
+            depth = Math.max(0, depth - 1);
+            if (depth === 0 && splitAfterTranslation) {
+                splitAfterTranslation = false;
+                while (i + 1 < line.length && SENTENCE_PAGING_CLOSERS.includes(line[i + 1])) out += line[++i];
+                const rest = line.slice(i + 1);
+                if (rest.trim()) {
+                    const spaces = (rest.match(/^\s*/) || [''])[0];
+                    out += spaces + '\n';
+                    i += spaces.length;
+                }
+            }
+            continue;
+        }
         if (depth > 0) continue;
         // *…*/**…** 心理话标记内部的句末不切：标记被切成两页会丢失心理样式与配对。
         // 连续 *（如 ** 强调）是同一个标记单元，只翻转一次。
         if (ch === '*') { thought = !thought; while (line[i + 1] === '*') { out += '*'; i++; } continue; }
         if (thought || !SENTENCE_PAGING_TERMINATORS.includes(ch)) continue;
+        // 末尾的？！与闭引号归前句；译文 〖〗 必须与原句同页。
+        while (i + 1 < line.length && SENTENCE_PAGING_TERMINATORS.includes(line[i + 1])) out += line[++i];
+        if (line[i + 1] === '〖') { splitAfterTranslation = true; continue; }
+        while (i + 1 < line.length && SENTENCE_PAGING_CLOSERS.includes(line[i + 1]) && line[i + 1] !== '〖') out += line[++i];
         const rest = line.slice(i + 1);
         if (!rest.trim()) continue;
-        const next = rest[0];
-        if (/\s/.test(next) || SENTENCE_PAGING_TERMINATORS.includes(next) || SENTENCE_PAGING_CLOSERS.includes(next)) continue;
+        const spaces = (rest.match(/^\s*/) || [''])[0];
+        if (rest[spaces.length] === '〖') { splitAfterTranslation = true; continue; }
+        out += spaces;
+        i += spaces.length;
         out += '\n';
     }
     return out;
@@ -411,6 +447,7 @@ export function buildIgsTextPayload(message, options = {}) {
     // 场景素材模式下始终识别四栏：没登记任何服装时，AI 写出的服装栏也按未登记服装剥掉，不把整句打成旁白。
     const outfitResolver = sceneAssetsEnabled ? createOutfitResolver(options.sceneAssets) : null;
     const sentencePagingEnabled = Boolean(options.sentencePaging);
+    const dialogueSentencePagingEnabled = Boolean(options.dialogueSentencePaging);
     const strictPayload = buildFormattedTextPipeline(raw, sourceFilter, virtualRegex, { visibleText: safeVisibleText, sceneAssetsEnabled, outfitResolver });
     const cleanedRaw = normalizeWhitespace(stripReaderFormattingControls(cleanNarrativeSource(safeRaw)));
     const filteredToEmpty = strictPayload.sourceKind === 'tagged-empty';
@@ -518,12 +555,16 @@ export function buildIgsTextPayload(message, options = {}) {
         cleanedRaw,
         sourceFilter.enabled ? '' : String(raw || '').trim(),
     ), readerScene.speaker));
-    const pagedReaderText = sentencePagingEnabled
-        ? applySentencePaging(readerText, { narrationOnly: sceneAssetsEnabled })
+    const pagedReaderText = sentencePagingEnabled || dialogueSentencePagingEnabled
+        ? applySentencePaging(readerText, {
+            narrationOnly: sceneAssetsEnabled || dialogueSentencePagingEnabled,
+            splitNarration: sentencePagingEnabled, dialogueAndThought: dialogueSentencePagingEnabled,
+        })
         : readerText;
     if (sceneAssetsEnabled && sceneDirectives.length) {
         sceneDirectives = remapSceneDirectiveSegments(sceneDirectives, sceneDirectiveSource, virtualRegex, {
             sentencePaging: sentencePagingEnabled,
+            dialogueSentencePaging: dialogueSentencePagingEnabled,
             narrationOnly: true,
         });
     }
@@ -803,8 +844,9 @@ function remapSceneDirectiveSegments(directives, source, virtualRegex, options =
         formatted.formattedRaw,
         markedSource,
     ), readerScene.speaker);
-    const pagedText = options.sentencePaging
-        ? applySentencePaging(readerText, { narrationOnly: options.narrationOnly === true })
+    const pagedText = options.sentencePaging || options.dialogueSentencePaging
+        ? applySentencePaging(readerText, { narrationOnly: options.narrationOnly === true,
+            splitNarration: options.sentencePaging === true, dialogueAndThought: options.dialogueSentencePaging === true })
         : readerText;
     const segments = buildNarrativeSegments(pagedText);
     const mapped = [];

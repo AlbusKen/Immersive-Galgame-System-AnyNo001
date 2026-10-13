@@ -379,6 +379,7 @@ async function buildReaderPayload(app, message, messageId, readerMode) {
         virtualRegex: bridge.virtualRegex,
         sceneAssets: bridge.sceneAssets,
         sentencePaging: bridge.sentencePaging,
+        dialogueSentencePaging: bridge.dialogueSentencePaging,
     });
     // 跨楼层场景追溯只在场景素材模式启用时发生；本楼没有任何场景指令时
     // （AI 漏发 [igs-scene:]，正文照常输出）才向前最多追溯 3 个 AI 楼层。

@@ -322,6 +322,36 @@ function lostImage(url, ctx) {
     return Boolean(url) && isGeneratedAssetUrl(url) && typeof ctx.isMissingImage === 'function' && ctx.isMissingImage(url);
 }
 
+// 已丢失的 igs-gen 图不能挡住兜底：先把它从候选里摘掉，再按正常顺序查情绪组/平和/默认。
+function liveSlots(record, ctx) {
+    if (!record || typeof record !== 'object' || typeof ctx.isMissingImage !== 'function') return record;
+    let out = record;
+    for (const [slot, url] of Object.entries(record)) {
+        if (lostImage(url, ctx)) {
+            if (out === record) out = { ...record };
+            delete out[slot];
+        }
+    }
+    return out;
+}
+
+function liveCharacters(characters, ctx) {
+    if (!characters || typeof characters !== 'object' || typeof ctx.isMissingImage !== 'function') return characters;
+    let out = characters;
+    for (const [name, record] of Object.entries(characters)) {
+        const live = liveSlots(record, ctx);
+        if (live !== record) {
+            if (out === characters) out = { ...characters };
+            out[name] = live;
+        }
+    }
+    return out;
+}
+
+function hasLostImage(record, ctx) {
+    return Boolean(record) && typeof record === 'object' && Object.values(record).some((url) => lostImage(url, ctx));
+}
+
 export function resolveBackgroundAsset(sceneState, ctx = {}) {
     const state = sceneState || {};
     if (!state.scene) return { url: '', source: 'none', needsGeneration: false };
@@ -353,7 +383,9 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
     // 整套一张图都没有才退回原装——换了衣服却闪回原装的衣服比表情不准更违和。
     if (outfitName && outfitName !== OUTFIT_RESET) {
         const found = outfitsOfCharacter(userAssets.characterOutfits, userAssets.characterAliases, name);
-        const entry = found.outfits[outfitName];
+        const rawEntry = found.outfits[outfitName];
+        // 已丢失的内部图槽先摘掉再查：命中已丢的槽不应挡住平和/任意槽/原装兜底。
+        const entry = rawEntry && rawEntry.moods ? { ...rawEntry, moods: liveSlots(rawEntry.moods, ctx) } : rawEntry;
         if (entry && entry.moods) {
             const hit = lookupAssetValue(entry.moods, mood, userAssets.moodGroups, userAssets.moodFuzzyMatch === true, false);
             const nudeBase = isBuiltinNudeOutfit(entry.wardrobe) ? String(entry.base || '').trim() : '';
@@ -363,17 +395,30 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
                 : nudeBase ? { url: nudeBase, slot: BUILTIN_NUDE_OUTFIT, quality: 'exact' }
                 : calm.url ? calm
                 : anySlot ? { url: entry.moods[anySlot], slot: anySlot, quality: 'group' } : {};
-            const picked = own.url ? own : lookupAssetValue((userAssets.characters || {})[found.key || name], '默认', userAssets.moodGroups, false, false);
+            const picked = own.url ? own : lookupAssetValue(liveSlots((userAssets.characters || {})[found.key || name], ctx), '默认', userAssets.moodGroups, false, false);
             if (picked.url && !lostImage(picked.url, ctx)) return { url: picked.url, slot: picked.slot, outfit: outfitName, character: found.key || name, source: 'user-outfit', quality: hit.url ? hit.quality : (nudeBase && picked.url === nudeBase ? 'exact' : 'group'), needsGeneration: false };
         }
     }
-    const user = lookupSceneAssetUrls({ character: name, mood }, userAssets);
-    if (lostImage(user.spriteUrl, ctx)) return { url: '', slot: '', character: name, source: 'none', needsGeneration: true };
+    // 原装查表前先摘掉已丢失的内部图槽：未命中情绪照样落到组/同向档/平和/默认，不被死链截断。
+    const liveUserAssets = typeof ctx.isMissingImage === 'function' ? { ...userAssets, characters: liveCharacters(userAssets.characters, ctx) } : userAssets;
+    const user = lookupSceneAssetUrls({ character: name, mood }, liveUserAssets);
+    if (lostImage(user.spriteUrl, ctx)) {
+        // 兜底本身也已丢失时才标记缺图；否则 liveSlots 已摘掉死槽、由正常兜底链接管。
+        return { url: '', slot: '', character: name, source: 'none', needsGeneration: true };
+    }
     if (user.spriteUrl) {
-        return { url: user.spriteUrl, slot: user.spriteSlot, character: user.spriteCharacter || name, source: 'user', quality: user.spriteQuality, needsGeneration: false };
+        // 兜住的图还在，但同一角色名下还有死链槽：照常显示兜底图，同时保留缺图标记让补图链重画那张。
+        const key = resolveCharacterKey(userAssets.characters, userAssets.characterAliases, name);
+        const dangling = key ? hasLostImage((userAssets.characters || {})[key], ctx) : false;
+        return { url: user.spriteUrl, slot: user.spriteSlot, character: user.spriteCharacter || name, source: 'user', quality: user.spriteQuality, needsGeneration: dangling };
     }
     // 用户已登记该角色（哪怕槽位空着）就不是「无名角色」，不替用户生成。
     if (resolveCharacterKey(userAssets.characters, userAssets.characterAliases, name)) {
+        // 已登记角色名下所有立绘槽都丢了：按缺图处理，让补图链重画。
+        const key = resolveCharacterKey(userAssets.characters, userAssets.characterAliases, name);
+        if (key && hasLostImage((userAssets.characters || {})[key], ctx)) {
+            return { url: '', slot: '', character: name, source: 'none', needsGeneration: true };
+        }
         return { url: '', slot: '', character: name, source: 'none', quality: user.spriteQuality, needsGeneration: false };
     }
     const library = normalizeGeneratedLibrary(ctx.generatedAssets);

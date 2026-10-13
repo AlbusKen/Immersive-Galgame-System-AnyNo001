@@ -195,6 +195,18 @@ test('gate:igs-ui:embedded-source-cache-parses-once-per-signature', () => {
     });
     cache.get(pagingSignature, { mark: 2 });
     assert.equal(cache.getParseCount(), 2);
+    const dialogueSignature = buildReaderSourceSignature({
+        messageId: 7,
+        rawText: 'line one\nline two',
+        visibleText: 'line one\nline two',
+        sourceFilter: { enabled: true },
+        virtualRegex: { enabled: true, pattern: 'x', flags: 'g', replacement: 'y' },
+        sceneAssetsEnabled: false,
+        sentencePaging: false,
+        dialogueSentencePaging: true,
+    });
+    cache.get(dialogueSignature, { mark: 3 });
+    assert.equal(cache.getParseCount(), 3, '对白开关变化不得复用未拆分的旧阅读源');
 });
 
 test('gate:igs-ui:embedded-source-cache-tolerates-circular-host-objects', () => {
@@ -1284,6 +1296,26 @@ test('gate:scene:sentence-paging-only-splits-narration-when-scene-assets-on', ()
     assert.deepEqual(payload.textSegments, ['旁白第一句。', '旁白第二句。', '[玉子]：你好呀。请坐。']);
 });
 
+test('gate:scene:sentence-paging-keeps-punctuation-spaces-and-quoted-text', () => {
+    const source = '她轻声说“走吧。” 随后出门。门开了！ 她停下。';
+    const pages = buildIgsTextPayload({ text: source }, { sentencePaging: true }).textSegments;
+    assert.deepEqual(pages, ['她轻声说“走吧。”', '随后出门。', '门开了！', '她停下。']);
+});
+
+test('gate:scene:dialogue-and-thought-paging-is-independent-and-preserves-markup', () => {
+    const source = '旁白第一句。旁白第二句。\n[玉子]：你好呀。请坐。\n*[玉子]：先别急。再等等。*';
+    const options = { sceneAssets: { enabled: true }, dialogueSentencePaging: true };
+    const dialogueOnly = buildIgsTextPayload({ text: source }, options);
+    assert.deepEqual(dialogueOnly.textSegments, [
+        '旁白第一句。旁白第二句。', '[玉子]：你好呀。', '[玉子]：请坐。',
+        '*[玉子]：先别急。*', '*[玉子]：再等等。*',
+    ]);
+    const both = buildIgsTextPayload({ text: source }, { ...options, sentencePaging: true });
+    assert.deepEqual(both.textSegments.slice(0, 2), ['旁白第一句。', '旁白第二句。']);
+    const noAssets = buildIgsTextPayload({ text: '一段旁白。另一句。\n[玉子]：你好。再见。', }, { dialogueSentencePaging: true });
+    assert.deepEqual(noAssets.textSegments.slice(0, 1), ['一段旁白。另一句。'], '对白开关不能误拆旁白');
+});
+
 test('gate:igs-ui:apply-align-style-maps-left-center-indent', () => {
     const makeEl = () => ({ style: {} });
     const left = makeEl();
@@ -1352,6 +1384,18 @@ test('gate:igs-ui:resolve-sprite-layout-keeps-mode-isolated', () => {
     // 切到没有该 key 的模式回退默认，不会串用其他模式的数据
     assert.deepEqual(resolveSpriteLayout(layouts, 'web', '小林海斗', '平和'), { posX: 50, posY: 100, scale: 100 });
 });
+
+test('gate:igs-ui:resolve-sprite-layout-base-default-slot-reads-back-on-mood-less-pages', () => {
+    // 调整原装立绘时编辑条把情绪改写到「默认」槽；旁白页 spriteMood 为空，必须仍能读到这条。
+    const layouts = { 'pc::雪乃::默认': { posX: 60, posY: 95, scale: 150 } };
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', '默认'), { posX: 60, posY: 95, scale: 150 });
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', ''), { posX: 60, posY: 95, scale: 150 });
+    // 其他情绪词有自己的槽键时不被默认槽盖住；没键时落到默认 100。
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', '喜悦'), { posX: 50, posY: 100, scale: 100 });
+    // 服装身份不借用原装的默认槽。
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', '', '校服'), { posX: 50, posY: 100, scale: 100 });
+});
+
 
 test('gate:igs-ui:resolve-sprite-layout-default-scale-only-fills-unplaced', () => {
     const layouts = { 'pc::小林海斗::平和': { posX: 70, posY: 30, scale: 180 } };
@@ -2088,6 +2132,58 @@ test('gate:settings:generated-asset-actions-rollback-on-persist-and-service-fail
         assert.equal(persistCount, 2);
         assert.equal(draft.bridge.sceneAssets.generated.scenes['临时景'], undefined);
         assert.equal(draft.bridge.sceneAssets.scenes['临时景'], undefined);
+    }
+
+    {
+        const draft = makeDraft();
+        draft.bridge.sceneAssets.characters = { 临时人: { 默认: 'igs-gen:old-sprite' } };
+        const saved = [];
+        const result = await handleSettingsAction('gen-temp-accept:sprite', makeContext(
+            draft,
+            { alert: () => {} },
+            (options = {}) => {
+                saved.push({ changed: options.spriteAssetChanged, url: draft.bridge.sceneAssets.characters.临时人.默认 });
+                return { ok: true };
+            },
+            {
+                readRecord: async () => ({ imageId: 'new-sprite', type: 'sprite', name: '临时人' }),
+                setStatus: async () => ({ ok: false, reason: 'status-failed' }),
+            },
+        ));
+        assert.equal(result.reason, 'status-failed');
+        assert.deepEqual(saved, [
+            { changed: true, url: 'igs-gen:new-sprite' },
+            { changed: true, url: 'igs-gen:old-sprite' },
+        ], '立绘入库及服务失败后的回滚都须失效舞台预热清单');
+    }
+
+    {
+        const draft = makeDraft();
+        draft.bridge.sceneAssets.generated.characters.临时人 = { 默认: 'igs-gen:adopted-sprite' };
+        draft.bridge.sceneAssets.characters = { 临时人: { 默认: 'igs-gen:old-sprite' } };
+        const saved = [];
+        const result = await handleSettingsAction(`gen-adopt-sprite:${enc('临时人')}`, makeContext(
+            draft, { alert: () => {} },
+            (options = {}) => {
+                saved.push({ changed: options.spriteAssetChanged, url: draft.bridge.sceneAssets.characters.临时人.默认 });
+                return { ok: true };
+            }, null,
+        ));
+        assert.equal(result.ok, true);
+        assert.deepEqual(saved, [{ changed: true, url: 'igs-gen:adopted-sprite' }]);
+        assert.equal(draft.bridge.sceneAssets.generated.characters.临时人, undefined);
+    }
+
+    {
+        const draft = makeDraft();
+        draft.bridge.sceneAssets.generated.characters.空图 = { 默认: '' };
+        let saves = 0;
+        const result = await handleSettingsAction(`gen-adopt-sprite:${enc('空图')}`, makeContext(
+            draft, { alert: () => {} },
+            () => { saves += 1; return { ok: true }; }, null,
+        ));
+        assert.equal(result.reason, 'generated-sprite-adopt-failed');
+        assert.equal(saves, 0, '未绑定图片不得提交设置或失效舞台清单');
     }
 
     {

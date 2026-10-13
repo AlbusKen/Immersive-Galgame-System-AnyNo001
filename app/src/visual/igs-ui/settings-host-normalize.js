@@ -47,6 +47,7 @@ export function normalizeBridgeConfig(bridge) {
     normalized.sourceFilter = normalizeSourceFilter(normalized.sourceFilter);
     normalized.virtualRegex = normalizeVirtualRegex(normalized.virtualRegex);
     normalized.sentencePaging = normalizeBoolean(normalized.sentencePaging, false);
+    normalized.dialogueSentencePaging = normalizeBoolean(normalized.dialogueSentencePaging, false);
     normalized.imageApi = normalizeImageApi(normalized.imageApi);
     normalized.sceneAssets = normalizeSceneAssets(normalized.sceneAssets);
     normalized.vnTheme = normalizeVnTheme(normalized.vnTheme);

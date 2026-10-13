@@ -759,12 +759,13 @@ test('gate:assets:reader-manual-generation-feedback', async () => {
             [{ ok: false, reason: 'plan-failed', error: '副 LLM 规划失败' }, /副 LLM 规划失败/, 'error'],
             [{ ok: true, reason: 'disabled' }, /开启自动背景或自动立绘/, 'warn'],
             [{ ok: true, reason: 'scene-assets-disabled' }, /开启场景素材/, 'warn'],
-            [{ ok: true, reason: 'nothing-missing' }, /没有未登记/, 'warn'],
+            [{ ok: true, reason: 'nothing-missing' }, /没有未登记/, 'skipped'],
         ]) {
             result = next;
             assert.equal(await opened.controller.invokeAction('generate-assets'), next);
             assert.match(host.getState().activeReader.generationTip, text);
             assert.equal(logs.at(-1).level, level);
+            if (level === 'skipped') assert.equal(document.getElementById('igs-gen-strip').getAttribute('data-state'), 'skipped');
         }
     } finally { host.destroy(); }
 });
@@ -872,6 +873,36 @@ test('gate:assets:review-rename-accept-persists-status-and-hides-card-or-rolls-b
             }
         } finally { host.destroy(); }
     }
+});
+
+test('gate:simulation:new-scene-without-image-temporarily-shows-inherited-scene-background', async () => {
+    const document = createFakeDocument();
+    // 场景名刻意不与已有场景共享子串，避免撞进 lookupSceneBackground 的模糊命中。
+    const raw = '[igs-scene:冰湖|白天|晴]\n她走进冰湖。';
+    const host = createIgsReaderHost({
+        global: { document, localStorage: createMemoryStorage() },
+        getUnifiedSettings: () => ({
+            bridge: { sceneAssets: { enabled: true, scenes: { 竹林: { url: 'https://example.com/old.png', times: {} } }, characters: {} } },
+            readerSettings: {},
+        }),
+    });
+    try {
+        const opened = host.openReader({
+            messageId: 41, message: { id: 41, text: raw }, raw,
+            inheritedSceneState: { scene: '竹林', time: '白天' },
+        }, { mode: 'pc' });
+        assert.equal(opened.ok, true);
+        const content = host.getState().activeReader.snapshot.content;
+        assert.equal(content.backgroundImage, 'https://example.com/old.png');
+        assert.equal(content.backgroundMatch && content.backgroundMatch.source, 'inherited');
+        // 同一场景名不算继承顶替：上一楼就是这个场景时，未生成就保持空白等待。
+        const again = host.openReader({
+            messageId: 42, message: { id: 42, text: raw }, raw,
+            inheritedSceneState: { scene: '冰湖', time: '白天' },
+        }, { mode: 'pc' });
+        assert.equal(again.ok, true);
+        assert.equal(host.getState().activeReader.snapshot.content.backgroundImage, '');
+    } finally { host.destroy(); }
 });
 
 // 旧楼（isLatest:false）不再拒绝：续读停在哪一楼，工具栏就按哪一楼出图。
@@ -1612,6 +1643,192 @@ test('gate:simulation:scene-and-character-aliases-reuse-original-assets-and-layo
     assert.equal(sprite.style.backgroundPosition, '14% 78%');
     assert.equal(sprite.style.backgroundSize, 'auto 126%');
     vn.destroy();
+});
+
+test('gate:simulation:settings-generated-sprite-refreshes-current-stage', async () => {
+    const document = createFakeDocument();
+    const raw = '[igs-char:玉子|平和|你好。]';
+    let revision = 0;
+    let imageUpdated = () => {};
+    const resolved = [];
+    let stored = {
+        bridge: { openMode: 'pc', sceneAssets: { enabled: true, scenes: {}, characters: { 玉子: { 默认: 'igs-gen:old' } } } },
+        readerSettings: { titleScreen: false },
+    };
+    const images = new Map([['igs-gen:old', 'data:image/png;base64,T0xE'], ['igs-gen:new', 'data:image/png;base64,TkVX']]);
+    const host = createIgsReaderHost({
+        global: { document, localStorage: createMemoryStorage() },
+        onGeneratedAssetUpdated: (handler) => { imageUpdated = handler; return () => {}; },
+        getUnifiedSettings: () => stored,
+        getSettingsRevision: () => revision,
+        saveUnifiedSettings(next) { stored = next; revision += 1; return { ok: true }; },
+        generatedAssets: {
+            resolveUrl: (ref) => { resolved.push(ref); return images.get(ref) || ''; },
+            getImagePrompt: async () => ({ caption: { v4_prompt: { caption: { base_caption: 'portrait', char_captions: [] } } }, edited: true }),
+            generateCharacterSprite: async () => ({ ok: true, imageId: 'new' }),
+        },
+    });
+    try {
+        host.openReader({ messageId: 7, message: { id: 7, text: raw }, raw }, { mode: 'pc' });
+        assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.get('igs-gen:old'));
+        const sprite = document.getElementById('igs-overlay').querySelector('#igs-sprite');
+        assert.match(sprite.style.backgroundImage, /T0xE/, '舞台起初使用旧立绘');
+        const settings = host.openSettings({ tab: 'scene' });
+        const generated = await settings.controller.invoke('char-generate-sprite:%E7%8E%89%E5%AD%90');
+        assert.notEqual(generated && generated.ok, false);
+        assert.equal(stored.bridge.sceneAssets.characters.玉子.默认, 'igs-gen:new');
+        resolved.length = 0;
+        imageUpdated({ reason: 'image-loaded', imageId: 'new' });
+        assert.ok(resolved.includes('igs-gen:new'), '图片到达后预热新立绘');
+        assert.ok(!resolved.includes('igs-gen:old'), '设置保存后不能继续预热旧立绘');
+        assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.get('igs-gen:new'));
+        assert.equal(settings.controller.close().ok, true);
+        assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.get('igs-gen:new'));
+        assert.match(sprite.style.backgroundImage, /TkVX/, '设置器关闭后舞台必须立即显示新立绘');
+    } finally { host.destroy(); }
+});
+
+test('gate:simulation:settings-generated-sprite-cold-image-arrival-refreshes-stage-once', async () => {
+    const document = createFakeDocument();
+    const raw = '[igs-char:玉子|平和|你好。]';
+    let revision = 0;
+    let stored = {
+        bridge: { openMode: 'pc', sceneAssets: { enabled: true, scenes: {}, characters: { 玉子: { 默认: 'igs-gen:old' } } } },
+        readerSettings: { titleScreen: false },
+    };
+    let notify = () => {};
+    const resolved = [];
+    const images = new Map([['igs-gen:old', 'data:image/png;base64,T0xE']]);
+    const host = createIgsReaderHost({
+        global: { document, localStorage: createMemoryStorage() },
+        getUnifiedSettings: () => stored,
+        getSettingsRevision: () => revision,
+        saveUnifiedSettings(next) { stored = next; revision += 1; return { ok: true }; },
+        onGeneratedAssetUpdated(handler) { notify = handler; return () => {}; },
+        generatedAssets: {
+            resolveUrl(ref) { resolved.push(ref); return images.get(ref) || ''; },
+            getImagePrompt: async () => ({ caption: { v4_prompt: { caption: { base_caption: 'portrait', char_captions: [] } } }, edited: true }),
+            generateCharacterSprite: async () => ({ ok: true, imageId: 'new' }),
+        },
+    });
+    try {
+        host.openReader({ messageId: 7, message: { id: 7, text: raw }, raw }, { mode: 'pc' });
+        const sprite = document.getElementById('igs-overlay').querySelector('#igs-sprite');
+        let background = sprite.style.backgroundImage;
+        let paints = 0;
+        Object.defineProperty(sprite.style, 'backgroundImage', {
+            configurable: true,
+            get: () => background,
+            set(value) { background = value; paints += 1; },
+        });
+        const settings = host.openSettings({ tab: 'scene' });
+        assert.notEqual((await settings.controller.invoke('char-generate-sprite:%E7%8E%89%E5%AD%90'))?.ok, false);
+        assert.equal(stored.bridge.sceneAssets.characters.玉子.默认, 'igs-gen:new');
+        assert.equal(host.getState().activeReader.snapshot.content.pendingSpriteRef, 'igs-gen:new');
+        resolved.length = 0;
+        images.set('igs-gen:new', 'data:image/png;base64,TkVX');
+        notify({ reason: 'image-loaded', imageId: 'new' });
+        assert.ok(resolved.includes('igs-gen:new'), '新引用必须进入预热清单');
+        assert.ok(!resolved.includes('igs-gen:old'), '不再预热已被替换的立绘');
+        paints = 0;
+        resolved.length = 0;
+        assert.equal(settings.controller.close().ok, true);
+        assert.equal(paints, 1, '设置保存已重绘舞台，不得再因过期标记重复绘制');
+        assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.get('igs-gen:new'));
+        assert.match(sprite.style.backgroundImage, /TkVX/, '关闭设置器后舞台显示已到达的新图');
+        assert.ok(resolved.filter((ref) => ref === 'igs-gen:new').length <= 3, '关闭设置器不得重复解析新立绘');
+        resolved.length = 0;
+        notify({ reason: 'image-loaded', imageId: 'new' });
+        assert.ok(!resolved.includes('igs-gen:old'), '相同修订号的重复通知不得重建旧清单');
+    } finally { host.destroy(); }
+});
+
+test('gate:simulation:settings-generated-sprite-late-image-after-close-updates-stage', async () => {
+    const document = createFakeDocument();
+    const raw = '[igs-char:玉子|平和|你好。]';
+    let revision = 0;
+    let settings = {
+        bridge: { openMode: 'pc', sceneAssets: { enabled: true, scenes: {}, characters: { 玉子: { 默认: 'igs-gen:old' } } } },
+        readerSettings: { titleScreen: false },
+    };
+    const images = new Map([['igs-gen:old', 'data:image/png;base64,T0xE']]);
+    let notify = () => {};
+    const host = createIgsReaderHost({
+        global: { document, localStorage: createMemoryStorage() },
+        getUnifiedSettings: () => settings,
+        getSettingsRevision: () => revision,
+        saveUnifiedSettings(next) { settings = next; revision += 1; return { ok: true }; },
+        onGeneratedAssetUpdated(handler) { notify = handler; return () => {}; },
+        generatedAssets: {
+            resolveUrl: (ref) => images.get(ref) || '',
+            getImagePrompt: async () => ({ caption: { v4_prompt: { caption: { base_caption: 'portrait', char_captions: [] } } }, edited: true }),
+            generateCharacterSprite: async () => ({ ok: true, imageId: 'new' }),
+        },
+    });
+    try {
+        host.openReader({ messageId: 7, message: { id: 7, text: raw }, raw }, { mode: 'pc' });
+        const sprite = document.getElementById('igs-overlay').querySelector('#igs-sprite');
+        const panel = host.openSettings({ tab: 'scene' });
+        assert.notEqual((await panel.controller.invoke('char-generate-sprite:%E7%8E%89%E5%AD%90'))?.ok, false);
+        assert.equal(panel.controller.close().ok, true);
+        assert.equal(host.getState().activeReader.snapshot.content.pendingSpriteRef, 'igs-gen:new');
+        images.set('igs-gen:new', 'data:image/png;base64,TkVX');
+        notify({ reason: 'image-loaded', imageId: 'new' });
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.get('igs-gen:new'));
+        assert.match(sprite.style.backgroundImage, /TkVX/, '异步像素到达后无需翻页即可换图');
+    } finally { host.destroy(); }
+});
+
+test('gate:simulation:dialogue-thought-paging-saves-and-preserves-speaker-across-pages', async () => {
+    const document = createFakeDocument();
+    const storage = createMemoryStorage({ igs_bridge_config: JSON.stringify({
+        sceneAssets: { enabled: true, scenes: {}, characters: {} },
+    }) });
+    const raw = [
+        '<now_plot>', '<content>',
+        '*先别急。*',
+        '[igs-char:玉子|平和|你好呀。请坐。]',
+        '[igs-thought:玉子|平和|先别急。再等等。]',
+        '*先别急。*',
+        '旁白第一句。旁白第二句。',
+        '</content>', '</now_plot>',
+    ].join('\n');
+    const vn = bootstrapIGS({
+        global: { document, localStorage: storage }, autoAttachMagicWand: false,
+        hostAdapter: {
+            getCurrentMessage: async () => ({ id: 9, text: raw }),
+            typeAndSend: async () => ({ ok: true }),
+        },
+    });
+    try {
+        const opened = await vn.openLatestAvailable('pc');
+        const controller = opened.reader.controller;
+        assert.equal(vn.getState().igsUi.activeReader.snapshot.content.segments.length, 5);
+        const settings = (await controller.invokeAction('settings')).controller;
+        settings.setValue('bridge.dialogueSentencePaging', true);
+        assert.equal(settings.close().ok, true);
+        assert.equal(vn.getUnifiedSettings({ mode: 'pc' }).bridge.dialogueSentencePaging, true);
+        const first = vn.getState().igsUi.activeReader.snapshot.content;
+        assert.equal(first.segments.length, 7);
+        assert.ok(first.segments[3].includes('先别急。'));
+        assert.ok(first.segments[4].includes('再等等。'));
+        const pages = [];
+        for (let i = 0; i < first.segments.length; i += 1) {
+            const content = vn.getState().igsUi.activeReader.snapshot.content;
+            pages.push([content.textType, content.speaker, content.text]);
+            if (i < first.segments.length - 1) await controller.invokeAction('next');
+        }
+        assert.deepEqual(pages.map(([kind, speaker]) => [kind, speaker]), [
+            ['narration', ''],
+            ['dialogue', '玉子'], ['dialogue', '玉子'],
+            ['thought', '玉子'], ['thought', '玉子'],
+            ['narration', ''], ['narration', ''],
+        ]);
+        assert.ok(pages[1][2].includes('你好呀。') && pages[2][2].includes('请坐。'), '两句对白必须全部显示');
+        assert.ok(pages[3][2].includes('先别急。') && pages[4][2].includes('再等等。'), '两句心理话必须全部显示');
+        assert.ok(pages[6][2].includes('旁白第一句。旁白第二句。'), '对白分页关闭旁白开关时不能切错或丢句');
+    } finally { vn.destroy(); }
 });
 
 test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-next-dialogue', async () => {

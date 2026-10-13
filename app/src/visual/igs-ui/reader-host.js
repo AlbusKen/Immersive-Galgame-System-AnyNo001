@@ -542,6 +542,7 @@ export function createIgsReaderHost(options = {}) {
         flushDeferredImageRefresh, normalizeUnifiedSettings, onboarding, openCgGallery, options, pageModal,
         playReaderUiSfx, rerenderActiveReader, resolveBridgeConfigSnapshot, scheduleMoodAutoClassify, sourceCache,
         state,
+        invalidateFloorAssetPlan() { floorAssetPlan.key = ''; },
         takeReaderStaleBehindSettings() {
             const stale = readerStaleBehindSettings;
             readerStaleBehindSettings = false;
@@ -2627,7 +2628,7 @@ export function createIgsReaderHost(options = {}) {
         if (!cg || !cg.skipMessage) return cg;
         const regen = await regenerateCurrentImage();
         if (regen && regen.reason === 'provider-not-enabled') {
-            imageNotice('warn', cg.skipMessage);
+            imageNotice(cg.reason === 'nothing-missing' ? 'skipped' : 'warn', cg.skipMessage);
             return cg;
         }
         return regen;
@@ -2748,7 +2749,7 @@ export function createIgsReaderHost(options = {}) {
         };
         const skip = (result, message) => {
             if (!deferSkip) {
-                feedback('warn', message);
+                feedback(result && result.reason === 'nothing-missing' ? 'skipped' : 'warn', message);
                 return result;
             }
             return { ...result, skipMessage: message };
@@ -2805,7 +2806,7 @@ export function createIgsReaderHost(options = {}) {
         // 没有可补全素材时交给重画当前图，这类跳过不必单独提示。
         const skip = (result, message) => {
             if (!deferSkip) {
-                feedback('warn', message);
+                feedback(result && result.reason === 'nothing-missing' ? 'skipped' : 'warn', message);
                 return result;
             }
             return { ...result, skipMessage: message };
@@ -3291,6 +3292,7 @@ export function createIgsReaderHost(options = {}) {
             visibleText: payload.visibleText,
             sceneAssets: readerSettings._sceneAssets,
             sentencePaging: readerSettings._sentencePaging,
+            dialogueSentencePaging: readerSettings._dialogueSentencePaging,
         };
         const sourceSignature = buildReaderSourceSignature({
             messageId: payload.messageId,
@@ -3300,6 +3302,7 @@ export function createIgsReaderHost(options = {}) {
             virtualRegex: payload.virtualRegex,
             sceneAssetsEnabled: Boolean(readerSettings._sceneAssets && readerSettings._sceneAssets.enabled),
             sentencePaging: Boolean(readerSettings._sentencePaging),
+            dialogueSentencePaging: Boolean(readerSettings._dialogueSentencePaging),
         });
         const cached = sourceCache.get(sourceSignature, { liveMessage, parseOptions });
         const extracted = cached.value || buildIgsTextPayload(liveMessage, parseOptions);
@@ -3610,6 +3613,18 @@ export function createIgsReaderHost(options = {}) {
                 backgroundMatch = { source: bgHit.source, quality: bgHit.quality || '' };
                 finalBackgroundImage = resolveGenerated(bgHit.url);
                 finalBackgroundTimed = Boolean(finalBackgroundImage) && bgHit.timed === true;
+                // 本楼写了新场景但图还没生成：先暂用上一楼场景的背景顶替，免得整屏空白；
+                // 本楼场景图一生成就按上面的正常路径覆盖，不需要额外撤销。
+                if (!finalBackgroundImage && bgHit.needsGeneration && inheritedSceneState
+                    && inheritedSceneState.scene && inheritedSceneState.scene !== sceneStateForBg.scene) {
+                    const inheritedHit = resolveBackgroundAsset(inheritedSceneState, assetMatchCtx);
+                    const inheritedUrl = resolveGenerated(inheritedHit.url);
+                    if (inheritedUrl) {
+                        finalBackgroundImage = inheritedUrl;
+                        finalBackgroundTimed = false;
+                        backgroundMatch = { source: 'inherited', quality: inheritedHit.quality || '' };
+                    }
+                }
             } else {
                 finalBackgroundImage = '';
             }
@@ -3663,6 +3678,29 @@ export function createIgsReaderHost(options = {}) {
                 }
                 return null;
             };
+            // 分页后的短心理话不足六字，不能靠全文子串匹配认领。仅从该
+            // 指令的可见起始页连续消费 *…* 页；一旦越过原文或遇到旁白就停止。
+            const findPagedThought = () => {
+                for (const d of charThoughtDirectives) {
+                    if (d.type !== 'thought') continue;
+                    const start = Number(d.segmentIndex);
+                    if (!Number.isInteger(start) || start < 0 || start > normalizedIndex) continue;
+                    const source = normalizeFingerprint(d.thought);
+                    if (!source) continue;
+                    let consumed = '';
+                    for (let i = start; i <= normalizedIndex; i++) {
+                        const page = String(segments[i] || '').match(/^\s*\*+\s*([\s\S]*?)\s*\*+\s*$/);
+                        const part = page ? normalizeFingerprint(page[1]) : '';
+                        if (!part || !source.startsWith(consumed + part)) {
+                            consumed = '';
+                            break;
+                        }
+                        consumed += part;
+                    }
+                    if (consumed) return d;
+                }
+                return null;
+            };
             const classifySegment = (segText) => {
                 // 没有任何 [igs-*:] 指令时禁止按文本外形猜测台词/心理话，统一按旁白兜底。
                 if (!hasIgsDirectives) return null;
@@ -3676,7 +3714,8 @@ export function createIgsReaderHost(options = {}) {
                     // 无角色名的 *…* 也可能是 AI 的斜体旁白：只有严格对上某条心里话指令才算心理活动。
                     const matched = sp
                         ? findDirectiveByText(sp, bodyText) || findDirectiveByText(sp, tMatch[2])
-                        : findDirectiveByText('', bodyText, { strict: true, type: 'thought' });
+                        : findDirectiveByText('', bodyText, { strict: true, type: 'thought' })
+                            || (seg === currentText ? findPagedThought() : null);
                     if (!sp && !matched) return null;
                     if (!sp) sp = matched.character || '';
                     return { textType: 'thought', speaker: sp, mood: matched ? (matched.mood || '') : '', body: seg };
@@ -4975,6 +5014,7 @@ export function createIgsReaderHost(options = {}) {
         readerSettings._tempSpriteTags = spriteTagService && typeof spriteTagService.tempSpriteTags === 'function'
             ? spriteTagService.tempSpriteTags() : {};
         readerSettings._sentencePaging = Boolean(bridge.sentencePaging);
+        readerSettings._dialogueSentencePaging = Boolean(bridge.dialogueSentencePaging);
         readerSettings._optionBubble = bridge.optionBubble && typeof bridge.optionBubble === 'object' ? bridge.optionBubble : {};
         const bilingualOverride = state.bilingualDisplay;
         readerSettings._bilingualDisplay = bilingualOverride && bilingualOverride.base === normalizeBilingualSettings(readerSettings.bilingual).display ? bilingualOverride.value : '';

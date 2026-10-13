@@ -370,6 +370,29 @@ test('gate:assets:review-library-status-invalidates-cached-page-and-hides-card',
         assert.equal(page.records.length, 0);
     } finally { service.destroy?.(); }
 });
+test('gate:assets:lost-internal-image-slots-fall-back-to-calm-and-default-instead-of-vanishing', () => {
+    const isMissingImage = (url) => url === 'igs-gen:lost';
+    const sceneAssets = {
+        characters: { 雪乃: { 愤怒: 'igs-gen:lost', 默认: 'igs-gen:base' } },
+        characterOutfits: { 雪乃: { 校服: { words: [], moods: { 喜悦: 'igs-gen:lost', 平和: 'igs-gen:calm' } } } },
+    };
+    const ctx = { sceneAssets, isMissingImage };
+    // 原装：命中的槽图已丢，不能短路成缺图，要继续落到「默认」。
+    const original = resolveSpriteAsset('雪乃', '愤怒', ctx);
+    assert.equal(original.url, 'igs-gen:base');
+    assert.equal(original.slot, '默认');
+    // 兜底图照常显示；死链槽仍标记缺图，让补图链有机会重画「愤怒」。
+    assert.equal(original.needsGeneration, true);
+    // 服装：命中的槽图已丢，退回这套衣服的「平和」，不再闪回原装。
+    const outfit = resolveSpriteAsset('雪乃', '喜悦', ctx, '校服');
+    assert.equal(outfit.url, 'igs-gen:calm');
+    assert.equal(outfit.slot, '平和');
+    // 所有槽都丢了才报缺图。
+    const gone = resolveSpriteAsset('雪乃', '愤怒', { sceneAssets: { characters: { 雪乃: { 愤怒: 'igs-gen:lost' } } }, isMissingImage });
+    assert.equal(gone.needsGeneration, true);
+});
+
+
 
 test('gate:assets:service-disabled-makes-no-requests', async () => {
     let requested = false;

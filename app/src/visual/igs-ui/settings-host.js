@@ -43,7 +43,7 @@ export function createSettingsHost(deps) {
     const {
         flushDeferredImageRefresh, normalizeUnifiedSettings, onboarding, openCgGallery, options, pageModal,
         playReaderUiSfx, rerenderActiveReader, resolveBridgeConfigSnapshot, scheduleMoodAutoClassify, sourceCache,
-        state, takeReaderStaleBehindSettings,
+        state, takeReaderStaleBehindSettings, invalidateFloorAssetPlan,
     } = deps;
     const settingsDialogs = createSettingsDialogs({
         getContainer: () => (state.activeSettings && state.activeSettings.dom ? state.activeSettings.dom.root : null),
@@ -172,7 +172,8 @@ export function createSettingsHost(deps) {
         onboarding.onSettingsClosed();
         syncSettingsStagePause();
         scheduleMoodAutoClassify();
-        if (takeReaderStaleBehindSettings() && state.activeReader) rerenderActiveReader();
+        // persistSettingsDraft 已用最新配置同步重绘；消费延迟到图标记即可，避免关页重复构建快照。
+        takeReaderStaleBehindSettings();
         playReaderUiSfx('close');
         return { ok: true };
     }
@@ -404,7 +405,9 @@ export function createSettingsHost(deps) {
             const current = state.activeReader.payload;
             const filterChanged = JSON.stringify(current.sourceFilter) !== JSON.stringify(snapshot.bridge.sourceFilter);
             const formatChanged = JSON.stringify(current.virtualRegex) !== JSON.stringify(snapshot.bridge.virtualRegex);
-            if (filterChanged || formatChanged) {
+            const pagingChanged = snapshot.bridge.sentencePaging !== state.activeReader.snapshot?.readerSettings?._sentencePaging
+                || snapshot.bridge.dialogueSentencePaging !== state.activeReader.snapshot?.readerSettings?._dialogueSentencePaging;
+            if (filterChanged || formatChanged || pagingChanged) {
                 current.sourceFilter = cloneData(snapshot.bridge.sourceFilter);
                 current.virtualRegex = cloneData(snapshot.bridge.virtualRegex);
                 // These values were produced with the old rules; the reader must reparse its message.
@@ -415,6 +418,7 @@ export function createSettingsHost(deps) {
                 sourceCache.invalidate();
             }
         }
+        if (optionsForPersist.spriteAssetChanged === true) invalidateFloorAssetPlan?.();
         rerenderActiveReader({
             syncModeFromSettings: optionsForPersist.syncActiveModeFromSettings === true,
         });
