@@ -103,8 +103,8 @@ export function normalizeImageMarkerLayout(raw) {
         }
         let before = source.slice(0, from), after = source.slice(to);
         if (enclosing.some(range => range.kind === 'bracket')) {
-            before = before.replace(/[ \t]*\r?\n[ \t]*$/, '');
-            after = after.replace(/^[ \t]*\r?\n[ \t]*/, '');
+            before = before.replace(/[ \t]*(?:\r?\n[ \t]*)+$/, '');
+            after = after.replace(/^(?:[ \t]*\r?\n)+[ \t]*/, '');
         }
         const clean = before + after;
         if (imageMarkerBoundary(clean, before.length) >= 0) source = insertImageMarkerOnLine(clean, before.length, token);

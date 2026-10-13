@@ -1,4 +1,4 @@
-import { stripOutfitFields } from '../../scene/directive-tags.js';
+import { splitIgsDirectiveLines, stripOutfitFields } from '../../scene/directive-tags.js';
 import { imageMarkerBoundary, insertImageMarkerOnLine } from '../../scene/image-marker-layout.js';
 
 const SCENE_RE = /\[igs-scene:([^|\]\n]+)\|([^|\]\n]+)\|([^|\]\n]+)(?:\|([^\]\n]*))?\]/g;
@@ -44,17 +44,17 @@ export function numberParagraphs(raw, options = {}) {
     const paragraphs = [];
     const scenes = [];
     const characters = new Set();
-    for (let i = 0; i < lines.length; i += 1) {
-        const line = stripOutfitFields(lines[i], options && options.outfitResolver);
+    for (const { text, lineIndex } of splitIgsDirectiveLines(raw)) {
+        const line = stripOutfitFields(text, options && options.outfitResolver);
         // 场景标签整楼都认。写在第一段 </content> 之后的转场也要算进 NSFW 和背景。
         for (const m of line.matchAll(SCENE_RE)) {
             scenes.push({ scene: m[1].trim(), time: m[2].trim(), weather: m[3].trim(), nsfw: String(m[4] || '').trim().toLowerCase() === 'nsfw' });
         }
-        if (!lineInSpans(i, spans)) continue;
+        if (!lineInSpans(lineIndex, spans)) continue;
         for (const m of line.matchAll(CHAR_RE)) characters.add(m[1].trim());
         for (const m of line.matchAll(THOUGHT_RE)) characters.add(m[1].trim());
-        const text = readableLine(line);
-        if (text) paragraphs.push({ no: paragraphs.length + 1, lineIndex: i, text });
+        const readable = readableLine(line);
+        if (readable) paragraphs.push({ no: paragraphs.length + 1, lineIndex, text: readable });
     }
     return { paragraphs, scenes, characters: Array.from(characters), isNsfw: scenes.some((s) => s.nsfw) };
 }
@@ -245,7 +245,7 @@ const TRANSPLANT_MARKER_RE = /\[igs-img:(\d+)\]/g;
 const TRANSPLANT_CONTEXT = 60;
 
 function contextLine(text, fromEnd) {
-    const lines = String(text || '').replace(/\[igs-img:\d+\]/g, '').split('\n').map((line) => line.trim()).filter(Boolean);
+    const lines = splitIgsDirectiveLines(String(text || '').replace(/\[igs-img:\d+\]/g, '')).map((line) => line.text.trim()).filter(Boolean);
     const line = fromEnd ? lines[lines.length - 1] : lines[0];
     if (!line) return '';
     return fromEnd ? line.slice(-TRANSPLANT_CONTEXT) : line.slice(0, TRANSPLANT_CONTEXT);

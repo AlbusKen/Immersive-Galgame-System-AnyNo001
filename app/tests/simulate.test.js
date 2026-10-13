@@ -1462,6 +1462,57 @@ test('gate:simulation:legacy-cg-marker-after-closed-dialogue-hides-orphan-bracke
     } finally { host.destroy(); }
 });
 
+test('gate:simulation:closed-multiline-dialogue-and-legacy-cg-keep-one-page-in-fullscreen', () => {
+    for (const gap of ['\n\n', '\n\n\n\n']) {
+        const document = createFakeDocument();
+        const raw = `<content>\n[igs-char:甲|平和|完整台词。${gap}<IMG>19</IMG>${gap}]\n</content>`;
+        const host = createIgsReaderHost({
+            global: { document },
+            getUnifiedSettings: () => ({ bridge: { sceneAssets: { enabled: true, characters: { 甲: { 默认: 'data:image/png;base64,QQ==' } } } }, readerSettings: { titleScreen: false } }),
+            getIllustrationUrl: () => 'data:image/png;base64,Q0c=',
+        });
+        try {
+            const opened = host.openReader({ messageId: 22, message: { id: 22, text: raw }, raw }, { mode: 'fullscreen' });
+            assert.equal(opened.ok, true);
+            const content = host.getState().activeReader.snapshot.content;
+            assert.deepEqual(content.segments, ['[甲]：完整台词。']);
+            assert.equal(content.speaker, '甲');
+            assert.equal(content.textType, 'dialogue');
+            assert.equal(content.illustrationSlot, 19);
+            assert.equal(content.cgActive, true);
+            assert.equal(content.backgroundImage, 'data:image/png;base64,Q0c=');
+            const html = document.getElementById('igs-text').innerHTML;
+            assert.ok(html.includes('完整台词。'));
+            assert.doesNotMatch(html, /\]|<IMG>|igs-char:/);
+        } finally { host.destroy(); }
+    }
+});
+
+test('gate:simulation:multiline-speech-paging-preserves-speaker-thought-and-outfit', async () => {
+    const document = createFakeDocument();
+    const raw = '<content>\n[igs-char:甲|平和|便服|第一句。\n\n第二句。\n]\n[igs-thought:甲|谨慎|便服|先等。\n想清楚。\n]\n[igs-char:乙|平和|下一句。\n]\n</content>';
+    const outfitImage = 'data:image/png;base64,T1VURklU';
+    const host = createIgsReaderHost({
+        global: { document },
+        getUnifiedSettings: () => ({ bridge: { dialogueSentencePaging: true, sceneAssets: { enabled: true, characters: { 甲: { 默认: 'data:image/png;base64,QQ==' }, 乙: { 默认: 'data:image/png;base64,Qg==' } }, characterOutfits: { 甲: { 便服: { words: [], moods: { 平和: outfitImage } } } } } }, readerSettings: { titleScreen: false } }),
+    });
+    try {
+        const opened = host.openReader({ messageId: 22, message: { id: 22, text: raw }, raw }, { mode: 'fullscreen' });
+        assert.equal(opened.ok, true);
+        assert.equal(host.getState().activeReader.snapshot.content.segments.length, 5);
+        const pages = [];
+        for (let i = 0; i < 5; i++) {
+            const content = host.getState().activeReader.snapshot.content;
+            pages.push([content.textType, content.speaker]);
+            if (i < 4) assert.equal(content.spriteImage, outfitImage);
+            const html = document.getElementById('igs-text').innerHTML;
+            assert.doesNotMatch(html, /\]|igs-char:|igs-thought:|便服/);
+            if (i < 4) await opened.controller.invokeAction('next');
+        }
+        assert.deepEqual(pages, [['dialogue', '甲'], ['dialogue', '甲'], ['thought', '甲'], ['thought', '甲'], ['dialogue', '乙']]);
+    } finally { host.destroy(); }
+});
+
 test('gate:simulation:pending-current-sprite-survives-one-image-cache-and-floor-prefetch', async () => {
     const { localImageCacheFor } = await import('../src/media/tavern-image-cache.js');
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
