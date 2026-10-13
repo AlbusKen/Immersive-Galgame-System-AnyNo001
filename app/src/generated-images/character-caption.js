@@ -77,19 +77,23 @@ export function prepareCharacterCaption(input = {}) {
         const metadata = input.characterMeta?.characters?.find((c) => c.characterKey === b.characterKey && c.captionIndex === b.captionIndex);
         const view = readCaptionIdentity(dna, b.framing, selected.value?.purpose, metadata);
         if (!view.ok) return { ...view, characterKey: b.characterKey, framing: b.framing };
+        const correcting = checked.value.identityMode === 'appearance_correction';
+        const identity = correcting ? b.correction : view.value;
 
-        if (controlled.test(view.value.subject) || controlled.test(view.value.negative))
+        if (controlled.test(identity.subject) || controlled.test(identity.negative))
             return fail('DNA_TEMPLATE_UNRESOLVED', '身份资料不能包含递归令牌');
         const pos = expanded.v4_prompt.caption.char_captions[b.captionIndex];
         const neg = expanded.v4_negative_prompt.caption.char_captions[b.captionIndex];
         // 替换回调保真 $、权重与标点；只替换原模板，不再扫描替换产物。
-        pos.char_caption = pos.char_caption.replace(`<<dna:${b.token}>>`, () => view.value.subject);
+        pos.char_caption = pos.char_caption.replace(`<<dna:${b.token}>>`, () => identity.subject);
         const outfit = outfits.value.characters.find(c => c.captionIndex === b.captionIndex);
         if (outfit) pos.char_caption = pos.char_caption.replace(`<<outfit:${b.token}>>`, () => outfit.description);
-        if (neg) neg.char_caption = neg.char_caption.replace(`<<dna_uc:${b.token}>>`, () => view.value.negative);
-        characters.push({ ...b, source: candidate ? 'candidate' : view.source,
+        if (neg) neg.char_caption = neg.char_caption.replace(`<<dna_uc:${b.token}>>`, () => identity.negative);
+        const { correction, ...binding } = b;
+        characters.push({ ...binding, source: candidate ? 'candidate' : view.source,
             dnaVersion: view.source === 'scene' ? 0 : 2,
-            subject: view.value.subject, negative: view.value.negative,
+            subject: identity.subject, negative: identity.negative,
+            ...(correcting && { application: 'appearance_correction' }),
             profile: normalizeCharacterDna(dna) });
     }
     if (textFields(expanded).some((v) => controlled.test(v || '')))

@@ -100,19 +100,23 @@ export async function spriteAdoptionFixture(name = 'Alice', dna = {}, characterC
 }
 
 // 正式场景与工作轮次分别经过唯一准备入口，避免手工伪造 reference 来源。
-export function consistencyProvenanceFixture() {
+export function consistencyProvenanceFixture({ appearanceCorrection = false } = {}) {
     const scene = provenanceFixture();
     const named = scene.promptRecipe.bindings[0];
     const reference = { ...named, kind: 'reference', token: 'ref0', captionIndex: 1, framing: 'portrait' };
+    const identity = appearanceCorrection ? { identityMode: 'appearance_correction' } : {};
+    const bindings = [named, reference].map(b => ({ ...b,
+        ...(appearanceCorrection && { correction: { subject: 'Alice with 1.2::silver hair:: and a $5 star hair clip,',
+            negative: 'wrong hair color' } }) }));
     const caption = structuredClone(scene.promptRecipe.caption);
-    caption.v4_prompt.caption.base_caption = 'Reference inset supplies identity only.';
+    caption.v4_prompt.caption.base_caption = 'Alice retains her pose in a quiet studio.';
     caption.v4_prompt.caption.char_captions.push({ char_caption: '<<dna:ref0>> is an identity reference portrait.',
         centers: [{ x: 0.9, y: 0.5 }] });
     caption.v4_negative_prompt.caption.char_captions.push({ char_caption: '<<dna_uc:ref0>>' });
     const characterContext = [{ characterKey: named.characterKey, dna: scene.dnaSnapshot.characters[0].profile }];
     const round = prepareCharacterCaption({ caption, characterMeta: scene.characterMeta, characterContext,
-        promptRecipe: { version: 1, mode: 'dna_template', caption, bindings: [named, reference] },
-        promptTask: { version: 1, mode: 'dna_template', purpose: 'consistency', characters: [named, reference] } });
+        promptRecipe: { version: 1, mode: 'dna_template', caption, bindings, ...identity },
+        promptTask: { version: 1, mode: 'dna_template', purpose: 'consistency', characters: [named, reference], ...identity } });
     if (!round.ok) throw new Error(round.reason);
     const sentPrompt = promptSnapshotFromBody({ model: 'nai-diffusion-5-full', action: 'infill',
         parameters: prefixFinalArtist(round.caption, scene.sentPrompt.artist) }, scene.sentPrompt.artist);

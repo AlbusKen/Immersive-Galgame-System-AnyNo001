@@ -21,6 +21,9 @@ export function checkPromptTask(raw, context) {
         || !['sprite', 'derived', 'cg', 'consistency'].includes(raw.purpose)
         || (raw.outfitMode !== undefined && raw.outfitMode !== 'template')
         || !Array.isArray(raw.characters) || raw.characters.length > 16 || !Array.isArray(context)) return fail('PROMPT_MODE_CONFLICT', 'promptTask');
+    if (raw.identityMode !== undefined && (raw.identityMode !== 'appearance_correction'
+        || raw.purpose !== 'consistency' || raw.slots !== undefined
+        || !raw.characters.some(c => c?.kind === 'reference'))) return fail('PROMPT_MODE_CONFLICT', 'promptTask.identityMode');
     const keys = new Set(), tokens = new Set(), characters = [];
     for (const c of raw.characters) {
         const where = { characterIndex: characters.length };
@@ -52,11 +55,17 @@ export function checkPromptTask(raw, context) {
                 || new Set(slot.tokens).size !== slot.tokens.length || slot.tokens.some((token) => !tokens.has(token))) return fail('DNA_TEMPLATE_BINDING', 'promptTask.slots', 'invalid', where);
             ids.add(slot.slotId);
             slot.tokens.forEach((token) => assigned.add(token));
-            slots.push({ slotId: slot.slotId, tokens: [...slot.tokens] });
+            if (slot.identityMode !== undefined && (slot.identityMode !== 'appearance_correction'
+                || raw.purpose !== 'consistency'
+                || !characters.some(c => c.kind === 'reference' && slot.tokens.includes(c.token))))
+                return fail('PROMPT_MODE_CONFLICT', 'promptTask.slots.identityMode', 'invalid', where);
+            slots.push({ slotId: slot.slotId, tokens: [...slot.tokens],
+                ...(slot.identityMode !== undefined && { identityMode: slot.identityMode }) });
         }
         if (characters.some((c) => !assigned.has(c.token))) return fail('DNA_TEMPLATE_BINDING', 'promptTask.slots.tokens', 'missing');
     }
     return { ok: true, value: { version: 1, mode: 'dna_template', purpose: raw.purpose, characters,
+        ...(raw.identityMode !== undefined && { identityMode: raw.identityMode }),
         ...(raw.outfitMode !== undefined && { outfitMode: raw.outfitMode }),
         ...(slots !== undefined && { slots }) } };
 }
@@ -66,12 +75,18 @@ export function promptTaskForSlot(task, slotId) {
     if (!task?.slots) return { ok: true, value: task };
     const slot = task.slots.find((s) => s.slotId === Number(slotId));
     if (!slot) return fail('DNA_TEMPLATE_BINDING', 'promptTask.slots.slotId', 'mismatch');
-    const { slots, ...rest } = task;
-    return { ok: true, value: { ...rest, characters: task.characters.filter((c) => slot.tokens.includes(c.token)) } };
+    const { slots, identityMode, ...rest } = task;
+    return { ok: true, value: { ...rest, characters: task.characters.filter((c) => slot.tokens.includes(c.token)),
+        ...(slot.identityMode !== undefined && { identityMode: slot.identityMode }) } };
 }
 
-export function checkPromptRecipe(raw, caption, task) {
+export function checkPromptRecipe(raw, caption, task, { allowArchivedCorrection = false } = {}) {
     if (raw === undefined) return task ? fail('PROMPT_MODE_CONFLICT', 'promptRecipe', 'missing') : { ok: true, value: undefined };
+    if (raw?.identityMode !== undefined && (raw.identityMode !== 'appearance_correction'
+        || (!task && !allowArchivedCorrection) || (task && task.purpose !== 'consistency')))
+        return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.identityMode');
+    if (task && raw?.identityMode !== task.identityMode)
+        return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.identityMode', 'mismatch');
     if (!plain(raw) || raw.version !== 1 || raw.mode !== 'dna_template'
         || (raw.outfitMode !== undefined && raw.outfitMode !== 'template')
         || !Array.isArray(raw.bindings) || raw.bindings.length > 16) return fail('DNA_TEMPLATE_BINDING', 'promptRecipe');
@@ -80,11 +95,20 @@ export function checkPromptRecipe(raw, caption, task) {
         || neg.char_captions.length !== pos.char_captions.length
         || raw.bindings.length !== pos.char_captions.length) return fail('DNA_TEMPLATE_BINDING', 'promptRecipe.bindings.length', 'mismatch');
     const tokens = new Set(), indexes = new Set(), keys = new Set(), bindings = [];
+    if (raw.identityMode === 'appearance_correction' && !raw.bindings.some(b => b?.kind === 'reference'))
+        return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.identityMode');
     for (const b of raw.bindings) {
         const where = Number.isInteger(b?.captionIndex) && b.captionIndex >= 0 && b.captionIndex < 16
             ? { captionIndex: b.captionIndex } : {};
         const reject = (field, issue = 'invalid') => fail('DNA_TEMPLATE_BINDING', `binding.${field}`, issue, where);
         if (!plain(b) || !['named', 'generic', 'object', 'reference'].includes(b.kind)) return reject('kind');
+        const correcting = raw.identityMode === 'appearance_correction';
+        if (correcting ? (!['named', 'reference'].includes(b.kind) || !plain(b.correction)
+            || Object.keys(b.correction).some(k => !['subject', 'negative'].includes(k))
+            || typeof b.correction.subject !== 'string' || !b.correction.subject.trim() || b.correction.subject.length > 4096
+            || (b.correction.negative !== undefined && (typeof b.correction.negative !== 'string' || b.correction.negative.length > 4096))
+            || /<<\s*(?:dna|outfit)/i.test(b.correction.subject + (b.correction.negative || '')))
+            : b.correction !== undefined) return reject('correction');
         if (!Number.isInteger(b.captionIndex) || b.captionIndex < 0 || b.captionIndex >= pos.char_captions.length) return reject('captionIndex');
         if (indexes.has(b.captionIndex)) return reject('captionIndex', 'duplicate');
         indexes.add(b.captionIndex);
@@ -104,7 +128,8 @@ export function checkPromptRecipe(raw, caption, task) {
             || (b.kind === 'reference' && task.purpose !== 'consistency'))) return reject('kind', 'mismatch');
         if (task && expected.framing !== undefined && expected.framing !== b.framing) return reject('framing', 'mismatch');
         tokens.add(b.token); if (b.kind === 'named') keys.add(b.characterKey);
-        bindings.push({ kind: b.kind, characterKey: b.characterKey, captionIndex: b.captionIndex, token: b.token, framing: b.framing });
+        bindings.push({ kind: b.kind, characterKey: b.characterKey, captionIndex: b.captionIndex, token: b.token, framing: b.framing,
+            ...(correcting && { correction: { subject: b.correction.subject.trim(), negative: (b.correction.negative || '').trim() } }) });
     }
     if (task && ['sprite', 'derived', 'consistency'].includes(task.purpose)
         && task.characters.some((c) => !tokens.has(c.token))) return fail('DNA_TEMPLATE_BINDING', 'promptRecipe.bindings', 'missing');
@@ -124,6 +149,7 @@ export function checkPromptRecipe(raw, caption, task) {
             return fail('DNA_TEMPLATE_UNRESOLVED', 'caption.char_uc', 'placeholder', { captionIndex: b.captionIndex });
     }
     const value = { version: 1, mode: 'dna_template', caption: structuredClone(caption), bindings,
+        ...(raw.identityMode !== undefined && { identityMode: raw.identityMode }),
         ...(raw.outfitMode !== undefined && { outfitMode: raw.outfitMode }) };
     const outfits = checkOutfitTemplates(value, undefined, undefined, task);
     if (!outfits.ok) return outfits;

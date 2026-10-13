@@ -3,9 +3,9 @@ import { CHARACTER_DNA_VIEWS } from '../../scene/character-dna.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { checkPromptTask, checkPromptOutput } from '../../schemas/prompt-recipe.js';
 
-const fields = new Set(['slotid', 'size', 'analysis', 'scene', 'scene_uc', 'prompt_mode', 'outfit_mode', 'char', 'char_uc', 'at']);
+const fields = new Set(['slotid', 'size', 'analysis', 'scene', 'scene_uc', 'prompt_mode', 'outfit_mode', 'identity_mode', 'char', 'char_uc', 'at']);
 const metaFields = new Set(['meta_kind', 'meta_key', 'meta_token', 'meta_frame', 'meta_identity', 'meta_signature',
-    'meta_outfit_name', 'meta_outfit_description', 'meta_region',
+    'meta_outfit_name', 'meta_outfit_description', 'meta_region', 'meta_correction_identity', 'meta_correction_uc',
     ...CHARACTER_DNA_VIEWS.flatMap((f) => [`meta_dna_${f}`, `meta_dna_uc_${f}`])]);
 const fail = (reason = 'DNA_TEMPLATE_BINDING') => ({ ok: false, reason, error: '动态模板字段无效，已停止写词交接' });
 const side = (base, chars) => ({ caption: { base_caption: base, char_captions: chars } });
@@ -78,7 +78,9 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext }
             if (row.meta_kind === 'reference' && (row.meta_outfit_name !== ''
                 || row.meta_outfit_description !== '')) return fail('OUTFIT_TEMPLATE_INVALID');
             bindings.push({ kind: row.meta_kind, characterKey: row.meta_key, captionIndex: index,
-                token: row.meta_token, framing: row.meta_frame });
+                token: row.meta_token, framing: row.meta_frame,
+                ...((row.meta_correction_identity !== undefined || row.meta_correction_uc !== undefined) && {
+                    correction: { subject: row.meta_correction_identity, negative: row.meta_correction_uc || '' } }) });
             const character = { characterKey: row.meta_key, captionIndex: index,
                 identityAnchor: row.meta_identity || '', signatureDetails: row.meta_signature || '',
                 outfit: { name: row.meta_outfit_name, description: row.meta_outfit_description },
@@ -105,6 +107,7 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext }
         if (!meta.ok) return meta;
         const entry = { slotId: block.slotId, caption, characterMeta: meta.value,
             promptRecipe: { version: 1, mode: 'dna_template', caption, bindings,
+                ...(block.identity_mode !== undefined && { identityMode: block.identity_mode }),
                 ...(block.outfit_mode !== undefined && { outfitMode: block.outfit_mode }) },
             ...(candidates.length && { dnaCandidates: { version: 1, characters: candidates } }),
             ...(block.analysis !== undefined && { analysis: block.analysis }) };

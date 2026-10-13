@@ -25,7 +25,13 @@ const clampNum = (v, min, max, d) => {
 const bool = (v) => v === true || v === 'true' || v === 1 || v === '1';
 const str = (v, d = '') => (typeof v === 'string' ? v : d);
 
-export const normalizeConsistencyStrength = (value) => clampNum(value, 0, 1, 0.75);
+// 旧低值和非法资料保留可读；是否可发送由任务预检决定，不悄悄抬高强度。
+export const normalizeConsistencyStrength = (value) => {
+    if (value == null || value === '') return 0.75;
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+    return value;
+};
+export const isConsistencyStrengthValid = (value) => Number.isFinite(value) && value >= 0.1 && value <= 1;
 
 // 模板留空视为恢复内置模板；背景/立绘正向模板必须含 {tags}，否则 LLM 的内容会被丢掉。
 // 旧内置立绘模板带双手下垂，存下来的原样副本换成新内置的。

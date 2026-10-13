@@ -3,6 +3,7 @@ import { CG_PIXEL_CAP, clampPixelPair } from '../generated-images/illustration/c
 const fail = (reason) => ({ ok: false, reason, error: '角色位置或画布资料不足，原图保持不变' });
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 const validSize = (w, h) => [w, h].every((n) => Number.isSafeInteger(n) && n > 0) && w * h <= CG_PIXEL_CAP;
+const MASK_GRID = 8;
 
 // 规划坐标不是检测结果；默认中心、同位中心与多中心均不能自动分辨人物。
 export function planReferenceCanvas(width, height, meta, characterKey) {
@@ -37,28 +38,50 @@ function finishPlan(width, height, rect) {
     const size = clampPixelPair(Math.ceil(crop.width / 0.75), crop.height);
     const workWidth = Math.floor(size.width * 0.75);
     const scale = Math.min(workWidth / crop.width, size.height / crop.height);
-    const work = { x: 0, y: 0, width: Math.max(1, Math.floor(crop.width * scale)), height: Math.max(1, Math.floor(crop.height * scale)) };
+    // RGB 使用同一比例；不足一格的尾部延续 crop 边缘，剩余留白不开放重绘。
+    const work = { x: 0, y: 0, width: Math.ceil(crop.width * scale / MASK_GRID) * MASK_GRID,
+        height: Math.ceil(crop.height * scale / MASK_GRID) * MASK_GRID };
     const reference = { x: workWidth, y: 0, width: size.width - workWidth, height: size.height };
-    return { ok: true, width, height, rect, crop, size, work, reference };
+    const uploadMask = { grid: MASK_GRID,
+        x: Math.floor((rect.x - crop.x) * scale / MASK_GRID) * MASK_GRID,
+        y: Math.floor((rect.y - crop.y) * scale / MASK_GRID) * MASK_GRID,
+        right: Math.min(work.width, Math.ceil((rect.right - crop.x) * scale / MASK_GRID) * MASK_GRID),
+        bottom: Math.min(work.height, Math.ceil((rect.bottom - crop.y) * scale / MASK_GRID) * MASK_GRID) };
+    if (uploadMask.right <= uploadMask.x || uploadMask.bottom <= uploadMask.y) return fail('cg-region-invalid');
+    return Object.freeze({ ok: true, width, height, scale,
+        rect: Object.freeze(rect), crop: Object.freeze(crop), size: Object.freeze(size),
+        work: Object.freeze(work), reference: Object.freeze(reference), uploadMask: Object.freeze(uploadMask) });
 }
 
 const validPixels = (image) => image && Number.isSafeInteger(image.width) && Number.isSafeInteger(image.height)
     && image.width > 0 && image.height > 0 && image.width * image.height <= CG_PIXEL_CAP
     && image.data?.length === image.width * image.height * 4;
 const sourcePoint = (plan, x, y) => ({
-    x: clamp(Math.floor(plan.crop.x + (x + 0.5) * plan.crop.width / plan.work.width), 0, plan.width - 1),
-    y: clamp(Math.floor(plan.crop.y + (y + 0.5) * plan.crop.height / plan.work.height), 0, plan.height - 1),
+    x: clamp(Math.floor(plan.crop.x + (x + 0.5) / plan.scale), plan.crop.x, plan.crop.right - 1),
+    y: clamp(Math.floor(plan.crop.y + (y + 0.5) / plan.scale), plan.crop.y, plan.crop.bottom - 1),
+});
+const workPoint = (plan, x, y) => ({
+    x: clamp(Math.floor((x - plan.crop.x + 0.5) * plan.scale), 0, plan.work.width - 1),
+    y: clamp(Math.floor((y - plan.crop.y + 0.5) * plan.scale), 0, plan.work.height - 1),
 });
 const inRect = (rect, x, y) => x >= rect.x && x < rect.right && y >= rect.y && y < rect.bottom;
 
+// 连续构图坐标与 RGB 栅格使用同一比例；不是头脸识别。
+export function referenceCanvasCenter(plan, point) {
+    if (!plan?.ok || ![point?.x, point?.y].every(Number.isFinite)
+        || !inRect(plan.crop, point.x * plan.width, point.y * plan.height)) return null;
+    return { x: (point.x * plan.width - plan.crop.x) * plan.scale / plan.size.width,
+        y: (point.y * plan.height - plan.crop.y) * plan.scale / plan.size.height };
+}
+
 // 仅回贴使用圆角与内侧混合带；输入蒙版独立采用硬边矩形。
-function identityMaskWeight(plan, x, y, featherWidth) {
+function identityMaskWeight(plan, x, y) {
     const { rect } = plan;
     if (!inRect(rect, x, y)) return 0;
     const width = rect.right - rect.x, height = rect.bottom - rect.y;
     const side = Math.min(width, height);
     const radius = Math.min(32, side * 0.12);
-    const feather = featherWidth ?? Math.max(1, Math.min(24, side * 0.08));
+    const feather = Math.max(1, Math.min(12, side * 0.02));
     const qx = Math.abs(x + 0.5 - (rect.x + rect.right) / 2) - (width / 2 - radius);
     const qy = Math.abs(y + 0.5 - (rect.y + rect.bottom) / 2) - (height / 2 - radius);
     const distance = radius - Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
@@ -81,10 +104,8 @@ export function buildReferencePixels(source, referenceImage, plan) {
         const from = (p.y * source.width + p.x) * 4;
         const to = (y * size.width + x) * 4;
         data.set(source.data.subarray(from, from + 4), to);
-        if (x < work.width && y < work.height) {
-            const weight = inRect(plan.rect, p.x, p.y) ? 255 : 0;
-            mask.set([weight, weight, weight, 255], to);
-        }
+        const weight = inRect(plan.uploadMask, x, y) ? 255 : 0;
+        mask.set([weight, weight, weight, 255], to);
     }
     drawIdentityReference(data, size.width, referenceImage, reference);
     return { image: { ...size, data }, mask: { ...size, data: mask } };
@@ -106,20 +127,17 @@ function drawIdentityReference(data, width, image, box) {
     }
 }
 
-// 只在圆角区域内贴回；边缘宽带混合新旧 RGB，中心采用重绘图，原 alpha 不变。
+// 只在原圆角支持区内窄带衔接；内区完整采用重绘图，不按生图强度再次叠加。
 export function composeReferencePixels(source, generated, plan) {
     if (!plan?.ok || !validPixels(source) || !validPixels(generated) || source.width !== plan.width || source.height !== plan.height || generated.width !== plan.size.width || generated.height !== plan.size.height) throw new Error('cg-result-size-mismatch');
     const data = new Uint8ClampedArray(source.data);
-    const { rect, crop, work } = plan;
-    const side = Math.min(rect.right - rect.x, rect.bottom - rect.y);
-    const blendFeather = Math.max(1, Math.min(96, side * 0.16));
+    const { rect } = plan;
     for (let y = rect.y; y < rect.bottom; y++) for (let x = rect.x; x < rect.right; x++) {
-        const wx = clamp(Math.floor((x - crop.x + 0.5) * work.width / crop.width), 0, work.width - 1);
-        const wy = clamp(Math.floor((y - crop.y + 0.5) * work.height / crop.height), 0, work.height - 1);
+        const { x: wx, y: wy } = workPoint(plan, x, y);
         const p = sourcePoint(plan, wx, wy);
         // 同时约束原像素和缩放后的采样点，防止量化把黑色边界带回 CG。
-        const blend = Math.min(identityMaskWeight(plan, x, y, blendFeather),
-            identityMaskWeight(plan, p.x, p.y, blendFeather)) / 255;
+        const blend = Math.min(identityMaskWeight(plan, x, y),
+            identityMaskWeight(plan, p.x, p.y)) / 255;
         if (!blend) continue;
         const from = (wy * generated.width + wx) * 4, to = (y * source.width + x) * 4;
         for (let k = 0; k < 3; k++) data[to + k] = Math.round(source.data[to + k] * (1 - blend) + generated.data[from + k] * blend);

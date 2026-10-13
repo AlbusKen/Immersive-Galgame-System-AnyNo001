@@ -3,7 +3,7 @@ import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { normalizeCharacterDna } from '../../scene/character-dna.js';
 import { consistencyPromptTask, checkConsistencyCaptions } from './cg-consistency-prompt.js';
 import { promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
-import { normalizeConsistencyStrength } from './auto-illustration-settings.js';
+import { normalizeConsistencyStrength, isConsistencyStrengthValid } from './auto-illustration-settings.js';
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const failure = (reason, error = '一致性重绘未保存，原图保持不变') => ({ ok: false, reason, error });
@@ -22,6 +22,7 @@ export function createCgConsistencyService(deps) {
     const reasonCodes = new Set(['DNA_TEMPLATE_BINDING', 'DNA_TEMPLATE_UNRESOLVED', 'DNA_MISSING',
         'DNA_VIEW_MISSING', 'PROMPT_MODE_CONFLICT', 'consistency-write-failed', 'consistency-busy',
         'consistency-unavailable', 'consistency-failed', 'dbgen-infill-required', 'no-canvas',
+        'consistency-strength-invalid', 'dbgen-infill-strength-required', 'dbgen-appearance-correction-required',
         'cg-binding-incomplete', 'cg-image-missing', 'cg-reference-missing', 'cg-size-mismatch',
         'cg-position-ambiguous', 'generation-config-unavailable', 'GENERATION_CONFIG_CHANGED',
         'stale-target', 'stale-revision', 'stale-dna', 'stale-config', 'cancelled', 'edit-failed',
@@ -34,7 +35,9 @@ export function createCgConsistencyService(deps) {
         'characterMeta', 'characterMeta.binding', 'dnaCandidates', 'promptRecipe', 'outfit.name',
         'outfit.description', 'promptTask.slotId', 'scene.caption', 'meta_fields', 'meta_rows',
         'meta_kind', 'meta_key', 'meta_token', 'meta_frame', 'meta_identity', 'meta_signature',
-        'meta_outfit_name', 'meta_outfit_description', 'meta_region', 'prompt_mode']);
+        'meta_outfit_name', 'meta_outfit_description', 'meta_region', 'prompt_mode', 'identity_mode',
+        'meta_correction_identity', 'meta_correction_uc', 'promptRecipe.identityMode',
+        'promptTask.identityMode', 'promptTask.slots.identityMode', 'binding.correction']);
     // 外部错误正文可能含模型回复或凭据；日志只接受受控码、字段路径和数值索引。
     const reportFailure = (task, result) => {
         const reason = reasonCodes.has(result?.reason) ? result.reason : 'consistency-failed';
@@ -84,6 +87,10 @@ export function createCgConsistencyService(deps) {
     const capability = () => {
         const cap = nai?.describeEdit?.();
         if (!cap?.supported || cap.via !== 'dbgen') return failure(cap?.reason || 'dbgen-infill-required', cap?.message || '请启用支持 V5 局部重绘的数据库生图插件');
+        if (cap.infillImg2imgStrength !== 1) return failure('dbgen-infill-strength-required',
+            '请升级数据库生图插件以支持 V5 低强度局部重绘');
+        if (cap.appearanceCorrection !== 1) return failure('dbgen-appearance-correction-required',
+            '请升级数据库生图插件以支持外观校正模板');
         if (!codec?.available) return failure('no-canvas', '当前环境不支持图片画布');
         if (typeof store.updateSlot !== 'function' || typeof resolveReference !== 'function'
             || typeof nai.writeDbgenPrompt !== 'function' || typeof nai.getEditConfig !== 'function')
@@ -94,6 +101,9 @@ export function createCgConsistencyService(deps) {
     async function prepare(task) {
         const cap = capability();
         if (!cap.ok) return cap;
+        task.strength = strength();
+        if (!isConsistencyStrengthValid(task.strength)) return failure('consistency-strength-invalid',
+            '一致性重绘强度必须为 0.1–1，请在生图设置中重新选择；原设置未被改写');
         guard(task);
         const record = await store.getSlotRecord(`${task.target.key}|${task.target.slot}`);
         guard(task);
@@ -107,7 +117,6 @@ export function createCgConsistencyService(deps) {
         task.assets = assets;
         task.characters = chars.slice().sort((a, b) => a.captionIndex - b.captionIndex);
         if (deps.writingRequirements) task.writingRequirements = clone(deps.writingRequirements());
-        task.strength = strength();
         const config = await wait(task, nai.getEditConfig({ imageKind: 'cg', promptKind: 'cg' }));
         guard(task);
         if (!config?.ok) return config || failure('generation-config-unavailable');
@@ -134,6 +143,7 @@ export function createCgConsistencyService(deps) {
             const characterContext = bundle.characterContext.filter((c) =>
                 promptTask.characters.some((b) => b.characterKey === c.characterKey));
             const output = { slotId: expected.slotId, size: expected.size || task.record.originalSize,
+                ...(slot.identityMode !== undefined && { identityMode: slot.identityMode }),
                 rows: expected.rows.map((row, captionIndex) => ({ captionIndex, kind: row.kind,
                     characterKey: row.characterKey, token: row.token, framing: row.framing,
                     centers: row.centers, outfit: row.kind === 'reference'

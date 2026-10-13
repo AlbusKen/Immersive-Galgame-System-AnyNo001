@@ -47,7 +47,8 @@
 - CG 一致性重绘只支持 DBGen V5 infill：固定当前 CG、revision/token、DNA、衣装、写词要求及强度快照；正式场景和各工作轮次按独立 slot 并发写词，全部校验成功后并发重绘。每个分支使用同一原 CG 基线，结果全部成功后按固定 `captionIndex` 顺序合成，重叠区域也保持该顺序；任一失败或取消不提供部分候选。不看图定位、不生成 DNA，不绕过 DBGen 按 credential 的请求池。身份仍经唯一准备入口展开。
 - 每个一致性写词请求仅携带当前 slot 的任务、角色上下文及输出清单。本图 Char 的 `captionIndex` 从零连续编号，不能用原图角色序号、slotId 或 token 数字代替；同 `characterKey` 的 named 与 reference 使用独立 token 和索引。每项字段只写一次，reference 在自己的索引各写一次空 `meta_outfit_name`、`meta_outfit_description`，不复制 named 衣装或在结尾重复汇总。
 - 重复字段继续 fail-closed，解析失败不发起绘图并保留原图。单数 `diagnostic` 与复数 `diagnostics` 均收拢至受控诊断，记录允许的解析阶段、字段、issue、slotId 与 captionIndex，不记录模型回复、DNA、衣装正文或凭据。一致性只按保存 DNA 和原图可见依据核对角、尾翼、非人耳及标志饰品，不强补画外或被遮挡部位。
-- 一致性写词仅允许校正目标角色在保存 DNA 中明确强调且参照图支持的稳定身份锚点；原 CG 的衣装颜色、款式、动作、表情、视线、互动、动物、道具、背景、光影和画风保持。实际 Char 正文与原 CG 衣装快照一致，不能只照抄元数据却改绘图正文。工作布局不作为正向 Scene 内容，排除项由同次工作轮次写词完成，发送端不拼补正文。`bridge.autoIllustration.consistencyStrength` 默认 `0.75`，归一到 `[0,1]`，每轮显式发送任务强度与 `noise: 0`；运行及接受期间强度变化使候选失效，不改变 DBGen 全局缺省 `0.7` 或其他重绘。硬边黑白输入蒙版、裁剪和圆角 smoothstep 回贴保持。语义及离线像素测试不保证真实模型效果。
+- 一致性工作轮次显式选择 `identityMode: 'appearance_correction'`；正式场景保持普通 DNA 模板。同次写词输出 `identity_mode`、每个 named/reference 的 `meta_correction_identity` 和可选 `meta_correction_uc`，双端解析到 `binding.correction`，仅由 `prepareCharacterCaption` 展开当次校正主语与负面片段。保存 DNA 仍是只读依据且所需景别必须存在；校正文聚焦发型发色、脸型五官、头部非人细节及有依据的可见身份饰品，保留原 CG 结构、衣装、表情、视线及接触关系。未知、空、重复、递归、错绑、非工作用途和 DNA 候选均拒收；普通模板缺省不增加这些字段。
+- `bridge.autoIllustration.consistencyStrength` 默认 `0.75`，可执行范围 `[0.1,1]`。旧低值和非法值保留读取，执行前明确拒发，不静默抬高或改写设置。优化入口要求 DBGen 声明 `infillImg2imgStrength: 1` 与 `appearanceCorrection: 1`；缺能力在写词前停止。V5 infill 发送 `inpaintImg2ImgStrength`，低于 1 时另含 `img2img: { strength, color_correct: true }`，满强度省略嵌套对象；`noise: 0` 保持，普通 img2img 顶层 strength 不变。工作布局和全部动态正文由同次写词完成，发送端不拼补。上传蒙版与原图回贴范围独立，回贴采用有界窄带；社区请求格式及离线测试不证明真实上游兼容性或视觉效果。
 - 阅读器生成前不确认、生成中不弹模态框；任务期间一致性工具栏按钮用于停止，关闭阅读器或切换目标取消任务。完成后展示本次原图与未保存候选，只有接受并通过提交门禁才替换原槽位；取消保留原图。
 - 一致性保姿优先于身份相似度：不依据 DNA 重塑原 CG 身体轮廓、骨架、肢体长度或躯干比例，不移动头部、手脚或接触点。每个实际发送的工作轮次由写词阶段独立保留原依据已有的姿势、朝向、表情、视线、遮挡与互动，不依赖正式场景模板正文；未知细节不猜测。程序不拼补动态正文，语义约束不保证真实模型保姿。
 - 一致性任务要求 `getPromptCapabilities()` 声明 `generationConfig: 1`、`generationConfigLease: 1`，并提供返回 `Result` 的 `getGenerationConfig()` 与同步布尔接口 `isGenerationConfigCurrent(token)`。`getEditConfig` 返回配置令牌、画师正文和仅留在任务内存的 `isCurrent` 守卫；能力缺失、异步守卫或读取失败均拒绝开始。各轮显式传 `expectedConfigToken`，DBGen 从核验的私有快照装配，在排队发送前复核同 ID 的接口实体及实际并行凭据池。
@@ -60,6 +61,7 @@
 - `saved-outfits-changed` 的拒绝摘要仅返回冻结基线／当前读取条数、新增／移除／说明／默认标记差异、匿名归属及所属库／有效视图相等性；缺失历史列表标为未知，不据此断言历史为空。摘要不返回角色名、衣装名、图片或正文，不参与采用判定或补丁；三个 UI 采用入口保留具体错误码、摘要及保存前 `writeAttempted: false`。首次入库前不要求编辑不存在的衣装，空库合成回归通过不代表现场根因已确认。
 - 普通 CG 写词前冻结作用域及角色归属，采用前复核槽位 key、revision/token、当前目标及衣装资料；借用角色写回冻结来源卡。多人物候选全部核验后生成一份设置补丁。图片已经提交而衣装登记失败时保留图片并警告，不重复生图、不写入半成品。图片与设置存储不共享事务。
 - 一致性重绘沿原 CG 衣装快照展开，不以当前衣柜、默认外观或参考立绘服装替换；首次一致性基线保存实际存在的 `outfitSnapshot`。手改定稿不采用候选，最终发送仍拒绝未展开的衣装令牌。
+- 校正来源仅归档于实际 infill 的 `consistencyPrompt.rounds`：recipe 保留 `identityMode` 与 `binding.correction`，DNA 快照保留原 profile、实际展开 subject/negative 及 `application: 'appearance_correction'`。归档核对绑定与应用值，并要求实际 infill 发送快照；正式场景 recipe 不带工作标记，合成 CG 不伪造整图 wire。旧轮次缺字段原形读取，文件备份和恢复保真保留合法字段。
 
 
 ## Provider 契约

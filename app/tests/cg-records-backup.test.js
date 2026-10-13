@@ -179,12 +179,13 @@ test('gate:cg-backup:三阶段资料经 IDB 写口、文件备份和清缓存恢
     assert.equal((await restored.getSlots('fixture|3|0'))[0].dataUrl, 'data:image/png;base64,TkVX');
 });
 
-test('gate:cg-consistency:文件 offload 清除整图 wire 并保真恢复轮次与基线', async () => {
+for (const appearanceCorrection of [false, true]) test(`gate:cg-consistency:文件 offload 清除整图 wire 并保真恢复轮次与基线-${appearanceCorrection ? '校正' : '旧记录'}`, async () => {
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
     const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
     const { provenanceFixture, consistencyProvenanceFixture } = await import('./helpers/prompt-provenance.js');
     const { promptProvenance, storedPromptFromResult } = await import('../src/generated-images/generation-prompt.js');
-    const fixture = provenanceFixture(), consistencyPrompt = consistencyProvenanceFixture();
+    const fixture = provenanceFixture(), consistencyPrompt = consistencyProvenanceFixture({ appearanceCorrection });
+    assert.deepEqual(promptProvenance({ consistencyPrompt }).consistencyPrompt, consistencyPrompt);
     const f = candidateFilesFixture(), indexedDB = createTransactionalIdb();
     const rawStore = createIndexedDbIllustrationStore({ indexedDB });
     const first = withTavernIllustrationFiles(rawStore, f.globalObject);
@@ -213,6 +214,17 @@ test('gate:cg-consistency:文件 offload 清除整图 wire 并保真恢复轮次
     for (const field of ['prompt', 'promptRecipe', 'dnaSnapshot', 'consistencyPrompt', 'consistencyBaselineMeta'])
         assert.deepEqual(copy[field], stored[field], field);
     assert.equal(copy.sentPrompt, undefined);
+    assert.equal(Object.hasOwn(copy.promptRecipe, 'identityMode'), false, '正式场景不成为工作模板');
+    const round = copy.consistencyPrompt.rounds[0];
+    assert.equal(round.promptRecipe.identityMode, appearanceCorrection ? 'appearance_correction' : undefined);
+    for (const c of round.dnaSnapshot.characters) {
+        assert.equal(c.application, appearanceCorrection ? 'appearance_correction' : undefined);
+        assert.deepEqual(c.profile, fixture.dnaSnapshot.characters[0].profile);
+        if (appearanceCorrection) {
+            assert.equal(c.subject, round.promptRecipe.bindings[c.captionIndex].correction.subject);
+            assert.equal(c.negative, round.promptRecipe.bindings[c.captionIndex].correction.negative);
+        }
+    }
     assert.equal((await restored.getSlots('fixture|3|0'))[0].dataUrl, 'data:image/png;base64,TkVX');
 });
 

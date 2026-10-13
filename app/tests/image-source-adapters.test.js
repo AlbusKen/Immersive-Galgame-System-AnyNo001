@@ -385,6 +385,42 @@ test('gate:dna-template:普通CG当次身份与严格任务边界', async () => 
         characters: [{ ...result.dnaSnapshot.characters[0], source: 'scene', dnaVersion: 2 }] } }), /PROMPT_PROVENANCE_INVALID/);
 });
 
+test('gate:appearance-correction:归档保真且非法来源拒收', async () => {
+    const { consistencyProvenanceFixture } = await import('./helpers/prompt-provenance.js');
+    const { promptProvenance } = await import('../src/generated-images/generation-prompt.js');
+    const consistencyPrompt = consistencyProvenanceFixture({ appearanceCorrection: true });
+    const before = structuredClone(consistencyPrompt);
+    assert.deepEqual(promptProvenance({ consistencyPrompt }).consistencyPrompt, before);
+    const round = consistencyPrompt.rounds[0];
+    assert.equal(Object.hasOwn(round.dnaSnapshot.characters[0], 'correction'), false);
+    for (const mutate of [
+        r => { delete r.sentPrompt; },
+        r => { r.sentPrompt.action = 'generate'; },
+        r => { delete r.dnaSnapshot; },
+        r => { delete r.dnaSnapshot.characters[0].application; },
+        r => { r.dnaSnapshot.characters[0].application = 'unknown'; },
+        r => { r.dnaSnapshot.characters[0].subject = 'different identity'; },
+        r => { r.dnaSnapshot.characters[0].negative = 'different negative'; },
+        r => { r.dnaSnapshot.characters[0].source = 'candidate'; },
+        r => { r.dnaSnapshot.characters[0].token = 'other'; },
+        r => { r.dnaSnapshot.characters.pop(); },
+        r => { r.dnaSnapshot.characters[1] = structuredClone(r.dnaSnapshot.characters[0]); },
+        r => { r.promptRecipe.bindings[0].correction.subject = '<<dna:other>>'; },
+        r => { r.promptRecipe.identityMode = 'unknown'; },
+    ]) {
+        const bad = structuredClone(consistencyPrompt);
+        mutate(bad.rounds[0]);
+        assert.throws(() => promptProvenance({ consistencyPrompt: bad }), /PROMPT_PROVENANCE_INVALID/);
+    }
+    assert.throws(() => promptProvenance({ promptRecipe: round.promptRecipe }), /PROMPT_PROVENANCE_INVALID/);
+    const legacy = consistencyProvenanceFixture();
+    assert.deepEqual(promptProvenance({ consistencyPrompt: legacy }).consistencyPrompt, legacy);
+    assert.equal(Object.hasOwn(legacy.rounds[0].promptRecipe, 'identityMode'), false);
+    assert.ok(legacy.rounds[0].dnaSnapshot.characters.every(c => !Object.hasOwn(c, 'application')));
+    assert.deepEqual(consistencyPrompt, before);
+});
+
+
 
 test('gate:dna-template:内置 NAI 最终 wire 仅展开加画师且快照同源', async () => {
     const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');

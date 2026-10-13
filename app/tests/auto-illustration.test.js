@@ -1180,12 +1180,9 @@ test('gate:cg-reference:canvas-budget-unmasked-inset-and-outside-rgba', async ()
             if (x >= plan.reference.x) assert.equal(v, 0, '参考区不遮罩');
             else {
                 assert.deepEqual(work.image.data.subarray(at, at + 4), source.data.subarray(0, 4), '工作区留白延续 CG 像素');
-                const sx = Math.floor(plan.crop.x + (x + 0.5) * plan.crop.width / plan.work.width);
-                const sy = Math.floor(plan.crop.y + (y + 0.5) * plan.crop.height / plan.work.height);
-                if (x < plan.work.width && y < plan.work.height) {
-                    const inside = sx >= plan.rect.x && sx < plan.rect.right && sy >= plan.rect.y && sy < plan.rect.bottom;
-                    assert.equal(v, inside ? 255 : 0, '原角色矩形含角点为白色，裁剪上下文为黑色');
-                }
+                const m = plan.uploadMask;
+                const inside = x >= m.x && x < m.right && y >= m.y && y < m.bottom;
+                assert.equal(v, inside ? 255 : 0, '上传蒙版仅覆盖对齐后的完整工作网格');
                 if (x >= plan.work.width || y >= plan.work.height) assert.equal(v, 0, '取整延展不开放重绘');
             }
         }
@@ -1222,7 +1219,7 @@ test('gate:cg-reference:canvas-budget-unmasked-inset-and-outside-rgba', async ()
         assert.deepEqual(guarded.data, source.data,
             '黑色蒙版上下文、取整延展和参考区不贴回 CG');
         const midX = Math.floor((rect.x + rect.right) / 2), midY = Math.floor((rect.y + rect.bottom) / 2);
-        const blendFeather = Math.max(1, Math.min(96, Math.min(rect.right - rect.x, rect.bottom - rect.y) * 0.16));
+        const blendFeather = Math.max(1, Math.min(12, Math.min(rect.right - rect.x, rect.bottom - rect.y) * 0.02));
         const edgePaths = [
             (d) => [rect.x + d, midY], (d) => [rect.right - 1 - d, midY],
             (d) => [midX, rect.y + d], (d) => [midX, rect.bottom - 1 - d],
@@ -1242,12 +1239,13 @@ test('gate:cg-reference:canvas-budget-unmasked-inset-and-outside-rgba', async ()
                 return (y * width + x) * 4;
             }).find((at) => candidate.data[at] > 12 && candidate.data[at] < 255
                 && candidate.data[at + 1] > 0 && candidate.data[at + 1] < 24);
-            assert.notEqual(mixed, undefined, '实际缩放采样后混合带同时含原图和重绘图');
-            assert.ok(candidate.data[mixed + 1] > 0 && candidate.data[mixed + 1] < 24);
-            if (blendFeather > 48) {
-                const [bx, by] = pointAt(32), beyondOldEdge = (by * width + bx) * 4;
-                assert.ok(candidate.data[beyondOldEdge] < 255, '大图超过旧 24px 混合带仍保留原图成分');
-            }
+            // 最小窄带可能没有分数栅格；其余情况核验实际分数权重。
+            if (mixed !== undefined) assert.ok(candidate.data[mixed + 1] > 0 && candidate.data[mixed + 1] < 24);
+            else assert.ok(blendFeather <= 1 + 1 / plan.scale, '仅窄带小于采样跨度时允许无分数权重');
+            const d = Math.ceil(blendFeather + 1 / plan.scale) + 1;
+            const [bx, by] = pointAt(d), insideAt = (by * width + bx) * 4;
+            assert.deepEqual([...candidate.data.subarray(insideAt, insideAt + 4)], [255, 0, 0, 127],
+                '窄带及采样误差之后完整采用结果，不保留旧宽带成分');
         }
         const centerAt = (midY * width + midX) * 4;
         assert.deepEqual([...candidate.data.subarray(centerAt, centerAt + 4)], [255, 0, 0, 127], '中心不整图降透明度');
@@ -1299,6 +1297,116 @@ test('gate:cg-reference:canvas-budget-unmasked-inset-and-outside-rgba', async ()
     }
 });
 
+test('gate:cg-reference:统一采样原图条件网格与细区覆盖', async (t) => {
+    const { planReferenceCanvas, buildReferencePixels, composeReferencePixels, referenceCanvasCenter } = await import('../src/media/cg-reference-canvas.js');
+    const cases = [[128, 64, { x: 0.13, y: 0.17, width: 0.51, height: 0.67 }],
+        [64, 128, { x: 0, y: 0, width: 1, height: 1 }],
+        [256, 256, { x: 0.49, y: 0.2, width: 1 / 256, height: 0.6 }],
+        [1216, 832, { x: 0, y: 0, width: 1, height: 1 }],
+        [832, 1216, { x: 0.3, y: 0.2, width: 0.5, height: 0.7 }]];
+    const errors = [];
+    for (const [width, height, region] of cases) {
+        const meta = { characters: [{ characterKey: 'A', region }] }, originalMeta = structuredClone(meta);
+        const plan = planReferenceCanvas(width, height, meta, 'A');
+        assert.equal(plan.ok, true);
+        assert.ok(Object.isFrozen(plan) && Object.isFrozen(plan.uploadMask));
+        const { crop, work, size, rect, scale, uploadMask: m } = plan;
+        assert.ok(size.width * size.height <= 1024 * 1024);
+        assert.equal(size.width % 64 + size.height % 64, 0);
+        assert.equal([m.x, m.y, m.right, m.bottom, work.width, work.height, plan.reference.x].reduce((sum, v) => sum + v % 8, 0), 0);
+        assert.ok(m.right <= work.width && m.bottom <= work.height && work.width <= plan.reference.x && work.height <= size.height);
+        const source = { width, height, data: new Uint8ClampedArray(width * height * 4) };
+        for (let y = 0; y < height; y++) for (let x = 0; x < width; x++)
+            source.data.set([x % 251, y % 251, (x + y) % 251, 127 + x % 128], (y * width + x) * 4);
+        const before = new Uint8ClampedArray(source.data);
+        const ref = { width: 16, height: 32, data: new Uint8ClampedArray(16 * 32 * 4) };
+        const built = buildReferencePixels(source, ref, plan);
+        let white = 0;
+        for (let y = 0; y < size.height; y++) for (let x = 0; x < size.width; x++) {
+            const at = (y * size.width + x) * 4, masked = x >= m.x && x < m.right && y >= m.y && y < m.bottom;
+            assert.equal(built.mask.data[at], masked ? 255 : 0);
+            assert.equal(built.mask.data[at + 1], built.mask.data[at]);
+            assert.equal(built.mask.data[at + 2], built.mask.data[at]);
+            assert.equal(built.mask.data[at + 3], 255);
+            if (masked) white++;
+            if (x >= plan.reference.x) continue;
+            const sx = Math.min(crop.right - 1, Math.floor(crop.x + (Math.min(x, work.width - 1) + 0.5) / scale));
+            const sy = Math.min(crop.bottom - 1, Math.floor(crop.y + (Math.min(y, work.height - 1) + 0.5) / scale));
+            const from = (sy * width + sx) * 4;
+            for (let k = 0; k < 4; k++) assert.equal(built.image.data[at + k], before[from + k], '蒙版内外均保留同映射原 CG，透明参考不覆盖工作区');
+        }
+        assert.ok(white >= 64, '细区不能在缩放或网格化时丢失');
+        let maxError = 0;
+        for (let y = rect.y; y < rect.bottom; y++) for (let x = rect.x; x < rect.right; x++) {
+            const wx = Math.floor((x - crop.x + 0.5) * scale), wy = Math.floor((y - crop.y + 0.5) * scale);
+            assert.equal(built.mask.data[(wy * size.width + wx) * 4], 255, '原支持区对应的完整工作格均被覆盖');
+            const sx = Math.min(crop.right - 1, Math.floor(crop.x + (wx + 0.5) / scale));
+            const sy = Math.min(crop.bottom - 1, Math.floor(crop.y + (wy + 0.5) / scale));
+            maxError = Math.max(maxError, Math.abs(sx - x), Math.abs(sy - y));
+        }
+        assert.ok(maxError <= Math.ceil(0.5 / scale + 0.5));
+        errors.push({ width, height, scale, maxError });
+        const point = { x: (rect.x + rect.right) / 2 / width, y: (rect.y + rect.bottom) / 2 / height };
+        const center = referenceCanvasCenter(plan, point);
+        assert.ok(center);
+        assert.ok(Math.abs(crop.x + center.x * size.width / scale - point.x * width) < 1e-9);
+        assert.ok(Math.abs(crop.y + center.y * size.height / scale - point.y * height) < 1e-9);
+        assert.equal(referenceCanvasCenter(plan, { x: NaN, y: 0.5 }), null);
+        const generated = { ...size, data: new Uint8ClampedArray(built.image.data.length).fill(255) };
+        const composed = composeReferencePixels(source, generated, plan);
+        for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+            const at = (y * width + x) * 4;
+            assert.equal(composed.data[at + 3], before[at + 3]);
+            if (x >= rect.x && x < rect.right && y >= rect.y && y < rect.bottom) continue;
+            for (let k = 0; k < 4; k++) assert.equal(composed.data[at + k], before[at + k], '网格扩张不扩大原图回贴范围');
+        }
+        assert.deepEqual(source.data, before);
+        assert.deepEqual(meta, originalMeta);
+    }
+    assert.ok(errors.some(e => e.maxError > 0), '缩放往返存在实际采样误差，不冒报像素恒等');
+    t.diagnostic('原图像素采样往返误差：' + JSON.stringify(errors));
+});
+
+
+test('gate:cg-reference:窄带精确权重薄线与错位轮廓', async () => {
+    const { planReferenceCanvas, buildReferencePixels, composeReferencePixels } = await import('../src/media/cg-reference-canvas.js');
+    const width = 192, height = 128;
+    const plan = planReferenceCanvas(width, height, { characters: [{ characterKey: 'A', region: { x: 0, y: 0, width: 1, height: 1 } }] }, 'A');
+    assert.equal(plan.scale, 1, '隔离缩放误差以精确核验回贴权重');
+    const source = { width, height, data: new Uint8ClampedArray(width * height * 4) };
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++)
+        source.data.set([x === 8 ? 0 : 60 + Math.floor(x / 4), 80 + Math.floor(y / 8), 120, 127], (y * width + x) * 4);
+    const baseline = new Uint8ClampedArray(source.data);
+    const ref = { width: 8, height: 8, data: new Uint8ClampedArray(8 * 8 * 4).fill(255) };
+    const generated = buildReferencePixels(source, ref, plan).image;
+    for (let y = 0; y < generated.height; y++) for (let x = 0; x < generated.width; x++)
+        generated.data.set(x >= plan.reference.x ? [255, 0, 255, 255]
+            : [x === 12 || x === 22 ? 0 : 180 + Math.floor(x / 8), 40 + Math.floor(y / 8), 80, 255], (y * generated.width + x) * 4);
+    const generatedBefore = new Uint8ClampedArray(generated.data), result = composeReferencePixels(source, generated, plan);
+    const y = height / 2, feather = Math.max(1, Math.min(12, height * 0.02));
+    const weight = d => { const t = Math.min(1, Math.max(0, d / feather)); return Math.round(255 * t * t * (3 - 2 * t)) / 255; };
+    for (let x = 0; x < 32; x++) {
+        const at = (y * width + x) * 4, from = (y * generated.width + x) * 4, blend = weight(x);
+        for (let k = 0; k < 3; k++) assert.equal(result.data[at + k], Math.round(baseline[at + k] * (1 - blend) + generated.data[from + k] * blend));
+        assert.equal(result.data[at + 3], 127);
+    }
+    for (const x of [8, 12, 22]) {
+        const at = (y * width + x) * 4, from = (y * generated.width + x) * 4;
+        assert.deepEqual(result.data.subarray(at, at + 3), generated.data.subarray(from, from + 3), '内区仅采用候选轮廓与一像素细线');
+    }
+    const oldT = 8 / (height * 0.16), oldBlend = Math.round(255 * oldT * oldT * (3 - 2 * oldT)) / 255;
+    const at = (y * width + 8) * 4, from = (y * generated.width + 8) * 4;
+    assert.ok(Math.round(baseline[at] * (1 - oldBlend) + generated.data[from] * oldBlend) < result.data[at], '同一候选下，旧宽带会在此内区保留原轮廓成分');
+    for (const [x, y] of [[0, 0], [width - 1, 0], [0, height - 1], [width - 1, height - 1]]) {
+        const at = (y * width + x) * 4;
+        assert.deepEqual(result.data.subarray(at, at + 4), baseline.subarray(at, at + 4), '原圆角支持范围保持');
+    }
+    assert.deepEqual(source.data, baseline);
+    assert.deepEqual(generated.data, generatedBefore);
+    assert.throws(() => composeReferencePixels(source, { ...generated, width: generated.width + 1 }, plan), /cg-result-size-mismatch/);
+});
+
+
 
 async function consistencyFixture(count = 2, storeOverride) {
     const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
@@ -1346,11 +1454,11 @@ async function consistencyFixture(count = 2, storeOverride) {
     const logData = new Map(), reports = [];
     const logStorage = { getItem: (key) => logData.get(key), setItem: (key, value) => logData.set(key, value) };
     const jobLog = createImageJobLog({ storage: logStorage });
-    const backend = { describeEdit: () => ({ supported: true, via: 'dbgen' }),
+    const backend = { describeEdit: () => ({ supported: true, via: 'dbgen', infillImg2imgStrength: 1, appearanceCorrection: 1 }),
         async getEditConfig() { return { ok: true, version: 1, configToken: 'fixture-config', artist: null, isCurrent: () => true }; },
         async writeDbgenPrompt(request) {
             writes.push(request);
-            const captions = request.promptTask.slots.map(({ slotId, tokens }) => {
+            const captions = request.promptTask.slots.map(({ slotId, tokens, identityMode }) => {
                 const rows = tokens.map((token) => request.promptTask.characters.find((c) => c.token === token));
                 const outfitFor = c => request.characterContext.find(m => m.characterKey === c.characterKey).outfit;
                 const ref = rows.find((c) => c.kind === 'reference');
@@ -1363,8 +1471,12 @@ async function consistencyFixture(count = 2, storeOverride) {
                     v4_negative_prompt: { caption: { base_caption: ref ? 'decorative frame, golden border, split screen, collage, duplicate person' : '', char_captions: rows.map((c) => ({ char_caption: `<<dna_uc:${c.token}>>` })) } },
                 };
                 return { slotId, caption, promptRecipe: { version: 1, mode: 'dna_template', caption,
+                    ...(identityMode !== undefined && { identityMode }),
                     ...(request.promptTask.outfitMode && { outfitMode: request.promptTask.outfitMode }),
-                    bindings: rows.map((c, captionIndex) => ({ ...c, captionIndex })) },
+                    bindings: rows.map((c, captionIndex) => ({ ...c, captionIndex,
+                        ...(identityMode !== undefined && { correction: {
+                            subject: `new-${c.characterKey}`, negative: `correction-uc-${c.characterKey}`,
+                        } }) })) },
                     characterMeta: { version: 1, characters: rows.flatMap((c, captionIndex) => c.kind === 'reference' ? [] : [{
                         ...structuredClone(characters.find((m) => m.characterKey === c.characterKey)), captionIndex,
                         outfit: structuredClone(outfitFor(c)),
@@ -2020,7 +2132,7 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
         artistRepo: { get: async () => Ok({ positivePrompt: 'artist:test', negativePrompt: 'artist-uc' }), onChanged: () => () => {} },
         newTraceId: () => 'consistency-offline' });
 
-    const api = { getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, generationConfig: 1, generationConfigLease: 1 }),
+    const api = { getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, generationConfig: 1, generationConfigLease: 1, infillImg2imgStrength: 1, appearanceCorrection: 1 }),
         getGenerationConfig: () => imageService.getGenerationConfig(),
         isGenerationConfigCurrent: (token) => imageService.isGenerationConfigCurrent(token),
         describeInfill: () => imageService.describeInfill(),
@@ -2031,6 +2143,7 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
                 const pos = entry.caption.v4_prompt.caption, neg = entry.caption.v4_negative_prompt.caption;
                 return [`slotid: ${entry.slotId}`, 'prompt_mode: dna_template',
                     ...(entry.promptRecipe.outfitMode === 'template' ? ['outfit_mode: template'] : []),
+                    ...(entry.promptRecipe.identityMode !== undefined ? [`identity_mode: ${entry.promptRecipe.identityMode}`] : []),
                     `scene: ${pos.base_caption} High quality illustration.`,
                     `scene_uc: ${['blurry', neg.base_caption].filter(Boolean).join(', ')}`,
                     ...entry.promptRecipe.bindings.flatMap((b) => {
@@ -2041,6 +2154,8 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
                             `meta_kind: ${b.captionIndex} | ${b.kind}`, `meta_key: ${b.captionIndex} | ${b.characterKey}`,
                             `meta_token: ${b.captionIndex} | ${b.token}`, `meta_frame: ${b.captionIndex} | ${b.framing}`,
                             `meta_outfit_name: ${b.captionIndex} | ${meta?.outfit.name || ''}`,
+                            ...(b.correction ? [`meta_correction_identity: ${b.captionIndex} | ${b.correction.subject}`,
+                                `meta_correction_uc: ${b.captionIndex} | ${b.correction.negative}`] : []),
                             `meta_outfit_description: ${b.captionIndex} | ${meta?.outfit.description || ''}`,
                             ...Object.entries(entry.dnaCandidates?.characters.find((c) => c.characterKey ===b.characterKey)?.views || {})
                                 .flatMap(([frame, view]) => [
@@ -2106,7 +2221,9 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
             assert.doesNotMatch(wire.input, /reference inset|frame|border|split screen|collage/i);
             assert.equal(wire.parameters.negative_prompt, 'artist-uc, ' + prepared.caption.v4_negative_prompt.caption.base_caption);
             assert.match(wire.parameters.negative_prompt, /decorative frame, golden border, split screen, collage, duplicate person/);
-            assert.equal(wire.parameters.strength, 0.75, '一致性专用强度透传到最终 wire');
+            assert.equal(wire.parameters.inpaintImg2ImgStrength, 0.75, '一致性专用强度透传到最终 wire');
+            assert.deepEqual(wire.parameters.img2img, { strength: 0.75, color_correct: true });
+            assert.equal(Object.hasOwn(wire.parameters, 'strength'), false);
             assert.equal(wire.parameters.noise, 0);
             assert.deepEqual(wire.parameters.v4_prompt.caption.char_captions, prepared.caption.v4_prompt.caption.char_captions);
             assert.deepEqual(wire.parameters.v4_negative_prompt.caption.char_captions.map((c) => c.char_caption),
@@ -2116,6 +2233,14 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
                 '负向缺省坐标按既有 NAI 协议复制正向坐标');
             assert.ok(prepared.dnaSnapshot.characters.some((c) => c.kind === 'reference'
                 && c.characterKey === f.names[i] && c.framing === 'portrait'));
+            assert.equal(prepared.promptRecipe.identityMode, 'appearance_correction');
+            for (const c of prepared.dnaSnapshot.characters) {
+                const binding = prepared.promptRecipe.bindings.find(b => b.captionIndex === c.captionIndex);
+                assert.equal(c.application, 'appearance_correction');
+                assert.equal(c.subject, binding.correction.subject);
+                assert.equal(c.negative, binding.correction.negative);
+                assert.deepEqual(c.profile.views, f.assets.characterDna[c.characterKey].views);
+            }
             assert.equal(JSON.stringify(wire).includes('<<dna'), false);
             assert.equal(wire.parameters.width * wire.parameters.height <= 1024 * 1024, true);
         }
@@ -2128,6 +2253,7 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
         assert.equal(saved.consistencyPrompt.rounds.length, count);
         assert.deepEqual(saved.consistencyBaselineMeta.sentPrompt, oldWire);
         assert.ok(saved.promptRecipe.bindings.every((b) => b.kind === 'named'));
+        assert.equal(Object.hasOwn(saved.promptRecipe, 'identityMode'), false);
         assert.equal(saved.caption.v4_prompt.caption.base_caption.includes('reference inset'), false);
         for (const [i, round] of saved.consistencyPrompt.rounds.entries()) {
             assert.equal(round.slotId, i + 2);
@@ -2136,6 +2262,8 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-real-a
             assert.deepEqual(round.sentPrompt.caption.v4_prompt.caption, f.wires[i].parameters.v4_prompt.caption);
             assert.deepEqual(round.sentPrompt.caption.v4_negative_prompt.caption, f.wires[i].parameters.v4_negative_prompt.caption);
             assert.ok(round.dnaSnapshot.characters.every((c) => c.source === 'saved'));
+            assert.equal(round.promptRecipe.identityMode, 'appearance_correction');
+            assert.ok(round.dnaSnapshot.characters.every(c => c.application === 'appearance_correction'));
         }
         assert.deepEqual(f.assets, f.originalAssets, '全过程不写 DNA 或衣装');
         assert.equal(JSON.stringify(saved.consistencyPrompt).includes('fake-key'), false);
@@ -2658,7 +2786,7 @@ test('gate:cg-consistency:并发写词重绘同基线且乱序结果固定合成
 
 test('gate:cg-consistency:强度归一自定义wire和失效门禁', async () => {
     const { normalizeAutoIllustrationSettings } = await import('../src/generated-images/illustration/auto-illustration-settings.js');
-    for (const [input, expected] of [[undefined, 0.75], ['', 0.75], ['bad', 0.75], [-1, 0], [2, 1], ['0.4', 0.4]]) {
+    for (const [input, expected] of [[undefined, 0.75], ['', 0.75], ['bad', 'bad'], [-1, -1], [2, 2], ['0.4', 0.4]]) {
         assert.equal(normalizeAutoIllustrationSettings({ consistencyStrength: input }).consistencyStrength, expected);
     }
     const f = await consistencyAdapterFixture(2);
@@ -2667,7 +2795,8 @@ test('gate:cg-consistency:强度归一自定义wire和失效门禁', async () =>
         const candidate = await f.service.run(f.target);
         assert.equal(candidate.ok, true, JSON.stringify(candidate));
         assert.ok(f.edits.every((r) => r.strength === 0.4));
-        assert.ok(f.wires.every((r) => r.parameters.strength === 0.4));
+        assert.ok(f.wires.every((r) => r.parameters.inpaintImg2ImgStrength === 0.4));
+        assert.ok(f.wires.every((r) => r.parameters.img2img.strength === 0.4));
         f.igsSettings.autoIllustration.consistencyStrength = 0.8;
         assert.equal((await f.service.accept(candidate.candidateId)).reason, 'stale-config');
         assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
@@ -2683,6 +2812,43 @@ test('gate:cg-consistency:强度归一自定义wire和失效门禁', async () =>
     assert.equal(changed.calls.length, 0);
 });
 
+test('gate:cg-consistency:非法强度与缺能力零请求且不改设置', async () => {
+    const f = await consistencyAdapterFixture(1);
+    try {
+        for (const value of [0, 0.05, -1, 2, NaN, Infinity, 'bad', true, {}]) {
+            f.igsSettings.autoIllustration = { consistencyStrength: value };
+            const result = await f.service.run(f.target);
+            assert.equal(result.reason, 'consistency-strength-invalid');
+            assert.equal(f.igsSettings.autoIllustration.consistencyStrength, value);
+            assert.equal(f.writes.length, 0);
+            assert.equal(f.edits.length, 0);
+            assert.equal(f.wires.length, 0);
+            assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
+        }
+        f.igsSettings.autoIllustration = { consistencyStrength: 0.4 };
+        const capabilities = f.api.getPromptCapabilities;
+        f.api.getPromptCapabilities = () => {
+            const { infillImg2imgStrength, ...legacy } = capabilities();
+            return legacy;
+        };
+        assert.equal(Object.hasOwn(f.adapter.describeEdit(), 'infillImg2imgStrength'), false);
+        assert.equal((await f.service.run(f.target)).reason, 'dbgen-infill-strength-required');
+        f.api.getPromptCapabilities = () => {
+            const { appearanceCorrection, ...legacy } = capabilities();
+            return legacy;
+        };
+        assert.equal(Object.hasOwn(f.adapter.describeEdit(), 'appearanceCorrection'), false);
+        assert.equal((await f.service.run(f.target)).reason, 'dbgen-appearance-correction-required');
+        const request = { ...f.writes[0], description: '校正任务', characterContext: f.names.map(characterKey => ({ characterKey, dna: f.assets.characterDna[characterKey] })),
+            promptTask: { version: 1, mode: 'dna_template', purpose: 'consistency', identityMode: 'appearance_correction', characters: [
+                { kind: 'reference', characterKey: f.names[0], token: 'ref0', framing: 'portrait' }] } };
+        assert.equal((await f.adapter.writeDbgenPrompt(request)).reason, 'dbgen-appearance-correction-required');
+        assert.equal(f.writes.length, 0);
+        assert.equal(f.edits.length, 0);
+        assert.equal(f.wires.length, 0);
+    } finally { f.dispose(); }
+});
+
 function consistencyFlatReply(request) {
     const output = JSON.parse(request.description.split('\n').at(-1));
     assert.equal(request.promptTask.slots.length, 1);
@@ -2693,6 +2859,7 @@ function consistencyFlatReply(request) {
         [...new Set(output.rows.map((r) => r.characterKey))].sort());
     assert.doesNotMatch(request.description, /各份角色、景别、位置及工作尺寸/);
     const lines = [`slotid: ${output.slotId}`, 'prompt_mode: dna_template',
+        ...(output.identityMode !== undefined ? [`identity_mode: ${output.identityMode}`] : []),
         `size: ${output.size.width}x${output.size.height}`, 'scene: People retain their original pose in a room.', 'scene_uc: blurry'];
     for (const row of output.rows) {
         const i = row.captionIndex, center = row.centers[0];
@@ -2702,7 +2869,9 @@ function consistencyFlatReply(request) {
         `char_uc: <<dna_uc:${row.token}>>`, `meta_kind: ${i} | ${row.kind}`,
         `meta_key: ${i} | ${row.characterKey}`, `meta_token: ${i} | ${row.token}`,
         `meta_frame: ${i} | ${row.framing}`, `meta_outfit_name: ${i} | ${row.outfit.name}`,
-        `meta_outfit_description: ${i} | ${row.outfit.description}`);
+        `meta_outfit_description: ${i} | ${row.outfit.description}`,
+        ...(output.identityMode !== undefined ? [`meta_correction_identity: ${i} | new-${row.characterKey}`,
+            `meta_correction_uc: ${i} | correction-uc-${row.characterKey}`] : []));
     }
     return { output, text: lines.join('\n') };
 }
@@ -2715,6 +2884,7 @@ for (const duplicate of [false, true]) test(`gate:cg-consistency:单轮清单双
     const f = await consistencyFixture(), pipelines = [], requests = [];
     const adapter = createImageBackend({ getBridge: () => ({ imageApi: { mode: 'dbgen' } }),
         global: { NaiDbGen: { async generate() { assert.fail('写词不得发送图像请求'); },
+            getPromptCapabilities: () => ({ appearanceCorrection: 1 }),
             async generateSinglePrompt(req) {
             requests.push(req);
             const { text, output } = consistencyFlatReply(req);

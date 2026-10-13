@@ -3,6 +3,7 @@ import { currentCgContext } from './cg-character-bindings.js';
 import { checkPromptTask, checkPromptOutput, checkPromptRecipe, promptTaskForSlot } from '../../schemas/prompt-recipe.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { prepareCharacterCaption } from '../character-caption.js';
+import { referenceCanvasCenter } from '../../media/cg-reference-canvas.js';
 
 // 诊断只带字段路径和数值索引，不包含衣装正文、身份资料或写词回复。
 const fail = (reason = 'DNA_TEMPLATE_BINDING', field = 'promptRecipe', where = {}) => ({
@@ -36,11 +37,8 @@ export function consistencyPromptTask(record, characters, assets, plans) {
         centers: record.caption.v4_prompt.caption.char_captions[b.captionIndex].centers })) };
     const rounds = plans.map((plan, i) => ({ slotId: i + 2, characterKey: characters[i].characterKey,
         size: plan.size, rows: named.flatMap((b) => {
-            const centers = scene.rows.find((r) => r.token === b.token).centers.filter((p) =>
-                p.x * plan.width >= plan.crop.x && p.x * plan.width < plan.crop.right
-                && p.y * plan.height >= plan.crop.y && p.y * plan.height < plan.crop.bottom).map((p) => ({
-                x: (p.x * plan.width - plan.crop.x) * plan.work.width / plan.crop.width / plan.size.width,
-                y: (p.y * plan.height - plan.crop.y) * plan.work.height / plan.crop.height / plan.size.height }));
+            const centers = scene.rows.find((r) => r.token === b.token).centers
+                .map(p => referenceCanvasCenter(plan, p)).filter(Boolean);
             return centers.length ? [{ ...b, centers }] : [];
         }).concat({ ...refs[i], centers: [{ x: (plan.reference.x + plan.reference.width / 2) / plan.size.width,
             y: (plan.reference.y + plan.reference.height / 2) / plan.size.height }] }) }));
@@ -50,7 +48,8 @@ export function consistencyPromptTask(record, characters, assets, plans) {
         ...(recipe.outfitMode && { outfitMode: recipe.outfitMode }),
         characters: [...named, ...refs].map(({ kind, characterKey, token, framing }) =>
             ({ kind, characterKey, token, framing })),
-        slots: expected.map((s) => ({ slotId: s.slotId, tokens: s.rows.map((r) => r.token) })) };
+        slots: expected.map((s) => ({ slotId: s.slotId, tokens: s.rows.map((r) => r.token),
+            ...(s !== scene && { identityMode: 'appearance_correction' }) })) };
     const checked = checkPromptTask(promptTask, context);
     if (!checked.ok) return checkedFailure(checked, 'promptTask');
     return { ok: true, promptTask: checked.value, characterContext: context, expected,
@@ -62,6 +61,9 @@ export function consistencyPromptTask(record, characters, assets, plans) {
             '其他内容全部保持原 CG：衣装颜色、款式、材质与配件，表情、视线、姿势、动作、身体朝向、位置、尺度、遮挡、互动和接触关系；其他人物、马匹等动物的毛色与外形、道具、缰绳、建筑、背景、构图、镜头、光影、画风和整体色调不得改变。衣装配件仅在 DNA 明确列为身份标志且原 CG 可见时校正该标志，不改整套衣服。',
             'slotid 1 是原尺寸正式场景模板：保留原 CG 全部动态和非身份内容，不含辅助图或额外参考人物。其余 slotid 是工作轮次：只校正该轮目标身份，裁剪区中的非目标人物和物件也必须保留，不把粗区域等同于整块重设计许可。',
             '每个工作轮次独立用于实际重绘，不会继承 slotid 1 的正文。必须在每份工作 Scene 与对应目标 Char 中具体保留原场景依据已有的姿势、动作、身体朝向、表情、视线、遮挡和互动接触关系；不得省略为仅身份与衣装，也不得只写笼统的保持原姿势。原依据未描述的细节不猜测，沿用输入 CG；不把裁剪或参考图当成新的镜头与构图。',
+            '仅 identityMode 为 appearance_correction 的工作轮次写 identity_mode: appearance_correction；每个 named 和 reference 在自己的本图索引写一次 meta_correction_identity: 索引 | 英文身份校正主语，可选 meta_correction_uc: 索引 | 本次校正负面片段。正式场景不写这些字段。',
+            '校正主语从本次保存 DNA 提炼有依据的发型、发色、脸型、五官、头部非人细节及可见身份饰品，不复制整份身体主语或身体负面资料，不包含身高、胸腰、肌肉、肢长、比例或新姿态要求。身体上的身份标志仅在原场景明确可见且不改变姿势时保守描述；背面或遮挡状态不强行露出五官与饰物。',
+            '校正轮次的 Char 仍恰有自身 <<dna:token>> 一次，负向可引用自身 <<dna_uc:token>> 一次；两者只展开本次校正片段。非目标 named 与 reference 同样提供保守校正片段，不引入其整套体态；Scene 与动态 Char 沿用原依据，不声称看过图片。',
             '具名人物的 meta_outfit_name 与 meta_outfit_description 必须从本次角色资料的 outfit.name/description 逐字照抄；这些字段来自原 CG 衣装快照，不是参照立绘衣装。不改写、不翻译、不补全，空值保持为空。实际 Char 绘图正文必须同时保持该原衣装的颜色和细节；元数据照抄但正文换色同样不合格。',
             ...(recipe.outfitMode === 'template' ? ['每份写 outfit_mode: template；named Char 恰写本人的 <<outfit:token>> 一次，不另写衣装说明。reference 与所有 UC 不使用衣装占位。原 CG 衣装仅按快照展开，不采用新候选或参照图服装。'] : []),
             '以本次输出清单的 captionIndex 作为本图 Char 的零基索引，从 0 连续编号。slotid、原图角色序号和 token 中的数字都不是本图索引。同一 characterKey 的 named 与 reference 是两个独立 Char，必须各用清单给出的索引和 token，不能合并。每个索引的每个 meta_* 字段恰好写一次，不在图末重复汇总。',

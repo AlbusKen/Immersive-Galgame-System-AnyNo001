@@ -117,7 +117,8 @@ export function promptProvenance(value = {}) {
     if (value.promptRecipe !== undefined) {
         const raw = value.promptRecipe;
         const caption = normalizeCaption(raw?.caption);
-        const checked = checkPromptRecipe(raw, caption);
+        const checked = checkPromptRecipe(raw, caption, undefined,
+            { allowArchivedCorrection: value.sentPrompt?.action === 'infill' && value.dnaSnapshot !== undefined });
         if (!caption || !checked.ok) invalid();
         out.promptRecipe = checked.value;
     }
@@ -131,10 +132,22 @@ export function promptProvenance(value = {}) {
                 || !['named', 'reference'].includes(c.kind) || typeof c.characterKey !== 'string'
                 || !Number.isInteger(c.captionIndex) || c.captionIndex < 0
                 || typeof c.token !== 'string' || !['full_body', 'half_body', 'portrait', 'partial'].includes(c.framing)) invalid();
+            if (c.application !== undefined) {
+                const binding = out.promptRecipe?.bindings.find(b => b.captionIndex === c.captionIndex);
+                if (c.application !== 'appearance_correction' || c.source !== 'saved'
+                    || out.promptRecipe?.identityMode !== c.application || !binding
+                    || binding.characterKey !== c.characterKey || binding.token !== c.token || binding.kind !== c.kind
+                    || binding.framing !== c.framing || binding.correction.subject !== c.subject
+                    || binding.correction.negative !== c.negative) invalid();
+            } else if (out.promptRecipe?.identityMode === 'appearance_correction') invalid();
             return { kind: c.kind, characterKey: c.characterKey, captionIndex: c.captionIndex,
                 token: c.token, framing: c.framing, source: c.source, dnaVersion: c.dnaVersion,
+                ...(c.application !== undefined && { application: c.application }),
                 subject: c.subject, negative: c.negative, profile: normalizeCharacterDna(c.profile) };
         }) };
+        if (out.promptRecipe?.identityMode === 'appearance_correction'
+            && (out.dnaSnapshot.characters.length !== out.promptRecipe.bindings.length
+                || new Set(out.dnaSnapshot.characters.map(c => c.captionIndex)).size !== out.dnaSnapshot.characters.length)) invalid();
     }
     if (value.outfitSnapshot !== undefined) {
         const raw = value.outfitSnapshot;

@@ -83,6 +83,8 @@ function promptDiagnostic(result, stage, slotId) {
         'promptTask.characters.token', 'promptTask.characters.kind', 'promptTask.characters.framing',
         'promptTask.slots', 'promptTask.slots.slotId', 'promptTask.slots.tokens',
         'promptRecipe', 'promptRecipe.bindings', 'promptRecipe.bindings.length',
+        'promptTask.identityMode', 'promptTask.slots.identityMode', 'promptRecipe.identityMode',
+        'binding.correction', 'identity_mode', 'meta_correction_identity', 'meta_correction_uc',
         'binding.kind', 'binding.captionIndex', 'binding.characterKey', 'binding.token', 'binding.framing',
         'caption', 'caption.scene', 'caption.char', 'caption.char_uc', 'characterContext',
         'characterMeta', 'characterMeta.characters', 'dnaCandidates', 'dnaCandidates.characters',
@@ -257,6 +259,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         }
         const api = findDbgenApi(globalObject);
         if (!api) return { ok: false, error: `未检测到${DBGEN_LABEL}` };
+        if ((task.value?.identityMode === 'appearance_correction'
+            || task.value?.slots?.some(s => s.identityMode === 'appearance_correction'))
+            && api.getPromptCapabilities?.()?.appearanceCorrection !== 1)
+            return { ok: false, reason: 'dbgen-appearance-correction-required', error: '请升级数据库生图插件以支持外观校正模板' };
         const description = String(meta.description || '').trim();
         if (!description) return { ok: false, error: '没有可交给数据库生图插件的画面描述' };
         if (typeof api.generateSinglePrompt !== 'function') return { ok: false, error: `${DBGEN_LABEL}版本过旧，缺少写提示词接口` };
@@ -307,6 +313,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         if (!task.ok) return describePromptFailure(task, 'igs-prompt-input');
         const api = findDbgenApi(globalObject);
         if (!api) return { ok: false, error: `未检测到${DBGEN_LABEL}` };
+        if ((task.value?.identityMode === 'appearance_correction'
+            || task.value?.slots?.some(s => s.identityMode === 'appearance_correction'))
+            && api.getPromptCapabilities?.()?.appearanceCorrection !== 1)
+            return { ok: false, reason: 'dbgen-appearance-correction-required', error: '请升级数据库生图插件以支持外观校正模板' };
         const description = String(meta.description || '').trim();
         if (!description) return { ok: false, error: '没有可交给数据库生图插件的画面描述' };
         if (typeof api.generateSinglePrompt !== 'function') return { ok: false, error: `${DBGEN_LABEL}版本过旧，缺少写提示词接口` };
@@ -660,7 +670,11 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         if (base.mode === 'dbgen') {
             const api = findDbgenApi(globalObject);
             const cap = typeof api?.describeInfill === 'function' ? api.describeInfill() : null;
-            return cap?.supported ? { supported: true, reason: '', via: 'dbgen' }
+            const strengthCapability = api?.getPromptCapabilities?.()?.infillImg2imgStrength;
+            const correctionCapability = api?.getPromptCapabilities?.()?.appearanceCorrection;
+            return cap?.supported ? { supported: true, reason: '', via: 'dbgen',
+                ...(correctionCapability !== undefined && { appearanceCorrection: correctionCapability }),
+                ...(strengthCapability !== undefined && { infillImg2imgStrength: strengthCapability }) }
                 : { supported: false, reason: cap?.reason || 'dbgen-upgrade-required',
                     message: '请升级数据库生图插件并选择 V5 Full NAI 配置以启用局部重绘' };
         }
