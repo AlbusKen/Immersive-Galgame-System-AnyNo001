@@ -98,6 +98,20 @@ export function prepareCharacterCaption(input = {}) {
     }
     if (textFields(expanded).some((v) => controlled.test(v || '')))
         return fail('DNA_TEMPLATE_UNRESOLVED', '身份展开后仍有未解析令牌');
+    // 工作画布标记属于发送封装，不写回可复用模板或原 CG 提示词。
+    if (selected.value?.purpose === 'consistency'
+        && checked.value.bindings.some(b => b.kind === 'reference')) {
+        const scene = expanded.v4_prompt.caption;
+        // 只归一化标点分隔的独立技术标签，不改写正文中的同名短语。
+        let text = scene.base_caption, previous;
+        do {
+            previous = text;
+            text = text.replace(/(^\s*|[,.;:]\s*)reference inset\s*(?:([,.;:]\s*)|$)/gi,
+                (_match, before, after) => before.trim() && after ? before : '');
+        } while (text !== previous);
+        text = text.trim();
+        scene.base_caption = text ? `reference inset, ${text}` : 'reference inset';
+    }
     return freeze({ ok: true, caption: expanded, captionMode: 'final', promptRecipe: checked.value,
         dnaSnapshot: { version: 1, characters },
         ...(checked.value.outfitMode === 'template' && { outfitSnapshot: outfits.value,

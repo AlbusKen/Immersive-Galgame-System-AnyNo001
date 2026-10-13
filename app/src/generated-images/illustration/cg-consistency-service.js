@@ -29,6 +29,7 @@ export function createCgConsistencyService(deps) {
         'DNA_VIEW_MISSING', 'PROMPT_MODE_CONFLICT', 'consistency-write-failed', 'consistency-busy',
         'consistency-unavailable', 'consistency-failed', 'dbgen-infill-required', 'no-canvas',
         'consistency-strength-invalid', 'dbgen-infill-strength-required', 'dbgen-appearance-correction-required',
+        'dbgen-provided-context-required', 'PROMPT_CONTEXT_MODE',
         'consistency-model-invalid', 'dbgen-infill-model-required', 'dbgen-infill-model-mismatch',
         'infill-model-unsupported', 'nai-config-unset',
         'cg-binding-incomplete', 'cg-image-missing', 'cg-reference-missing', 'cg-size-mismatch',
@@ -122,8 +123,6 @@ export function createCgConsistencyService(deps) {
         if (!cap?.supported || cap.via !== 'dbgen') return failure(cap?.reason || 'dbgen-infill-required', cap?.message || '请启用支持所选模型局部重绘的数据库生图插件');
         if (cap.infillImg2imgStrength !== 1) return failure('dbgen-infill-strength-required',
             '请升级数据库生图插件以支持低强度局部重绘');
-        if (cap.appearanceCorrection !== 1) return failure('dbgen-appearance-correction-required',
-            '请升级数据库生图插件以支持外观校正模板');
         if (!codec?.available) return failure('no-canvas', '当前环境不支持图片画布');
         if (typeof store.updateSlot !== 'function' || typeof resolveReference !== 'function'
             || typeof nai.writeDbgenPrompt !== 'function' || typeof nai.getEditConfig !== 'function')
@@ -179,7 +178,7 @@ export function createCgConsistencyService(deps) {
             const characterContext = bundle.characterContext.filter((c) =>
                 promptTask.characters.some((b) => b.characterKey === c.characterKey));
             const output = { slotId: expected.slotId, size: expected.size || task.record.originalSize,
-                ...(slot.identityMode !== undefined && { identityMode: slot.identityMode }),
+                characterKey: expected.characterKey, layout: expected.layout,
                 rows: expected.rows.map((row, captionIndex) => ({ captionIndex, kind: row.kind,
                     characterKey: row.characterKey, token: row.token, framing: row.framing,
                     centers: row.centers, outfit: row.kind === 'reference'
@@ -193,7 +192,7 @@ export function createCgConsistencyService(deps) {
                     + '\n本次输出清单（captionIndex 是本图连续零基索引，每个字段只写一次）：\n'
                     + JSON.stringify(output),
                 promptTask, characterContext: clone(characterContext),
-                messageId: task.target.floor.messageId,
+                contextMode: 'provided',
                 ...(task.writingRequirements && { writingRequirements: clone(task.writingRequirements) }),
                 signal: task.controller.signal, shouldStart: () => canStart(task) }));
             await unchanged(task);
@@ -217,7 +216,6 @@ export function createCgConsistencyService(deps) {
         task.phase = 'binding';
         const checked = checkConsistencyCaptions({ ok: true, captions: written.values.flatMap((r) => r.captions) }, bundle, task.characters);
         if (!checked.ok) return checked;
-        task.scene = checked.scene;
         task.rounds = checked.rounds;
         task.audit = [];
         return { ok: true };
@@ -352,16 +350,14 @@ export function createCgConsistencyService(deps) {
         report(task, 'info', '开始接受候选，正在复核提交条件');
         try {
             await unchanged(task);
+            // 原 CG 提示词及模板保真保留；实际发送来源按局部轮次归档。
+            const prompt = clone(task.record.prompt || storedPromptFromResult(task.record));
+            if (prompt) { delete prompt.sentPrompt; delete prompt.consistencyPrompt; }
             const result = await store.updateSlot(task.target.key, task.target.slot, task.record.revision || 0,
-                { dataUrl: task.dataUrl, caption: task.scene.caption, characterMeta: task.scene.characterMeta,
-                    ...promptProvenance(task.scene), prompt: storedPromptFromResult(task.scene),
-                    characterContext: task.bundle.characterContext,
-                    promptTask: { version: 1, mode: 'dna_template', purpose: 'cg',
-                        characters: task.scene.promptRecipe.bindings.map(({ kind, characterKey, token, framing }) =>
-                            ({ kind, characterKey, token, framing })) },
-                    // 正式场景未作为整图发送，不能伪造它的 wire；实际 infill 来源单独归档。
+                { dataUrl: task.dataUrl, ...(prompt && { prompt }),
+                    // 原正式提示词不重写；实际 infill 来源单独归档。
                     ...promptProvenance({ consistencyPrompt: { version: 1, rounds: task.audit } }),
-                    promptEdited: false, preflightFailure: null, error: null, failureReason: null,
+                    preflightFailure: null, error: null, failureReason: null,
                     status: 'done', updatedAt: now() },
                 { expectedToken: task.record.revisionToken, preserveBaseline: true, clearSentPrompt: true,
                     beforeCommit: () => unchanged(task),

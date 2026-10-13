@@ -1476,7 +1476,7 @@ async function consistencyFixture(count = 2, storeOverride) {
                 const ref = rows.find((c) => c.kind === 'reference');
                 const caption = {
                     v4_prompt: { caption: { base_caption: ref
-                        ? 'Two people interacting in a room, preserving their original clothing and interaction.'
+                        ? 'The inset shows the same character as an appearance reference. Two people interacting in a room, preserving their original clothing and interaction.'
                         : 'Two people interacting in a room.', char_captions: rows.map((c) => ({
                         char_caption: `<<dna:${c.token}>> ${c.kind === 'reference' ? 'is visible from the shoulders up.' : request.promptTask.outfitMode === 'template' ? `<<outfit:${c.token}>>.` : `wears ${outfitFor(c).description}.`}`,
                         centers: [{ x: 0.5, y: 0.5 }] })) } },
@@ -1525,7 +1525,7 @@ for (const code of ['PROMPT_LLM_UNSET', 'NAI_429', 'WORKBENCH_CAPTION_INVALID', 
         const { createImageJobLog } = await import('../src/generated-images/image-job-log.js');
         const f = await consistencyFixture(), requests = [];
         const adapter = createImageBackend({ getBridge: () => ({ imageApi: { mode: 'dbgen' } }),
-            global: { NaiDbGen: { getPromptCapabilities: () => ({ appearanceCorrection: 1 }),
+            global: { NaiDbGen: { getPromptCapabilities: () => ({ providedPromptContext: 1 }),
                 async generate() { assert.fail('写词失败不得生图'); },
                 async generateSinglePrompt(req) {
                     requests.push(req);
@@ -1542,20 +1542,93 @@ for (const code of ['PROMPT_LLM_UNSET', 'NAI_429', 'WORKBENCH_CAPTION_INVALID', 
         const result = await f.service.redrawConsistency(f.query);
         assert.equal(result.ok, false);
         assert.equal(result.reason, code);
-        assert.equal(result.diagnostics.slotId, 1);
-        assert.equal(requests.length, f.names.length + 1);
-        assert.ok(requests.every((req) => req.messageId === f.floor.messageId));
+        assert.equal(result.diagnostics.slotId, 2);
+        assert.equal(requests.length, f.names.length);
+        assert.ok(requests.every((req) => req.contextMode === 'provided' && !Object.hasOwn(req, 'messageId')));
         assert.equal(f.calls.length, 0);
         assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
         const recovered = createImageJobLog({ storage: f.logStorage }).list();
         const error = recovered.find((entry) => entry.level === 'error').message;
         assert.ok(error.includes(code), error);
-        assert.match(error, /阶段 write.*slotid 1.*原图保持不变/);
+        assert.match(error, /阶段 write.*slotid 2.*原图保持不变/);
         if (code === 'NAI_429') assert.match(error, /HTTP 429.*traceId trace_safe/);
         if (code === 'WORKBENCH_CAPTION_INVALID') assert.match(error, /prompt-parse.*caption.*invalid/);
         assert.doesNotMatch(JSON.stringify(result) + error, /PRIVATE-|rawText|coat-A|new-A/);
     });
 }
+
+test('gate:cg-consistency:固定前缀归一与重复准备不改局部模板', async () => {
+    const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+    const f = await consistencyFixture();
+    assert.equal((await f.service.redrawConsistency(f.query)).ok, true);
+    const request = f.calls[0];
+    const template = structuredClone({ caption: request.caption, promptRecipe: request.promptRecipe,
+        promptTask: request.promptTask, characterContext: request.characterContext,
+        characterMeta: request.characterMeta, slotId: request.slotId });
+    const scene = template.caption.v4_prompt.caption.base_caption;
+    const cases = [
+        [scene, scene],
+        [`reference inset, ${scene}`, scene],
+        [`  ReFeReNcE InSeT. ${scene}`, scene],
+        [`${scene}, reference inset`, scene],
+        [`reference inset; reference inset, ${scene}, reference inset`, scene],
+        ['Local content, reference inset, same character.', 'Local content, same character.'],
+        ['reference inset', ''],
+        ['A reference inset is described in the scene.', 'A reference inset is described in the scene.'],
+    ];
+    for (const [raw, body] of cases) {
+        const input = structuredClone(template);
+        input.caption.v4_prompt.caption.base_caption = raw;
+        input.promptRecipe.caption = structuredClone(input.caption);
+        const before = structuredClone(input);
+        const prepared = prepareCharacterCaption(input);
+        assert.equal(prepared.ok, true, prepared.error);
+        assert.equal(prepared.caption.v4_prompt.caption.base_caption,
+            body ? `reference inset, ${body}` : 'reference inset');
+        assert.deepEqual(input, before, '只修改发送副本');
+        assert.deepEqual(prepared.promptRecipe.caption, before.promptRecipe.caption);
+        assert.deepEqual(prepareCharacterCaption(input), prepared, '同模板重复准备保持幂等');
+        const final = prepareCharacterCaption({ captionMode: 'final', caption: prepared.caption });
+        assert.equal(final.ok, true, final.error);
+        assert.deepEqual(final.caption, prepared.caption, '已准备的定稿不重复前置');
+        assert.equal(Object.isFrozen(prepared.caption.v4_prompt.caption), true);
+    }
+    assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
+});
+
+
+test('gate:cg-consistency:固定前缀不影响普通生成与手改定稿', async () => {
+    const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+    const f = await consistencyFixture();
+    const recipe = structuredClone(f.before.promptRecipe);
+    const characterContext = f.names.map(characterKey => ({ characterKey,
+        dna: f.assets.characterDna[characterKey],
+        outfit: f.before.characterMeta.characters.find(c => c.characterKey === characterKey).outfit }));
+    for (const purpose of ['cg', 'sprite', 'derived', 'consistency']) {
+        const input = { caption: recipe.caption, promptRecipe: recipe, characterContext,
+            characterMeta: f.before.characterMeta,
+            promptTask: { version: 1, mode: 'dna_template', purpose,
+                characters: recipe.bindings.map(({ kind, characterKey, token, framing }) =>
+                    ({ kind, characterKey, token, framing })) } };
+        const before = structuredClone(input);
+        const prepared = prepareCharacterCaption(input);
+        assert.equal(prepared.ok, true, prepared.error);
+        assert.equal(prepared.caption.v4_prompt.caption.base_caption, recipe.caption.v4_prompt.caption.base_caption);
+        assert.doesNotMatch(prepared.caption.v4_prompt.caption.base_caption, /reference inset/i);
+        assert.deepEqual(input, before);
+        assert.ok(prepared.caption.v4_prompt.caption.char_captions.every(c => !c.char_caption.includes('<<dna:')));
+    }
+    for (const captionMode of [undefined, 'final']) {
+        const caption = structuredClone(f.before.caption);
+        caption.v4_prompt.caption.base_caption = 'reference inset, An explicitly saved caption.';
+        const before = structuredClone(caption);
+        const prepared = prepareCharacterCaption({ caption, ...(captionMode && { captionMode }) });
+        assert.equal(prepared.ok, true, prepared.error);
+        assert.deepEqual(prepared.caption, before, '旧提示词和手改定稿原样发送');
+        assert.deepEqual(caption, before);
+    }
+});
+
 
 for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-candidate-accept-roundtrip`, async () => {
     const f = await consistencyFixture(count);
@@ -1563,13 +1636,17 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-candid
     assert.equal(candidate.ok, true, JSON.stringify(candidate));
     assert.equal(candidate.reason, 'candidate');
     assert.equal(f.calls.length, count);
-    assert.equal(f.writes.length, count + 1, '正式场景与各工作轮次独立并发写词');
-    assert.ok(f.writes.every((request) => request.messageId === f.floor.messageId), '每轮写词绑定原 CG 楼层，不读取最新楼');
+    assert.equal(f.writes.length, count, '仅为局部工作轮次写词');
+    assert.ok(f.writes.every((request) => request.contextMode === 'provided' && !Object.hasOwn(request, 'messageId')), '仅使用保存 CG 资料');
     assert.equal(f.writes[0].promptTask.purpose, 'consistency');
     assert.match(f.writes[0].description, /保姿优先于身份相似度/);
     assert.match(f.writes[0].description, /不得据此重塑原 CG 的身体轮廓、骨架、肢体长度或躯干比例/);
-    assert.match(f.writes[0].description, /每个工作轮次独立用于实际重绘，不会继承 slotid 1 的正文/);
-    assert.match(f.writes[0].description, /必须在每份工作 Scene 与对应目标 Char 中具体保留/);
+    assert.match(f.writes[0].description, /只保留裁剪画面中剩下的元素.*尽量逐字复用原提示词/);
+    assert.match(f.writes[0].description, /不参考剧情正文、聊天历史或世界书/);
+    const output = JSON.parse(f.writes[0].description.split('\n').at(-1));
+    assert.equal(output.characterKey, f.names[0]);
+    assert.deepEqual(output.layout.sourceSize, { width: 128, height: 64 });
+    assert.ok(output.layout.crop && output.layout.work && output.layout.reference);
     assert.doesNotMatch(f.writes[0].description, /肤色、体型比例和/);
     assert.ok(f.writes[0].description.includes(JSON.stringify(f.before.promptRecipe.caption)), '原场景与各 Char 的动态依据完整交给同次写词');
     assert.deepEqual(f.references, f.names);
@@ -1579,15 +1656,23 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-candid
         assert.equal(await request.shouldStart(), true);
         assert.equal(request.strength, 0.75, '一致性每轮显式使用专用重绘强度');
         assert.match(request.caption.v4_prompt.caption.base_caption, /preserving their original clothing and interaction/);
-        assert.doesNotMatch(request.caption.v4_prompt.caption.base_caption, /reference inset|frame|border|split screen|collage/i);
+        assert.match(request.caption.v4_prompt.caption.base_caption, /same character/i);
+        assert.doesNotMatch(request.caption.v4_prompt.caption.base_caption, /reference inset/i);
+        assert.doesNotMatch(request.caption.v4_prompt.caption.base_caption, /frame|border|split screen|collage/i);
         assert.match(request.caption.v4_negative_prompt.caption.base_caption, /decorative frame, golden border, split screen, collage, duplicate person/);
         const chars = request.caption.v4_prompt.caption.char_captions;
         assert.ok(chars.every((c) => c.centers.every((p) => p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)));
         assert.ok(chars.some((c) => c.char_caption.includes(`<<dna:ref${i}>>`)));
         assert.ok(chars.every((c) => !c.char_caption.includes('new-')), '服务不能提前展开身份');
         const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+        const reusable = structuredClone({ caption: request.caption, promptRecipe: request.promptRecipe });
         const prepared = prepareCharacterCaption(request);
         assert.equal(prepared.ok, true, prepared.error);
+        const scene = prepared.caption.v4_prompt.caption.base_caption;
+        assert.equal(scene, `reference inset, ${request.caption.v4_prompt.caption.base_caption}`);
+        assert.equal(scene.match(/reference inset/gi).length, 1);
+        assert.deepEqual({ caption: request.caption, promptRecipe: request.promptRecipe }, reusable, '准备发送不能修改局部模板');
+        assert.deepEqual(prepared.promptRecipe.caption, request.promptRecipe.caption);
         assert.ok(prepared.caption.v4_prompt.caption.char_captions.some((c) => c.char_caption.includes(`new-${f.names[i]}`)));
         assert.ok(chars.every((c) => !c.char_caption.includes('old-')));
         const source = f.pixels.get(request.sourceDataUrl), mask = f.pixels.get(request.maskDataUrl);
@@ -1610,17 +1695,74 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-candid
     assert.equal(saved.dataUrl, candidate.dataUrl);
     assert.equal(saved.consistencyBaselineDataUrl, 'original');
     assert.equal(saved.revision, f.before.revision + 1);
-    assert.deepEqual(saved.characterMeta.characters.map((c) => c.characterKey), f.names);
+    assert.deepEqual(saved.characterMeta, f.before.characterMeta);
+    assert.deepEqual(saved.caption, f.before.caption);
+    assert.deepEqual(saved.promptRecipe, f.before.promptRecipe);
     assert.equal(saved.sentPrompt, undefined, '合成后的正式 CG 没有伪造整图 wire');
     assert.equal(saved.consistencyPrompt.rounds.length, count);
     assert.deepEqual(saved.consistencyPrompt.rounds.map((r) => r.characterKey), f.names);
     assert.ok(saved.consistencyPrompt.rounds.every((r) => r.sentPrompt.action === 'infill'));
+    for (const round of saved.consistencyPrompt.rounds) {
+        assert.match(round.sentPrompt.caption.v4_prompt.caption.base_caption, /^reference inset, /);
+        assert.equal(round.sentPrompt.caption.v4_prompt.caption.base_caption.match(/reference inset/gi).length, 1);
+    }
     assert.ok(saved.promptRecipe.bindings.every((b) => b.kind === 'named'));
     assert.equal(saved.caption.v4_prompt.caption.base_caption.includes('reference inset'), false);
     assert.equal(f.service.getIllustrationUrl(f.query), candidate.dataUrl);
     assert.equal(f.events.filter((e) => e.name === 'igs:illustration-updated').length, 1);
     assert.equal((await f.service.acceptConsistency(candidate.candidateId)).reason, 'candidate-unavailable');
 });
+
+for (const edited of [false, true]) test(`gate:cg-consistency:保存衣装模板与${edited ? '手改' : '原始'}提示词保真`, async () => {
+    const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+    const { storedPromptFromResult, promptFromText } = await import('../src/generated-images/generation-prompt.js');
+    const f = await consistencyAdapterFixture(2);
+    try {
+        const recipe = structuredClone(f.before.promptRecipe);
+        recipe.outfitMode = 'template';
+        for (const b of recipe.bindings) {
+            recipe.caption.v4_prompt.caption.char_captions[b.captionIndex].char_caption
+                = `<<dna:${b.token}>> <<outfit:${b.token}>> looks over the shoulder.`;
+        }
+        const context = f.names.map(characterKey => ({ characterKey, dna: f.assets.characterDna[characterKey],
+            outfit: f.before.characterMeta.characters.find(c => c.characterKey === characterKey).outfit }));
+        const original = prepareCharacterCaption({ ...f.before, caption: recipe.caption, promptRecipe: recipe,
+            promptTask: { version: 1, mode: 'dna_template', purpose: 'consistency', outfitMode: 'template',
+                characters: recipe.bindings.map(({ kind, characterKey, token, framing }) => ({ kind, characterKey, token, framing })) },
+            characterContext: context });
+        assert.equal(original.ok, true, original.error);
+        const prompt = edited ? { ...storedPromptFromResult(original),
+            ...promptFromText('EDITED-CG-LOCAL: holding the reins beside a stone wall.', 'edited-uc') }
+            : storedPromptFromResult(original);
+        if (edited) delete prompt.caption;
+        const before = await f.store.putSlot(f.key, { ...f.before, ...original, prompt,
+            ...(edited && { promptEdited: true }) });
+        const source = edited ? JSON.stringify(prompt) : JSON.stringify(recipe.caption);
+        const candidate = await f.service.run(f.target);
+        assert.equal(candidate.ok, true, JSON.stringify(candidate));
+        assert.equal(f.writes.length, f.names.length);
+        assert.ok(f.writes.every(req => req.description.includes(source)));
+        for (const [i, request] of f.edits.entries()) {
+            const prepared = prepareCharacterCaption(request);
+            assert.equal(prepared.ok, true, prepared.error);
+            assert.equal(prepared.promptRecipe.outfitMode, 'template');
+            for (const b of prepared.promptRecipe.bindings.filter(b => b.kind === 'named')) {
+                const saved = context.find(c => c.characterKey === b.characterKey);
+                assert.ok(request.caption.v4_prompt.caption.char_captions[b.captionIndex].char_caption.includes(`<<outfit:${b.token}>>`));
+                assert.equal(prepared.outfitSnapshot.characters.find(c => c.token === b.token).description, saved.outfit.description);
+                assert.ok(f.wires[i].parameters.v4_prompt.caption.char_captions[b.captionIndex].char_caption.includes(saved.outfit.description));
+            }
+            assert.doesNotMatch(JSON.stringify(f.wires[i]), /<<(?:dna|outfit)/);
+        }
+        assert.equal((await f.service.accept(candidate.candidateId)).ok, true);
+        const saved = await f.store.getSlotRecord(before.key);
+        for (const field of ['prompt', 'caption', 'promptRecipe', 'dnaSnapshot', 'outfitSnapshot', 'promptEdited'])
+            assert.deepEqual(saved[field], before[field], field);
+        assert.equal(saved.consistencyPrompt.rounds.length, f.names.length);
+        assert.deepEqual(f.assets, f.originalAssets);
+    } finally { f.dispose(); }
+});
+
 
 
 test('gate:cg-consistency:missing-reference-fails-before-any-request', async () => {
@@ -2183,7 +2325,7 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
         artistRepo: { get: async () => Ok({ positivePrompt: 'artist:test', negativePrompt: 'artist-uc' }), onChanged: () => () => {} },
         newTraceId: () => 'consistency-offline' });
 
-    const api = { getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, generationConfig: 1, generationConfigLease: 1, infillImg2imgStrength: 1, appearanceCorrection: 1, infillModelNegotiation: 1 }),
+    const api = { getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, generationConfig: 1, generationConfigLease: 1, infillImg2imgStrength: 1, appearanceCorrection: 1, infillModelNegotiation: 1, providedPromptContext: 1 }),
         getGenerationConfig: () => imageService.getGenerationConfig(),
         isGenerationConfigCurrent: (token) => imageService.isGenerationConfigCurrent(token),
         describeInfill: (request) => imageService.describeInfill(request),
@@ -2221,8 +2363,15 @@ async function consistencyAdapterFixture(count, wrapStore = (store) => store, op
                     { messageId: f.floor.messageId, name: 'Bot', text: f.floor.text, isUser: false, isSystem: false },
                 ] } });
             pipelines.push(pipeline);
+            if (request.contextMode === 'provided') {
+                pipeline.characterRepo.listGroups = async () => assert.fail('局部写词不得读取角色库');
+                pipeline.tagRepo.listLibraries = async () => assert.fail('局部写词不得读取标签库');
+                pipeline.host.getMessages = () => assert.fail('局部写词不得读取剧情正文');
+                pipeline.host.getRecentAiMessages = () => assert.fail('局部写词不得读取历史');
+            }
             options.preparePipeline?.(pipeline, request);
-            return pipeline.workbench.writePrompt({ mode: 'floor', skipRecall: request.skipRecall, messageId: request.messageId,
+            return pipeline.workbench.writePrompt({ mode: request.contextMode === 'provided' ? 'entries' : 'floor', contextMode: request.contextMode,
+                ...(request.contextMode === 'provided' ? {} : { skipRecall: request.skipRecall, messageId: request.messageId }),
                 naturalLanguage: request.description, characterContext: request.characterContext,
                 promptTask: request.promptTask, writingRequirements: request.writingRequirements });
         },
@@ -2266,16 +2415,18 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${model}:${selectedModel |
             dnaSnapshot: original.dnaSnapshot, sentPrompt: oldWire });
         const candidate = await f.service.run(f.target);
         assert.equal(candidate.ok, true, JSON.stringify(candidate));
-        assert.equal(f.writes.length, count + 1);
-        assert.equal(f.pipelines.reduce((sum, p) => sum + p.llmCalls.length, 0), count + 1);
+        assert.equal(f.writes.length, count);
+        assert.equal(f.pipelines.reduce((sum, p) => sum + p.llmCalls.length, 0), count);
         assert.equal(f.wires.length, count);
         assert.equal(f.edits.length, count);
-        assert.equal(f.writes[0].skipRecall, true);
-        assert.ok(f.writes.every((request) => request.messageId === f.floor.messageId));
+        assert.equal(f.writes[0].skipRecall, undefined);
+        assert.ok(f.writes.every((request) => request.contextMode === 'provided' && !Object.hasOwn(request, 'messageId')));
         for (const pipeline of f.pipelines) {
-            assert.equal(pipeline.host.resolveWorldInfoCalls.length, 1);
-            assert.ok(pipeline.host.resolveWorldInfoCalls[0].some((m) => m.messageId === f.floor.messageId));
-            assert.ok(pipeline.host.resolveWorldInfoCalls[0].every((m) => m.messageId <= f.floor.messageId));
+            assert.equal(pipeline.host.resolveWorldInfoCalls.length, 0);
+            const content = JSON.stringify(pipeline.llmCalls[0].messages);
+            assert.doesNotMatch(content, /Later unrelated scene|测试正文|WORLD_INFO_TEXT/);
+            assert.match(content, /reference inset 由程序.*写词输出不包含该标签/);
+            assert.equal(pipeline.naiCalls.length, 0, '写词路径不发送图片请求');
         }
         assert.equal(f.writes[0].imageDataUrl, undefined, '不向写词模型发送图片定位');
         assert.ok(f.writes.every((request) => request.promptTask.slots.length === 1));
@@ -2288,7 +2439,10 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${model}:${selectedModel |
             assert.equal(wire.model, infillModel);
             assert.equal(f.edits[i].model, infillModel);
             assert.equal(wire.input, 'artist:test, ' + prepared.caption.v4_prompt.caption.base_caption);
-            assert.doesNotMatch(wire.input, /reference inset|frame|border|split screen|collage/i);
+            assert.match(wire.input, /^artist:test, reference inset, .*same character/i);
+            assert.equal(wire.input.match(/reference inset/gi).length, 1);
+            assert.doesNotMatch(f.edits[i].caption.v4_prompt.caption.base_caption, /reference inset/i);
+            assert.doesNotMatch(wire.input, /frame|border|split screen|collage/i);
             assert.equal(wire.parameters.negative_prompt, 'artist-uc, ' + prepared.caption.v4_negative_prompt.caption.base_caption);
             assert.match(wire.parameters.negative_prompt, /decorative frame, golden border, split screen, collage, duplicate person/);
             assert.equal(wire.parameters.inpaintImg2ImgStrength, 0.75, '一致性专用强度透传到最终 wire');
@@ -2303,12 +2457,13 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${model}:${selectedModel |
                 '负向缺省坐标按既有 NAI 协议复制正向坐标');
             assert.ok(prepared.dnaSnapshot.characters.some((c) => c.kind === 'reference'
                 && c.characterKey === f.names[i] && c.framing === 'portrait'));
-            assert.equal(prepared.promptRecipe.identityMode, 'appearance_correction');
+            assert.equal(prepared.promptRecipe.identityMode, undefined);
             for (const c of prepared.dnaSnapshot.characters) {
                 const binding = prepared.promptRecipe.bindings.find(b => b.captionIndex === c.captionIndex);
-                assert.equal(c.application, 'appearance_correction');
-                assert.equal(c.subject, binding.correction.subject);
-                assert.equal(c.negative, binding.correction.negative);
+                assert.equal(c.application, undefined);
+                assert.equal(binding.correction, undefined);
+                assert.equal(c.subject, f.assets.characterDna[c.characterKey].views[c.framing].subject);
+                assert.equal(c.negative, f.assets.characterDna[c.characterKey].views[c.framing].negative);
                 assert.deepEqual(c.profile.views, f.assets.characterDna[c.characterKey].views);
             }
             assert.equal(JSON.stringify(wire).includes('<<dna'), false);
@@ -2333,8 +2488,10 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${model}:${selectedModel |
             assert.deepEqual(round.sentPrompt.caption.v4_prompt.caption, f.wires[i].parameters.v4_prompt.caption);
             assert.deepEqual(round.sentPrompt.caption.v4_negative_prompt.caption, f.wires[i].parameters.v4_negative_prompt.caption);
             assert.ok(round.dnaSnapshot.characters.every((c) => c.source === 'saved'));
-            assert.equal(round.promptRecipe.identityMode, 'appearance_correction');
-            assert.ok(round.dnaSnapshot.characters.every(c => c.application === 'appearance_correction'));
+            assert.equal(round.promptRecipe.identityMode, undefined);
+            assert.ok(round.dnaSnapshot.characters.every(c => c.application === undefined));
+            assert.match(round.sentPrompt.caption.v4_prompt.caption.base_caption, /^artist:test, reference inset, .*same character/i);
+            assert.equal(round.sentPrompt.caption.v4_prompt.caption.base_caption.match(/reference inset/gi).length, 1);
         }
         assert.deepEqual(f.assets, f.originalAssets, '全过程不写 DNA 或衣装');
         assert.deepEqual(f.settings, settingsBefore, '局部重绘不改变全局模型或配置');
@@ -2371,7 +2528,7 @@ test('gate:cg-consistency:DNA changes before writing, during edits and at commit
             }
             assert.equal((await f.service.acceptConsistency(result.candidateId)).reason, 'stale-dna', phase);
         } else assert.equal(result.reason, 'stale-dna', phase);
-        assert.equal(f.writes.length, phase === 'reference' ? 0 : phase === 'write' ? 1 : 3, phase);
+        assert.equal(f.writes.length, phase === 'reference' ? 0 : phase === 'write' ? 1 : 2, phase);
         assert.equal(f.calls.length, ['reference', 'write'].includes(phase) ? 0 : phase === 'edit' ? 1 : 2, phase);
         assert.deepEqual(await store.getSlotRecord(f.before.key), f.before, phase);
         assert.equal(f.events.some((e) => e.name === 'igs:illustration-updated'), false, phase);
@@ -2398,7 +2555,7 @@ test('gate:cg-consistency:缺轮次错绑和非法来源在发送前拒绝', asy
         };
         const result = await f.service.redrawConsistency(f.query);
         assert.equal(result.ok, false, mode);
-        assert.equal(f.writes.length, 3, mode);
+        assert.equal(f.writes.length, 2, mode);
         assert.equal(f.calls.length, 0, mode);
         assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before, mode);
     }
@@ -2430,7 +2587,7 @@ test('gate:cg-consistency:真实 Adapter 配置变化停止下一轮或接受', 
                 f.settings.naiParams.scale += 1;
                 assert.equal((await f.service.accept(result.candidateId)).reason, 'stale-config');
             } else assert.equal(result.reason, 'stale-config', phase);
-            assert.equal(f.writes.length, phase === 'write' ? 1 : 3);
+            assert.equal(f.writes.length, phase === 'write' ? 1 : 2);
             assert.equal(f.wires.length, phase === 'write' ? 0 : 2);
             assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
             assert.deepEqual(f.assets, f.originalAssets);
@@ -2464,7 +2621,7 @@ for (const phase of ['preflight', 'transaction', 'transaction-revert']) test(`ga
         assert.equal(result.reason, 'stale-config', JSON.stringify(result));
         assert.deepEqual(await f.rawStore.getSlotRecord(f.before.key), f.before);
         assert.deepEqual(f.assets, f.originalAssets);
-        assert.equal(f.writes.length, 3);
+        assert.equal(f.writes.length, 2);
         assert.equal(f.wires.length, 2);
         assert.equal(f.service.isBusy(), false);
     } finally { f.dispose(); }
@@ -2532,7 +2689,7 @@ for (const phase of ['upload', 'transaction', 'accepted']) test(`gate:cg-consist
             assert.deepEqual(saved, f.before);
             assert.deepEqual(deleted, uploaded);
         }
-        assert.equal(f.writes.length, 3);
+        assert.equal(f.writes.length, 2);
         assert.equal(f.wires.length, 2);
         assert.equal(f.service.isBusy(), false);
         assert.deepEqual(f.assets, f.originalAssets);
@@ -2666,7 +2823,7 @@ for (const count of [2, 3]) test(`gate:dna-chain:${count}人采用到CG重画一
         const currentAssets = structuredClone(f.assets);
         const candidate = await f.service.run(target);
         assert.equal(candidate.ok, true, JSON.stringify(candidate));
-        assert.equal(f.writes.length, count * 2 + 2, '一致性场景与各工作轮次各写一次');
+        assert.equal(f.writes.length, count * 2 + 1, '立绘与普通 CG 写词后，仅为一致性局部轮次写词');
         assert.equal(f.wires.length, count * 2 + 2, '立绘、CG、重画和逐角色 infill 的实际发送数');
         assert.equal((await f.service.accept(candidate.candidateId)).ok, true);
         const saved = await createIndexedDbIllustrationStore({ indexedDB: f.indexedDB }).getSlotRecord(key);
@@ -2712,7 +2869,7 @@ for (const mode of ['outfit', 'missing']) test(`gate:cg-consistency:诊断日志
     assert.match(result.error, mode === 'outfit' ? /slotid 2.*outfit.description/ : /captions.length/);
     if (mode === 'outfit') assert.equal(result.diagnostics.slotId, 2);
     assert.equal(f.calls.length, 0);
-    assert.equal(f.writes.length, 3);
+    assert.equal(f.writes.length, 2);
     assert.deepEqual(await f.store.getSlotRecord(f.before.key), f.before);
     const recovered = createImageJobLog({ storage: f.logStorage }).list();
     assert.ok(recovered.some((entry) => entry.level === 'error' && entry.message.includes(result.diagnostics.field)));
@@ -2728,11 +2885,11 @@ test('gate:cg-consistency:写词约束明确照抄衣装且候选与接受日志
     assert.equal(candidate.ok, true, candidate.error);
     assert.match(f.writes[0].description, /meta_outfit_name.*meta_outfit_description.*逐字/);
     assert.match(f.writes[0].description, /允许修改的唯一范围.*DNA.*参照图/);
-    assert.match(f.writes[0].description, /其他内容全部保持原 CG.*衣装颜色.*马匹.*光影/);
+    assert.match(f.writes[0].description, /裁剪内保留元素.*衣装颜色.*马匹.*光影/);
     assert.match(f.writes[0].description, /实际 Char 绘图正文.*原衣装.*颜色/);
-    assert.match(f.writes[0].description, /工作模板 Scene 只描述原 CG.*不得把 reference inset/);
+    assert.match(f.writes[0].description, /reference inset 由程序.*写词输出不包含该标签.*同一角色参考关系/);
     assert.match(f.writes[0].description, /排除项写入工作轮次 scene_uc/);
-    assert.equal(f.writes.length, 3, '场景和工作轮次各写一次，不额外补写身份');
+    assert.equal(f.writes.length, 2, '各局部工作轮次独立写词');
     const pending = createImageJobLog({ storage: f.logStorage }).list();
     assert.ok(pending.some((entry) => entry.message.includes('候选已生成') && entry.message.includes('尚未保存')));
     assert.equal(pending.some((entry) => entry.message.includes('已接受并保存')), false);
@@ -2826,7 +2983,7 @@ test('gate:cg-consistency:并发写词重绘同基线且乱序结果固定合成
     const editing = new Promise((resolve) => { editingReady = resolve; });
     const write = f.backend.writeDbgenPrompt, edit = f.backend.edit;
     f.backend.writeDbgenPrompt = (req) => new Promise((resolve) => {
-        writes.push({ req, resolve }); if (writes.length === 3) writingReady();
+        writes.push({ req, resolve }); if (writes.length === 2) writingReady();
     });
     f.backend.edit = (req) => new Promise((resolve) => {
         edits.push({ req, resolve }); if (edits.length === 2) editingReady();
@@ -2906,18 +3063,27 @@ test('gate:cg-consistency:非法强度与缺能力零请求且不改设置', asy
         assert.equal(Object.hasOwn(f.adapter.describeEdit(), 'infillImg2imgStrength'), false);
         assert.equal((await f.service.run(f.target)).reason, 'dbgen-infill-strength-required');
         f.api.getPromptCapabilities = () => {
+            const { providedPromptContext, ...legacy } = capabilities();
+            return legacy;
+        };
+        assert.equal((await f.service.run(f.target)).reason, 'dbgen-provided-context-required');
+        assert.equal(f.writes.length, 0);
+        assert.equal(f.edits.length, 0);
+        assert.equal(f.wires.length, 0);
+        f.api.getPromptCapabilities = () => {
             const { appearanceCorrection, ...legacy } = capabilities();
             return legacy;
         };
         assert.equal(Object.hasOwn(f.adapter.describeEdit(), 'appearanceCorrection'), false);
-        assert.equal((await f.service.run(f.target)).reason, 'dbgen-appearance-correction-required');
-        const request = { ...f.writes[0], description: '校正任务', characterContext: f.names.map(characterKey => ({ characterKey, dna: f.assets.characterDna[characterKey] })),
+        const request = { description: '校正任务', characterContext: f.names.map(characterKey => ({ characterKey, dna: f.assets.characterDna[characterKey] })),
             promptTask: { version: 1, mode: 'dna_template', purpose: 'consistency', identityMode: 'appearance_correction', characters: [
                 { kind: 'reference', characterKey: f.names[0], token: 'ref0', framing: 'portrait' }] } };
         assert.equal((await f.adapter.writeDbgenPrompt(request)).reason, 'dbgen-appearance-correction-required');
-        assert.equal(f.writes.length, 0);
-        assert.equal(f.edits.length, 0);
-        assert.equal(f.wires.length, 0);
+        const candidate = await f.service.run(f.target);
+        assert.equal(candidate.ok, true, JSON.stringify(candidate));
+        assert.equal(f.writes.length, 1);
+        assert.equal(f.wires.length, 1);
+        f.service.cancel(candidate.candidateId);
     } finally { f.dispose(); }
 });
 
@@ -2932,7 +3098,7 @@ function consistencyFlatReply(request) {
     assert.doesNotMatch(request.description, /各份角色、景别、位置及工作尺寸/);
     const lines = [`slotid: ${output.slotId}`, 'prompt_mode: dna_template',
         ...(output.identityMode !== undefined ? [`identity_mode: ${output.identityMode}`] : []),
-        `size: ${output.size.width}x${output.size.height}`, 'scene: People retain their original pose in a room.', 'scene_uc: blurry'];
+        `size: ${output.size.width}x${output.size.height}`, 'scene: The inset shows the same character. People retain their original pose in a room.', 'scene_uc: blurry'];
     for (const row of output.rows) {
         const i = row.captionIndex, center = row.centers[0];
         if (row.kind === 'reference') assert.deepEqual(row.outfit, { name: '', description: '' });
@@ -2956,7 +3122,7 @@ for (const duplicate of [false, true]) test(`gate:cg-consistency:单轮清单双
     const f = await consistencyFixture(), pipelines = [], requests = [];
     const adapter = createImageBackend({ getBridge: () => ({ imageApi: { mode: 'dbgen' } }),
         global: { NaiDbGen: { async generate() { assert.fail('写词不得发送图像请求'); },
-            getPromptCapabilities: () => ({ appearanceCorrection: 1 }),
+            getPromptCapabilities: () => ({ providedPromptContext: 1 }),
             async generateSinglePrompt(req) {
             requests.push(req);
             const { text, output } = consistencyFlatReply(req);
@@ -2966,7 +3132,7 @@ for (const duplicate of [false, true]) test(`gate:cg-consistency:单轮清单双
             assert.equal(igs.ok, !(duplicate && output.slotId === 2));
             const p = buildPipeline({ llmComplete: async () => Ok({ text: reply, json: null }) });
             pipelines.push(p);
-            const result = await p.workbench.writePrompt({ mode: 'floor', skipRecall: true,
+            const result = await p.workbench.writePrompt({ contextMode: req.contextMode,
                 naturalLanguage: req.description, characterContext: req.characterContext, promptTask: req.promptTask });
             if (result.ok) for (const field of ['caption', 'promptRecipe', 'characterMeta'])
                 assert.deepEqual(result.value[field], igs.captions[0][field], field);
@@ -2976,7 +3142,7 @@ for (const duplicate of [false, true]) test(`gate:cg-consistency:单轮清单双
 
     try {
         const result = await f.service.redrawConsistency(f.query);
-        assert.equal(requests.length, 3);
+        assert.equal(requests.length, 2);
         assert.ok(pipelines.every((p) => p.naiCalls.length === 0 && p.llmCalls.length === 1));
         if (duplicate) {
             assert.equal(result.ok, false);

@@ -273,6 +273,11 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         }
         const api = findDbgenApi(globalObject);
         if (!api) return { ok: false, error: `未检测到${DBGEN_LABEL}` };
+        if (meta.contextMode !== undefined && meta.contextMode !== 'provided')
+            return { ok: false, reason: 'PROMPT_CONTEXT_MODE', error: '未知写词资料模式' };
+        if (meta.contextMode === 'provided' && api.getPromptCapabilities?.()?.providedPromptContext !== 1)
+            return { ok: false, reason: 'dbgen-provided-context-required',
+                error: '请升级数据库生图插件以支持仅使用 CG 保存资料写词' };
         if ((task.value?.identityMode === 'appearance_correction'
             || task.value?.slots?.some(s => s.identityMode === 'appearance_correction'))
             && api.getPromptCapabilities?.()?.appearanceCorrection !== 1)
@@ -284,8 +289,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         try {
             written = await withTimeout(api.generateSinglePrompt({
                 description,
-                skipRecall: true,
-                ...(meta.messageId != null && { messageId: Number(meta.messageId) }),
+                ...(meta.contextMode === 'provided' ? { contextMode: 'provided' }
+                    : { skipRecall: true, ...(meta.messageId != null && { messageId: Number(meta.messageId) }) }),
                 ...(meta.characterContext !== undefined && { characterContext: meta.characterContext }),
                 ...(task.value !== undefined && { promptTask: task.value }),
                 ...(task.value && meta.userPrompts !== undefined && { userPrompts: structuredClone(meta.userPrompts) }),

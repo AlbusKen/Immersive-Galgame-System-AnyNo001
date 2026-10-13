@@ -2,7 +2,6 @@ import { readCharacterDnaView } from '../../scene/character-dna.js';
 import { currentCgContext } from './cg-character-bindings.js';
 import { checkPromptTask, checkPromptOutput, checkPromptRecipe, promptTaskForSlot } from '../../schemas/prompt-recipe.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
-import { prepareCharacterCaption } from '../character-caption.js';
 import { referenceCanvasCenter } from '../../media/cg-reference-canvas.js';
 
 // 诊断只带字段路径和数值索引，不包含衣装正文、身份资料或写词回复。
@@ -16,7 +15,7 @@ const checkedFailure = (result, field, where = {}) => ({ ...result,
 const whereOf = (slotId, captionIndex) => ({ slotId,
     ...(Number.isInteger(captionIndex) && { captionIndex }) });
 
-// 只计算角色选择和坐标；各 slot 的参考说明及语义正文由独立写词请求生成。
+// 原 CG 提示词随图保留；写词只按裁剪结构筛选局部元素及参考关系。
 export function consistencyPromptTask(record, characters, assets, plans) {
     const recipe = record.promptRecipe;
     if (!checkPromptRecipe(recipe, recipe?.caption).ok || !recipe
@@ -33,45 +32,45 @@ export function consistencyPromptTask(record, characters, assets, plans) {
         const view = readCharacterDnaView(context.find((c) => c.characterKey === b.characterKey)?.dna, b.framing);
         if (!view.ok) return checkedFailure(view, 'dna.views');
     }
-    const scene = { slotId: 1, rows: named.map((b) => ({ ...b,
-        centers: record.caption.v4_prompt.caption.char_captions[b.captionIndex].centers })) };
+    const sourceRows = named.map((b) => ({ ...b,
+        centers: record.caption.v4_prompt.caption.char_captions[b.captionIndex].centers }));
     const rounds = plans.map((plan, i) => ({ slotId: i + 2, characterKey: characters[i].characterKey,
+        layout: { sourceSize: { width: plan.width, height: plan.height },
+            crop: plan.crop, work: plan.work, reference: plan.reference },
         size: plan.size, rows: named.flatMap((b) => {
-            const centers = scene.rows.find((r) => r.token === b.token).centers
+            const centers = sourceRows.find((r) => r.token === b.token).centers
                 .map(p => referenceCanvasCenter(plan, p)).filter(Boolean);
             return centers.length ? [{ ...b, centers }] : [];
         }).concat({ ...refs[i], centers: [{ x: (plan.reference.x + plan.reference.width / 2) / plan.size.width,
             y: (plan.reference.y + plan.reference.height / 2) / plan.size.height }] }) }));
 
-    const expected = [scene, ...rounds];
+    const expected = rounds;
     const promptTask = { version: 1, mode: 'dna_template', purpose: 'consistency',
         ...(recipe.outfitMode && { outfitMode: recipe.outfitMode }),
         characters: [...named, ...refs].map(({ kind, characterKey, token, framing }) =>
             ({ kind, characterKey, token, framing })),
-        slots: expected.map((s) => ({ slotId: s.slotId, tokens: s.rows.map((r) => r.token),
-            ...(s !== scene && { identityMode: 'appearance_correction' }) })) };
+        slots: expected.map((s) => ({ slotId: s.slotId, tokens: s.rows.map((r) => r.token) })) };
     const checked = checkPromptTask(promptTask, context);
     if (!checked.ok) return checkedFailure(checked, 'promptTask');
     return { ok: true, promptTask: checked.value, characterContext: context, expected,
         description: [
-            '为当前 CG 一致性重绘写出本次 promptTask.slots 指定的动态模板；其他 slot 由独立请求完成，不重复输出。不得看图定位，不生成 DNA，不新增人物。',
+            '根据本张 CG 随图保存的原提示词和本次裁剪布局，派生 promptTask.slots 指定的局部模板。只保留裁剪画面中剩下的元素，其他内容尽量逐字复用原提示词，仅补必要的局部描述和参考关系。只输出本轮，不生成全图提示词，不参考剧情正文、聊天历史或世界书，不生成 DNA，不新增人物。',
             '允许修改的唯一范围：该轮 characterKey 对应目标的稳定身份特征，仅对照其已保存 DNA 中明确强调且参照图支持的外貌和标志细节校正；DNA 是身份权威，参照图只辅助匹配。未知、矛盾或画外特征不猜测，不为追求相似度重新设计人物。',
             '身份校正限于有依据的脸型与五官、发色发型、瞳色、肤色、角、尾巴、翅膀、非人耳及标志饰品等；逐项核对保存 DNA 与原图可见依据，不能只顾五官而遗漏关键非人特征或饰品，也不能把它们当衣装随换装删除。不强行补出画外或被遮挡的尾翼、不改变其姿态、位置或接触关系。不把参照图的服装、姿态、表情、视线方向、背景、光照或画风迁移到 CG。只校正不一致之处，已经一致的特征保持。',
             '保姿优先于身份相似度：即使 DNA 描述了体型、身高或身体比例，也不得据此重塑原 CG 的身体轮廓、骨架、肢体长度或躯干比例，不移动头部、手脚和接触点，不改变人物占画面的大小。身份细节与原姿势、遮挡或接触关系冲突时保留原 CG，不追求立绘姿态。',
-            '其他内容全部保持原 CG：衣装颜色、款式、材质与配件，表情、视线、姿势、动作、身体朝向、位置、尺度、遮挡、互动和接触关系；其他人物、马匹等动物的毛色与外形、道具、缰绳、建筑、背景、构图、镜头、光影、画风和整体色调不得改变。衣装配件仅在 DNA 明确列为身份标志且原 CG 可见时校正该标志，不改整套衣服。',
-            'slotid 1 是原尺寸正式场景模板：保留原 CG 全部动态和非身份内容，不含辅助图或额外参考人物。其余 slotid 是工作轮次：只校正该轮目标身份，裁剪区中的非目标人物和物件也必须保留，不把粗区域等同于整块重设计许可。',
-            '每个工作轮次独立用于实际重绘，不会继承 slotid 1 的正文。必须在每份工作 Scene 与对应目标 Char 中具体保留原场景依据已有的姿势、动作、身体朝向、表情、视线、遮挡和互动接触关系；不得省略为仅身份与衣装，也不得只写笼统的保持原姿势。原依据未描述的细节不猜测，沿用输入 CG；不把裁剪或参考图当成新的镜头与构图。',
-            '仅 identityMode 为 appearance_correction 的工作轮次写 identity_mode: appearance_correction；每个 named 和 reference 在自己的本图索引写一次 meta_correction_identity: 索引 | 英文身份校正主语，可选 meta_correction_uc: 索引 | 本次校正负面片段。正式场景不写这些字段。',
-            '校正主语从本次保存 DNA 提炼有依据的发型、发色、脸型、五官、头部非人细节及可见身份饰品，不复制整份身体主语或身体负面资料，不包含身高、胸腰、肌肉、肢长、比例或新姿态要求。身体上的身份标志仅在原场景明确可见且不改变姿势时保守描述；背面或遮挡状态不强行露出五官与饰物。',
-            '校正轮次的 Char 仍恰有自身 <<dna:token>> 一次，负向可引用自身 <<dna_uc:token>> 一次；两者只展开本次校正片段。非目标 named 与 reference 同样提供保守校正片段，不引入其整套体态；Scene 与动态 Char 沿用原依据，不声称看过图片。',
+            '裁剪内保留元素尽量沿用原 CG 提示词：衣装颜色、款式、材质与配件，表情、视线、姿势、动作、身体朝向、位置、尺度、遮挡、互动和接触关系；画面内其他人物、马匹等动物、道具、缰绳、建筑及局部背景仍使用原有描述。光影、画风和整体色调沿用原词；画外元素和不适用的全图构图描述从局部模板省略，不为了完整复述原词而重新画入。',
+            '本轮输出清单的 characterKey 是目标；layout.sourceSize/crop 是原图裁剪依据，work/reference 是工作区与辅助图区域。根据原词、原角色位置及裁剪结构筛选局部元素，不把粗裁剪区视为整块重设计许可。只输出清单指定的角色，画外内容不强行移入；没有位置依据的物件不猜测位置，不声称看过图片。',
+            '每个工作轮次独立用于实际重绘，从随图保存的原词与裁剪布局派生。保留元素的姿势、动作、身体朝向、表情、视线、遮挡和互动接触关系尽量复用原提示词，不笼统省略成仅身份与衣装或保持原姿势。只对局部裁剪确实需要的描述作最小调整，不重写整份动态描述。',
+            '只反推动作、表情、互动与局部环境；复用原 named 的角色 token 和景别，Char 恰有自身 <<dna:token>> 一次，负向可引用自身 <<dna_uc:token>> 一次，发送前展开保存 DNA。不重写身份正文，不输出 identity_mode、meta_correction_identity、meta_correction_uc 或 meta_dna_*。reference 使用本次清单的独立身份 token，不生成替代 DNA。',
             '具名人物的 meta_outfit_name 与 meta_outfit_description 必须从本次角色资料的 outfit.name/description 逐字照抄；这些字段来自原 CG 衣装快照，不是参照立绘衣装。不改写、不翻译、不补全，空值保持为空。实际 Char 绘图正文必须同时保持该原衣装的颜色和细节；元数据照抄但正文换色同样不合格。',
             ...(recipe.outfitMode === 'template' ? ['每份写 outfit_mode: template；named Char 恰写本人的 <<outfit:token>> 一次，不另写衣装说明。reference 与所有 UC 不使用衣装占位。原 CG 衣装仅按快照展开，不采用新候选或参照图服装。'] : []),
             '以本次输出清单的 captionIndex 作为本图 Char 的零基索引，从 0 连续编号。slotid、原图角色序号和 token 中的数字都不是本图索引。同一 characterKey 的 named 与 reference 是两个独立 Char，必须各用清单给出的索引和 token，不能合并。每个索引的每个 meta_* 字段恰好写一次，不在图末重复汇总。',
-            '工作画布侧边辅助图仅供识别目标身份，不是剧情里的第二个人、肖像画或装饰。工作模板 Scene 只描述原 CG 的连续场景与互动；不得把 reference inset、panel、frame、border、split screen、collage、左右分栏、画布边缘、矩形蒙版或参考布局写成正向画面内容，包括不要在正向正文写 no frame 一类否定句。',
-            '参考 Char 仍使用输入的独立 reference token 和 portrait 景别，只引用身份主语及简洁可见状态，不要求相框、描边、展示卡、衣装或新背景。协议字段仍完整：在参考 Char 自己的索引各写一次 meta_outfit_name: 索引 | 和 meta_outfit_description: 索引 |，值均为空；不得复制 named 的衣装或写回 named 的索引。正式场景不含 reference Char。',
-            '将新增相框、金色边框、装饰边线、分栏、拼贴及重复参考人物等伪影排除项写入工作轮次 scene_uc，而不是正向 Scene；保留原 CG 中实际存在的物件，不把真实建筑或道具误当技术边界删除。',
+            '固定标签 reference inset 由程序在局部绘图请求的正向 Scene 开头添加，写词输出不包含该标签。用简短英文自然语言说明同一角色参考关系：侧边辅助图对应本轮 characterKey 的目标，仅参考脸、头发及可见稳定身份细节；主工作区保留原 CG 动作、衣装和环境，不采用参考立绘的姿态、表情、服装、背景或画风。描述参考与目标的实际内容，不只写抽象的请保持不变。',
+            '参考 Char 使用输入的独立 reference token 和 portrait 景别，只引用身份占位符及简洁可见状态，不要求相框、描边、展示卡、衣装或新背景。协议字段完整：在参考 Char 自己的索引各写一次 meta_outfit_name: 索引 | 和 meta_outfit_description: 索引 |，值均为空；不得复制 named 的衣装或写回 named 的索引。辅助图不是剧情里的第二个人。',
+            'reference inset 是工作画布技术参考，不是最终 CG 的分栏构图；不得额外要求 panel、frame、border、split screen、collage 或装饰边线。将新增相框、金色边框、装饰边线、分栏、拼贴及重复参考人物等伪影排除项写入工作轮次 scene_uc，不排除本次必需的 reference inset；保留原 CG 中实际存在的物件，不把真实建筑或道具误当技术边界删除。',
             '每份严格绑定该 slots 的全部 token；景别照抄输入。所有动态文字、质量、UC 在本次完成，不输出画师串。',
-            '原场景与互动依据（旧完整词只作语义依据，不复制旧身份）：\n' + JSON.stringify(record.promptEdited ? record.caption : recipe.caption),
+            '本张 CG 保存的原提示词（筛选局部元素并尽量复用原措辞，身份和衣装使用原 token）：\n'
+                + JSON.stringify(record.promptEdited ? record.prompt?.caption || record.prompt || record.caption : recipe.caption),
         ].join('\n') };
 }
 
@@ -120,15 +119,13 @@ export function checkConsistencyCaptions(written, bundle, characters) {
                     if (returned.outfit[field] !== original.outfit[field])
                         return fail('DNA_TEMPLATE_BINDING', `outfit.${field}`, where);
                 }
-                if (expected.slotId === 1 && binding.captionIndex !== original.captionIndex)
-                    return fail('DNA_TEMPLATE_BINDING', 'binding.captionIndex', where);
                 metadata.push({ ...structuredClone(original), captionIndex: binding.captionIndex,
                     identityAnchor: '', signatureDetails: '', centers: structuredClone(row.centers),
                     positionExplicit: true });
             }
             caption.v4_prompt.caption.char_captions[binding.captionIndex].centers = structuredClone(row.centers);
         }
-        if (expected.slotId !== 1) metadata.forEach((c) => { delete c.region; });
+        metadata.forEach((c) => { delete c.region; });
         const selected = promptTaskForSlot(bundle.promptTask, entry.slotId);
         if (!selected.ok) return checkedFailure(selected, 'promptTask.slotId', whereOf(expected.slotId));
         const input = { slotId: entry.slotId, caption,
@@ -136,8 +133,5 @@ export function checkConsistencyCaptions(written, bundle, characters) {
             characterContext: bundle.characterContext, characterMeta: { version: 1, characters: metadata } };
         results.push(input);
     }
-    const scene = prepareCharacterCaption(results[0]);
-    if (!scene.ok) return checkedFailure(scene, 'scene.caption', whereOf(1));
-    return { ok: true, scene: { ...scene, characterMeta: results[0].characterMeta },
-        rounds: results.slice(1) };
+    return { ok: true, rounds: results };
 }
