@@ -28,6 +28,14 @@ export const WAIT_STAGE_FALLBACK_LINES = Object.freeze([
     '正写得入神，别急…',
 ]);
 
+export const WAIT_STAGE_FAILURES = Object.freeze({
+    empty: { title: '这次没有写出正文', text: '请求已经结束，但没有收到可阅读的回复。请返回酒馆重新生成。' },
+    failed: { title: '这次回复失败了', text: '没有收到完整回复。请返回酒馆检查连接或模型报错，再重新生成。' },
+    stopped: { title: '回复已停止', text: '这次生成被中止了，尚未切换到下一楼。' },
+    read: { title: '回复没能打开', text: '读取或显示回复时出错了。当前楼仍保留，请稍后重新打开最新一楼。' },
+    send: { title: '消息没有发出去', text: '发送失败了，输入内容已保留。请返回当前楼后重试。' },
+});
+
 export const WAIT_STAGE_GAME_LINES = Object.freeze({
     win: ['……这局算你的。', '运气不错嘛。', '好吧，你赢了。', '再来，我不信了。'],
     lose: ['承让了。', '还是我比较稳。', '再来一局？', '下次可别怪我不客气。'],
@@ -111,6 +119,13 @@ export const WAIT_STAGE_STYLE_TEXT = `
 .igs-waitstage.igs-embedded-loading{min-height:220px;border-radius:6px;}
 .igs-waitstage.igs-ws-closing{animation:igs-ws-out .32s ease-in both;pointer-events:none;}
 .igs-waitstage.is-exit{background:radial-gradient(ellipse at center,color-mix(in srgb,var(--igs-empty-bg,#16181a) 68%,transparent) 0%,color-mix(in srgb,var(--igs-empty-bg,#16181a) 90%,transparent) 100%);-webkit-backdrop-filter:blur(22px) saturate(1);backdrop-filter:blur(22px) saturate(1);}
+.igs-waitstage.is-error .igs-ws-dots{display:none;}
+.igs-waitstage.is-error{justify-content:flex-start;overflow:auto;}
+.igs-waitstage.is-error .igs-ws-body{flex-shrink:0;margin:auto 0;}
+.igs-ws-error-mark{display:flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:50%;background:color-mix(in srgb,#d98d83 14%,transparent);color:#e4aca3;font-size:24px;animation:igs-ws-rise .4s ease-out both;}
+.igs-ws-error-title{font-size:18px;line-height:1.5;letter-spacing:.06em;}
+.igs-ws-actions{display:flex;justify-content:center;margin-top:6px;}
+.igs-ws-actions[hidden],.igs-ws-line[hidden]{display:none;}
 .igs-ws-body{display:flex;flex-direction:column;align-items:center;gap:14px;width:100%;max-width:min(520px,92%);animation:igs-ws-rise .5s ease-out both;}
 .igs-ws-dots{display:flex;align-items:center;justify-content:center;gap:6px;color:currentColor;}
 .igs-ws-dots .igs-embedded-loading-dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.35;animation:igs-embedded-pulse 1.1s ease-in-out infinite;}
@@ -147,7 +162,7 @@ export const WAIT_STAGE_STYLE_TEXT = `
 .igs-ws-face{display:flex;align-items:center;justify-content:center;width:100%;}
 .igs-ws-face img{display:block;max-height:34vh;max-width:100%;object-fit:contain;border-radius:10px;}
 @media (prefers-reduced-motion: reduce){
-.igs-waitstage,.igs-ws-body,.igs-ws-board,.igs-ws-note,.igs-ws-quote{animation:none!important;}
+.igs-waitstage,.igs-ws-body,.igs-ws-board,.igs-ws-note,.igs-ws-quote,.igs-ws-error-mark{animation:none!important;}
 .igs-ws-dots .igs-embedded-loading-dot{animation:none!important;opacity:.6;}
 }
 `;

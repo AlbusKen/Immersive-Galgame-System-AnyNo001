@@ -396,11 +396,10 @@ export function createIgsReaderHost(options = {}) {
         global: options.global || globalThis,
         getDocument: () => resolveEmbeddedDocument(state.activeReader),
         onActivity: () => handleChatStreamActivity(),
-        onStable: () => handleChatStreamStable(),
+        onStable: (settled) => handleChatStreamStable(settled),
         isUserFloor: (messageId) => isUserFloorId(messageId),
-        // 硬超时无条件收起等待。全屏在新楼写完之前会让 onStable 返回 false，继续等。
         onTimeout: () => {
-            exitEmbeddedLoading();
+            waitStage.showSlow();
         },
     });
     // 等待过场：五种阅读器模式共用黑屏 + 一句台词（回放角色说过的话 + 通用兜底）。
@@ -409,6 +408,10 @@ export function createIgsReaderHost(options = {}) {
         getDoc: () => resolveEmbeddedDocument(state.activeReader),
         onVoice: (line) => playWaitStageVoice(line),
         onExitReady: () => finishPendingWaitExit(),
+        onDismiss: () => {
+            streamObserver.cancelPending();
+            exitEmbeddedLoading();
+        },
     });
     let pendingReplyMessage = null;
     // 物品图到达后重绘阅读器：演出占位与背包格位据此替换为生图。
@@ -1196,82 +1199,94 @@ export function createIgsReaderHost(options = {}) {
 
     // 观察器只在“稳定”后调用一次：读取最新 AI 消息并原地换源。
     // 流式 token 期间不解析正文、不收集图片，避免酒馆卡顿与页面抖动。
-    async function handleChatStreamStable() {
+    async function handleChatStreamStable(settled) {
         const current = state.activeReader;
         if (!current || !tracksHostReply(current.mode)) return true;
+        if (!streamObserver.hasGenerationSettled()) return false;
         if (Number(current.turnOffset) > 0 && !current.awaitingReply && current.streamPhase !== 'streaming') {
             noticeNewFloor();
             return true;
         }
         if (typeof options.getCurrentMessage !== 'function'
             || typeof options.openViewerFromMessage !== 'function') {
-            exitEmbeddedLoading();
+            showReplyFailure(current, 'read');
             return true;
         }
-        // 宿主挂起时该 await 可能无限 pending，超时兜底保证 loading 退出路径必然到达。
-        const message = await Promise.race([
-            options.getCurrentMessage(),
-            new Promise((resolve) => setTimeout(resolve, 5000)),
-        ]);
-        if (!message || message.id == null) {
-            if (followsHostReply(current.mode) && current.awaitingReply && !streamObserver.hasGenerationSettled()) return false;
-            exitEmbeddedLoading();
+        if (settled.reason === 'stopped' || settled.reason === 'failed') {
+            showReplyFailure(current, settled.reason);
             return true;
         }
-        // 全屏：用户还停在这一楼。正文比对稍有出入也不能重开，重开会把页码打回第一页并清掉等待提示。
-        // 生成没结束就继续等；结束了仍是这一楼，只收起提示，留在当前页。新楼写完再切过去。
-        if (followsHostReply(current.mode) && current.awaitingReply) {
-            const newFloor = Number(message.id) !== Number(current.contentMessageId);
-            if (!streamObserver.hasGenerationSettled() || !newFloor) {
-                if (!streamObserver.hasGenerationSettled()) return false;
-                if (!waitStage.replyArrived()) {
-                    pendingReplyMessage = { reader: current, message: null };
-                    return true;
-                }
-                exitEmbeddedLoading();
-                return true;
+        let message;
+        try {
+            message = await readReplyMessage();
+        } catch (error) {
+            if (state.activeReader === current && streamObserver.isCurrentRevision(settled.revision)) {
+                showReplyFailure(current, 'read');
             }
+            return false;
+        }
+        if (state.activeReader !== current || !streamObserver.isCurrentRevision(settled.revision)) return false;
+        if (!streamObserver.hasGenerationSettled()) return false;
+        if (!message || message.id == null || message.isUser || message.isSystem
+            || message.is_user || message.is_system || isUserFloorId(message.id)) {
+            showReplyFailure(current, 'empty');
+            return true;
         }
         const nextRaw = getMessagePrimaryText(message.raw || message);
         const nextVisible = String(message.visibleText || '');
-        const changed = message.id !== current.contentMessageId
-            || nextRaw !== current.streamBaselineRaw
-            || nextVisible !== current.streamBaselineVisible;
-        if (!changed) {
-            if (!waitStage.replyArrived()) {
-                pendingReplyMessage = { reader: current, message: null };
-                return true;
-            }
-            exitEmbeddedLoading();
+        const baselineId = current.replyBaselineMessageId ?? current.contentMessageId;
+        const changed = Number(message.id) !== Number(baselineId)
+            || nextRaw.trim() !== String(current.streamBaselineRaw || '').trim();
+        const parsed = buildIgsTextPayload(message, {
+            sourceFilter: current.payload.sourceFilter,
+            virtualRegex: current.payload.virtualRegex,
+            sceneAssets: current.snapshot.readerSettings._sceneAssets,
+            visibleText: nextVisible,
+        });
+        if (!changed || !(parsed.textSegments.length || parsed.htmlCards.length || parsed.chats.length)) {
+            showReplyFailure(current, 'empty');
             return true;
         }
         // 回复已写完：当前游戏只结算这一局，之后由过场回调继续换楼。
         if (!waitStage.replyArrived()) {
-            pendingReplyMessage = { reader: current, message };
+            pendingReplyMessage = { reader: current, message, revision: settled.revision };
             return true;
         }
-        await applyReplyMessage(current, message);
+        await applyReplyMessage(current, message, settled.revision);
         return true;
     }
 
     // 换到新写的这一楼：内嵌要先把阅读器挂到新楼层里，其余模式就地换源。
-    async function applyReplyMessage(current, message) {
-        if (!current) return;
+    async function applyReplyMessage(current, message, revision) {
+        const canReplace = () => state.activeReader === current && streamObserver.isCurrentRevision(revision);
+        if (!current || !canReplace()) return;
         const embedded = isEmbeddedReaderMode(current.mode);
+        const previous = { turnOffset: current.turnOffset, mountMessageId: current.mountMessageId };
         current.turnOffset = 0;
         current.mountMessageId = message.id;
         if (embedded) syncEmbeddedReaderMount(current, message);
         try {
-            await options.openViewerFromMessage(message.id, current.mode, {
+            const result = await options.openViewerFromMessage(message.id, current.mode, {
                 replaceActive: true,
                 turnOffset: 0,
                 mountMessageId: message.id,
                 message,
+                canReplace,
             });
-        } catch (error) {
-            // 宿主异常不得打断阅读器；保持当前内容即可。
-        } finally {
+            if (!canReplace()) return;
+            if (result && result.ok === false) {
+                current.turnOffset = previous.turnOffset;
+                current.mountMessageId = previous.mountMessageId;
+                showReplyFailure(current, result.reason === 'no-readable-text' ? 'empty' : 'read');
+                return;
+            }
             exitEmbeddedLoading();
+        } catch (error) {
+            if (canReplace()) {
+                current.turnOffset = previous.turnOffset;
+                current.mountMessageId = previous.mountMessageId;
+                showReplyFailure(current, 'read');
+            }
         }
     }
 
@@ -1279,8 +1294,34 @@ export function createIgsReaderHost(options = {}) {
         const pending = pendingReplyMessage;
         pendingReplyMessage = null;
         if (!pending || state.activeReader !== pending.reader) return;
-        if (pending.message) void applyReplyMessage(pending.reader, pending.message);
-        else exitEmbeddedLoading();
+        void applyReplyMessage(pending.reader, pending.message, pending.revision);
+    }
+
+    async function readReplyMessage() {
+        const timers = options.global || globalThis;
+        let timeout;
+        try {
+            return await Promise.race([
+                Promise.resolve().then(() => options.getCurrentMessage()),
+                new Promise((_, reject) => {
+                    timeout = timers.setTimeout(() => reject(new Error('reply-read-timeout')), 5000);
+                }),
+            ]);
+        } finally {
+            timers.clearTimeout(timeout);
+        }
+    }
+
+    function showReplyFailure(current, kind) {
+        if (state.activeReader !== current) return;
+        pendingReplyMessage = null;
+        streamObserver.cancelPending();
+        current.streamPhase = 'error';
+        current.awaitingReply = false;
+        const overlay = current.dom && current.dom.overlay;
+        if (overlay && overlay.classList) overlay.classList.remove('igs-awaiting-reply');
+        mountWaitStage(current, { embedded: isEmbeddedReaderMode(current.mode) });
+        waitStage.showFailure(kind);
     }
 
     // 等待过场的台词池是从最近几楼的正文里现抽的，等树跑完再补一次即可。
@@ -1338,10 +1379,12 @@ export function createIgsReaderHost(options = {}) {
     function enterReplyWait(current) {
         if (!current) return;
         if (current.streamPhase !== 'streaming') {
+            waitStage.close();
+            pendingReplyMessage = null;
             current.imagePollToken += 1;
             current.imagePolling = false;
             current.streamBaselineRaw = String(current.mountBaselineRaw || '');
-            current.streamBaselineVisible = String(current.mountBaselineVisible || '');
+            current.replyBaselineMessageId = current.contentMessageId;
             streamObserver.prepareForReply();
         }
         current.streamPhase = 'streaming';
@@ -1356,10 +1399,13 @@ export function createIgsReaderHost(options = {}) {
         const mount = current && current.dom && current.dom.embeddedMount;
         if (!current || !isEmbeddedReaderMode(current.mode) || !mount || !mount.host) return;
         if (current.streamPhase !== 'streaming') {
+            waitStage.close();
+            pendingReplyMessage = null;
             current.imagePollToken += 1;
             current.imagePolling = false;
             current.streamBaselineRaw = String(current.mountBaselineRaw || '');
-            current.streamBaselineVisible = String(current.mountBaselineVisible || '');
+            current.replyBaselineMessageId = current.contentMessageId;
+            streamObserver.prepareForReply();
         }
         current.streamPhase = 'streaming';
         current.turnOffset = 0;
@@ -1373,7 +1419,7 @@ export function createIgsReaderHost(options = {}) {
         if (!current) return;
         pendingReplyMessage = null;
         current.streamBaselineRaw = '';
-        current.streamBaselineVisible = '';
+        current.replyBaselineMessageId = null;
         current.streamPhase = 'idle';
         current.awaitingReply = false;
         const waitingOverlay = current.dom && current.dom.overlay;
@@ -1509,6 +1555,7 @@ export function createIgsReaderHost(options = {}) {
 
     async function submitReaderInput(text) {
         if (!state.activeReader) return { ok: false, reason: 'reader-not-open' };
+        if (state.activeReader.streamPhase === 'streaming') return { ok: false, reason: 'reply-pending' };
         // 停在旧楼时发送：剧情会接在最新楼后面，先确认，免得以为是在旧楼的语境里接着写。
         if (Number(state.activeReader.turnOffset) > 0) {
             const floorId = currentTurnMessageId(state.activeReader);
@@ -1516,30 +1563,52 @@ export function createIgsReaderHost(options = {}) {
             if (!confirmed) return { ok: false, sent: false, reason: 'old-floor-cancelled' };
             if (!state.activeReader) return { ok: false, reason: 'reader-not-open' };
         }
-        const embedded = isEmbeddedReaderMode(state.activeReader.mode);
-        const fullscreen = followsHostReply(state.activeReader.mode);
+        const current = state.activeReader;
+        const nextText = String(firstDefined(text, current.inputValue, '') || '');
+        if (!nextText.trim()) return { ok: false, sent: false, reason: 'empty-input' };
+        const embedded = isEmbeddedReaderMode(current.mode);
+        const fullscreen = followsHostReply(current.mode);
         if (embedded) enterEmbeddedLoading();
-        else if (fullscreen) enterReplyWait(state.activeReader);
-        const nextText = String(firstDefined(text, state.activeReader.inputValue, '') || '');
+        else if (fullscreen) enterReplyWait(current);
+        current.inputValue = nextText;
+        if (typeof options.getCurrentMessage === 'function') {
+            try {
+                const baseline = await readReplyMessage();
+                if (state.activeReader !== current) return { ok: false, sent: false, reason: 'reader-changed' };
+                if (baseline && baseline.id != null) {
+                    current.replyBaselineMessageId = baseline.id;
+                    current.streamBaselineRaw = getMessagePrimaryText(baseline.raw || baseline);
+                }
+            } catch (error) {
+                // 尚未发送时读取不到最新楼，保留打开阅读器时的基线。
+            }
+        }
+        if (state.activeReader !== current) return { ok: false, sent: false, reason: 'reader-changed' };
         const send = typeof options.typeAndSend === 'function'
             ? options.typeAndSend
             : async () => ({ ok: false, reason: 'missing-send-handler' });
-        const result = await send(nextText);
-        if ((embedded || fullscreen) && result.ok === false) exitEmbeddedLoading();
-        else if (embedded || fullscreen) streamObserver.noteActivity();
-        state.activeReader.inputValue = '';
+        let result;
+        try { result = await send(nextText) || { ok: true }; }
+        catch (error) { result = { ok: false, reason: 'send-failed' }; }
+        if (state.activeReader !== current) return { ok: result.ok !== false, sent: result.ok !== false, text: nextText, result };
+        if (result.ok === false) {
+            showReplyFailure(current, 'send');
+        } else {
+            if (current.streamPhase === 'streaming') streamObserver.noteActivity();
+            current.inputValue = '';
+        }
         // 漫画模式：发出去后输入框收起，新回复到了再出来。
-        const sentSnapshot = state.activeReader.snapshot;
-        if (result.ok !== false && sentSnapshot && isComicModeActive(sentSnapshot.readerSettings)) {
+        const sentSnapshot = current.snapshot;
+        if (result.ok !== false && current.streamPhase === 'streaming' && sentSnapshot && isComicModeActive(sentSnapshot.readerSettings)) {
             state.activeReader.comicInputSent = comicContentKey(sentSnapshot);
             const overlay = state.activeReader.dom && state.activeReader.dom.overlay;
             const controls = overlay && overlay.querySelector ? overlay.querySelector('.igs-controls') : null;
             if (controls && controls.setAttribute) controls.setAttribute('data-igs-comic-sent', '1');
         }
-        if (state.activeReader.dom && state.activeReader.dom.input) {
-            state.activeReader.dom.input.value = '';
+        if (current.dom && current.dom.input) {
+            current.dom.input.value = current.inputValue;
         }
-        if (!(fullscreen && result.ok !== false)) {
+        if (!(embedded || fullscreen)) {
             writeToast(result.ok === false ? (result.reason || '发送失败') : '已发送');
         }
         return {

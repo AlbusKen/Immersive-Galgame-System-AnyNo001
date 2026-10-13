@@ -539,8 +539,8 @@ test('gate:igs-ui:embedded-chat-observer-uses-generation-end-and-ignores-late-do
         off(name, handler) {
             listeners.set(name, (listeners.get(name) || []).filter((item) => item !== handler));
         },
-        emit(name) {
-            for (const handler of listeners.get(name) || []) handler();
+        emit(name, ...args) {
+            for (const handler of listeners.get(name) || []) handler(...args);
         },
     };
     const globalObject = {
@@ -583,7 +583,7 @@ test('gate:igs-ui:embedded-chat-observer-uses-generation-end-and-ignores-late-do
     assert.equal(stableCount, 0);
 
     eventSource.emit('generation_ended');
-    eventSource.emit('generation_started');
+    eventSource.emit('generation_started', 'quiet', {}, false);
     const stableTimer = Array.from(timers.entries()).find(([, timer]) => timer.delay === 800);
     assert.ok(stableTimer);
     timers.delete(stableTimer[0]);
@@ -660,6 +660,13 @@ test('gate:igs-ui:embedded-chat-observer-ignores-quiet-and-dry-run-generations',
     idleTimer[1].handler();
     await Promise.resolve();
     await Promise.resolve();
+    assert.equal(stableCount, 0, '生成中的静默不触发完成回调');
+    eventSource.emit('generation_ended');
+    const finishedTimer = Array.from(timers.entries()).find(([, timer]) => timer.delay === 800);
+    assert.ok(finishedTimer);
+    timers.delete(finishedTimer[0]);
+    finishedTimer[1].handler();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(stableCount, 1);
     observer.stop();
 });

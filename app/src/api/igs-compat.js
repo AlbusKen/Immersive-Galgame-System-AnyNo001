@@ -72,6 +72,9 @@ export function createIgsCompatApi(app) {
             if (!message) {
                 return { ok: false, reason: 'message-not-found', messageId: normalizedId, mode: readerMode };
             }
+            if (typeof resolved.options.canReplace === 'function' && !resolved.options.canReplace()) {
+                return { ok: false, reason: 'reply-stale' };
+            }
             const readerPayload = await buildReaderPayload(app, message, normalizedId, readerMode);
             const refreshed = await app.refresh({
                 message,
@@ -90,6 +93,9 @@ export function createIgsCompatApi(app) {
             const payload = resolved.options.skipImageCollection === true
                 ? basePayload
                 : await enrichReaderPayload(app, basePayload);
+            if (typeof resolved.options.canReplace === 'function' && !resolved.options.canReplace()) {
+                return { ok: false, reason: 'reply-stale' };
+            }
             if (resolved.options.replaceActive === true
                 && app.igsUi && typeof app.igsUi.replaceReader === 'function') {
                 const reader = app.igsUi.replaceReader({

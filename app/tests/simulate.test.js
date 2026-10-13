@@ -5193,6 +5193,234 @@ test('gate:simulation:igs-ui-comic-mode-keeps-reply-wait-after-hiding-input', as
     vn.destroy();
 });
 
+async function createReplyWaitHarness(mode = 'fullscreen') {
+    const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
+    const globalObject = document.defaultView;
+    const chat = document.createElement('div');
+    chat.id = 'chat';
+    document.body.appendChild(chat);
+    const messages = new Map();
+    let currentMessage;
+    let read = () => currentMessage;
+    let send = () => ({ ok: true });
+    const put = (id, text, fields = {}) => {
+        const element = createFakeMessageElement(document, { messageId: id, textContent: text });
+        chat.appendChild(element);
+        currentMessage = { id, text, visibleText: text, element, ...fields };
+        messages.set(id, currentMessage);
+        return currentMessage;
+    };
+    put(100, '当前楼正文。');
+    const listeners = new Map();
+    const eventSource = {
+        on(name, handler) { if (!listeners.has(name)) listeners.set(name, []); listeners.get(name).push(handler); },
+        off(name, handler) { listeners.set(name, (listeners.get(name) || []).filter((item) => item !== handler)); },
+        emit(name, ...args) { for (const handler of listeners.get(name) || []) handler(...args); },
+    };
+    const mutations = [];
+    globalObject.MutationObserver = class {
+        constructor(handler) { mutations.push(handler); }
+        observe() {}
+        disconnect() {}
+    };
+    let seq = 0;
+    const timers = new Map();
+    globalObject.setTimeout = (handler, delay) => { timers.set(++seq, { handler, delay }); return seq; };
+    globalObject.clearTimeout = (id) => timers.delete(id);
+    globalObject.SillyTavern = { getContext: () => ({ eventSource, event_types: {
+        GENERATION_STARTED: 'generation_started', GENERATION_ENDED: 'generation_ended',
+        GENERATION_STOPPED: 'generation_stopped', GENERATION_FAILED: 'generation_failed',
+    } }) };
+    const vn = bootstrapIGS({ global: globalObject, autoAttachMagicWand: false, hostAdapter: {
+        getCurrentMessage: async () => read(),
+        getMessageById: async (id) => messages.get(Number(id)),
+        typeAndSend: async () => {
+            eventSource.emit('generation_started', 'normal', {}, false);
+            return send();
+        },
+    } });
+    const opened = await vn.openLatestAvailable(mode);
+    assert.equal(opened.ok, true);
+    const controller = opened.reader.controller;
+    const flush = async () => { await new Promise((resolve) => setImmediate(resolve)); await new Promise((resolve) => setImmediate(resolve)); };
+    const fire = async (delay) => {
+        const entry = [...timers].find(([, timer]) => timer.delay === delay);
+        assert.ok(entry, `missing ${delay}ms timer`);
+        timers.delete(entry[0]); entry[1].handler();
+        await flush();
+    };
+    return {
+        vn, document, controller, put, fire, flush, eventSource,
+        wait: () => document.querySelector('.igs-waitstage'),
+        mutate: () => mutations.forEach((handler) => handler([{ target: chat, addedNodes: [currentMessage.element], removedNodes: [] }])),
+        readWith: (fn) => { read = fn; },
+        sendWith: (fn) => { send = fn; },
+    };
+}
+
+test('gate:simulation:reply-wait-retains-partial-floor-through-silence-and-timeout', async () => {
+    const h = await createReplyWaitHarness();
+    try {
+        await h.controller.submit('继续');
+        const waiting = h.wait();
+        h.put(101, '只写出半句');
+        h.mutate();
+        await h.fire(10000);
+        assert.equal(h.wait(), waiting);
+        assert.match(h.controller.getSnapshot().content.displayText, /当前楼/);
+        await h.fire(120000);
+        assert.equal(h.wait(), waiting);
+        assert.match(waiting.querySelector('.igs-ws-state').textContent, /尚未确认回复写完/);
+        h.put(101, '完整的下一楼正文。');
+        h.eventSource.emit('generation_ended');
+        await h.fire(800);
+        assert.equal(h.wait(), null);
+        assert.match(h.controller.getSnapshot().content.displayText, /完整的下一楼正文/);
+    } finally { h.vn.destroy(); }
+});
+
+test('gate:simulation:reply-wait-classifies-empty-and-non-narrative-output-in-every-mode', async () => {
+    for (const mode of ['fullscreen', 'web', 'pc', 'mobile', 'embedded']) {
+        const h = await createReplyWaitHarness(mode);
+        try {
+            await h.controller.submit('继续');
+            h.put(101, mode === 'fullscreen' ? '' : '<thinking>只有思考</thinking><content> </content>');
+            h.mutate();
+            h.eventSource.emit('generation_ended');
+            await h.fire(800);
+            assert.equal(h.wait().getAttribute('data-igs-waitstage-error'), 'empty', mode);
+            assert.match(h.controller.getSnapshot().content.displayText, /当前楼/);
+            h.wait().querySelector('.igs-ws-actions').querySelector('button').click();
+            assert.equal(h.wait(), null);
+            assert.match(h.controller.getSnapshot().content.displayText, /当前楼/);
+        } finally { h.vn.destroy(); }
+    }
+});
+
+test('gate:simulation:reply-wait-shows-empty-when-the-request-ended-without-a-new-floor', async () => {
+    const h = await createReplyWaitHarness();
+    try {
+        await h.controller.submit('继续');
+        h.eventSource.emit('generation_ended');
+        await h.fire(800);
+        assert.equal(h.wait().getAttribute('data-igs-waitstage-error'), 'empty');
+    } finally { h.vn.destroy(); }
+});
+
+test('gate:simulation:reply-wait-reports-host-failure-or-stop-during-a-game', async () => {
+    for (const reason of ['failed', 'stopped']) {
+        const h = await createReplyWaitHarness();
+        try {
+            await h.controller.submit('继续');
+            await h.flush();
+            h.wait().querySelector('.igs-ws-games').querySelector('button').click();
+            h.put(101, '还没写完的正文');
+            h.mutate();
+            h.eventSource.emit(`generation_${reason}`);
+            h.eventSource.emit('generation_ended');
+            await h.fire(800);
+            assert.equal(h.wait().getAttribute('data-igs-waitstage-error'), reason);
+            assert.match(h.controller.getSnapshot().content.displayText, /当前楼/);
+        } finally { h.vn.destroy(); }
+    }
+});
+
+test('gate:simulation:reply-wait-keeps-the-layer-until-replacement-succeeds', async () => {
+    const h = await createReplyWaitHarness();
+    try {
+        await h.controller.submit('继续');
+        const waiting = h.wait();
+        const open = h.vn.openViewerFromMessage;
+        let resume;
+        h.vn.openViewerFromMessage = async (...args) => {
+            await new Promise((resolve) => { resume = resolve; });
+            return open(...args);
+        };
+        h.put(101, '完整的新楼。');
+        h.mutate();
+        h.eventSource.emit('generation_ended');
+        await h.fire(800);
+        assert.equal(h.wait(), waiting);
+        assert.match(h.controller.getSnapshot().content.displayText, /当前楼/);
+        resume();
+        await h.flush();
+        assert.equal(h.wait(), null);
+        assert.match(h.controller.getSnapshot().content.displayText, /完整的新楼/);
+    } finally { h.vn.destroy(); }
+});
+
+test('gate:simulation:reply-wait-read-and-render-errors-remain-visible', async () => {
+    for (const kind of ['read', 'render']) {
+        const h = await createReplyWaitHarness();
+        try {
+            await h.controller.submit('继续');
+            h.put(101, '完整的新楼。');
+            if (kind === 'read') h.readWith(() => { throw new Error('read failed'); });
+            else h.vn.openViewerFromMessage = async () => ({ ok: false, reason: 'render-failed' });
+            h.eventSource.emit('generation_ended');
+            await h.fire(800);
+            assert.equal(h.wait().getAttribute('data-igs-waitstage-error'), 'read');
+            assert.match(h.controller.getSnapshot().content.displayText, /当前楼/);
+        } finally { h.vn.destroy(); }
+    }
+});
+
+test('gate:simulation:reply-wait-send-exception-preserves-input-and-allows-retry', async () => {
+    const h = await createReplyWaitHarness();
+    try {
+        h.sendWith(() => { throw new Error('network failed'); });
+        assert.equal((await h.controller.submit('保留这句话')).ok, false);
+        assert.equal(h.wait().getAttribute('data-igs-waitstage-error'), 'send');
+        h.wait().querySelector('.igs-ws-actions').querySelector('button').click();
+        assert.equal(h.document.getElementById('igs-input').value, '保留这句话');
+        h.sendWith(() => ({ ok: true }));
+        assert.equal((await h.controller.submit('保留这句话')).ok, true);
+        assert.equal(h.wait().getAttribute('data-igs-waitstage-phase'), 'wait');
+    } finally { h.vn.destroy(); }
+});
+
+test('gate:simulation:reply-wait-late-write-discards-the-old-read-result', async () => {
+    const h = await createReplyWaitHarness();
+    try {
+        await h.controller.submit('继续');
+        const partial = h.put(101, '较早读到的半句');
+        let resolveRead;
+        h.readWith(() => new Promise((resolve) => { resolveRead = resolve; }));
+        h.eventSource.emit('generation_ended');
+        await h.fire(800);
+        const final = h.put(101, '最后完整写入的下一楼正文。');
+        h.mutate();
+        resolveRead(partial);
+        await h.flush();
+        assert.ok(h.wait());
+        assert.match(h.controller.getSnapshot().content.displayText, /当前楼/);
+        h.readWith(() => final);
+        await h.fire(800);
+        assert.equal(h.wait(), null);
+        assert.match(h.controller.getSnapshot().content.displayText, /最后完整写入/);
+    } finally { h.vn.destroy(); }
+});
+
+test('gate:simulation:reply-wait-close-during-async-replacement-does-not-reopen', async () => {
+    const h = await createReplyWaitHarness();
+    try {
+        await h.controller.submit('继续');
+        const open = h.vn.openViewerFromMessage;
+        let resume;
+        h.vn.openViewerFromMessage = async (...args) => {
+            await new Promise((resolve) => { resume = resolve; });
+            return open(...args);
+        };
+        h.put(101, '完整的新楼。');
+        h.eventSource.emit('generation_ended');
+        await h.fire(800);
+        h.controller.close();
+        resume();
+        await h.flush();
+        assert.equal(h.document.getElementById('igs-overlay'), null);
+    } finally { h.vn.destroy(); }
+});
+
 test('gate:simulation:igs-ui-fullscreen-send-keeps-the-current-page-until-the-new-floor', async () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const globalObject = document.defaultView;
@@ -5291,6 +5519,7 @@ test('gate:simulation:igs-ui-fullscreen-send-keeps-the-current-page-until-the-ne
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(overlay.classList.contains('igs-awaiting-reply'), false);
+    assert.equal(overlay.querySelector('.igs-waitstage').getAttribute('data-igs-waitstage-error'), 'empty');
     assert.equal(opened.reader.controller.getSnapshot().content.currentIndex, 1);
     assert.match(opened.reader.controller.getSnapshot().content.displayText, /第二页/);
     vn.destroy();

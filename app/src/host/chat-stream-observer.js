@@ -1,7 +1,7 @@
 import { getSillyTavernContext } from './tavern-helper-adapter.js';
 import { isBackgroundGenerationActive } from './background-generation.js';
 
-// 楼层内嵌和全屏阅读器的流式生命周期：这两种模式打开时启动。
+// 五种阅读器模式共用流式生命周期。
 // 官方生成事件负责起止，#chat mutation 只在生成期间同步活动，不做解析。
 
 export const DEFAULT_STABLE_MS = 800;
@@ -17,15 +17,15 @@ const FALLBACK_GENERATION_EVENTS = Object.freeze({
 
 // 酒馆生成期间显示 #mes_stop，结束即隐藏；插件后台请求不算。
 function isHostGenerating(doc) {
-    if (isBackgroundGenerationActive()) return false;
     const button = doc && typeof doc.getElementById === 'function' ? doc.getElementById('mes_stop') : null;
-    if (!button) return false;
+    if (!button) return null;
+    if (button.hidden === true) return false;
     const view = doc.defaultView;
     try {
         const style = view && typeof view.getComputedStyle === 'function' ? view.getComputedStyle(button) : button.style;
         return Boolean(style) && style.display !== 'none' && style.visibility !== 'hidden';
     } catch (error) {
-        return false;
+        return null;
     }
 }
 
@@ -33,7 +33,7 @@ export function createChatStreamObserver(opts = {}) {
     const globalObject = opts.global || globalThis;
     const onActivity = typeof opts.onActivity === 'function' ? opts.onActivity : () => {};
     const onStable = typeof opts.onStable === 'function' ? opts.onStable : () => {};
-    const onTimeout = typeof opts.onTimeout === 'function' ? opts.onTimeout : onStable;
+    const onTimeout = typeof opts.onTimeout === 'function' ? opts.onTimeout : () => {};
     const stableMs = Number(opts.stableMs) > 0 ? Number(opts.stableMs) : DEFAULT_STABLE_MS;
     const hardTimeoutMs = Number(opts.hardTimeoutMs) > 0 ? Number(opts.hardTimeoutMs) : DEFAULT_HARD_TIMEOUT_MS;
     const idleMs = Number(opts.idleMs) > 0 ? Number(opts.idleMs) : DEFAULT_IDLE_MS;
@@ -47,12 +47,15 @@ export function createChatStreamObserver(opts = {}) {
     let hardTimer = null;
     let active = false;
     let generationActive = false;
-    let generationSeen = false;
     let waitTimedOut = false;
     let manualArmed = false;
     let lifecycleAvailable = false;
-    // 最近一次 #chat 外部变更的时刻。生成事件缺失时用它判断「已经静下来」，
-    // 否则全屏的等待提示只能等 120 秒硬超时才收起。
+    let completion = null;
+    let revision = 0;
+    let settling = false;
+    let replyActivitySeen = false;
+    let hostGenerationSeen = false;
+    let quietPending = false;
     let lastActivityAt = 0;
     const now = typeof opts.now === 'function' ? opts.now : () => Date.now();
     const lifecycleCleanup = [];
@@ -83,29 +86,40 @@ export function createChatStreamObserver(opts = {}) {
         stableTimer = getSetter()(() => {
             stableTimer = null;
             if (!active) return;
+            if (settling || !hasGenerationSettled()) {
+                scheduleStable(idleMs);
+                return;
+            }
+            const expected = revision;
+            settling = true;
             Promise.resolve()
-                .then(onStable)
+                .then(() => onStable({ reason: completion || 'ended', revision: expected }))
                 .then((completed) => {
+                    if (!active || revision !== expected) return;
                     if (completed !== false) {
                         manualArmed = false;
+                        generationActive = false;
+                        clearStable();
                         clearHard();
+                        clearActivity();
                         return;
                     }
                     scheduleStable();
                 })
-                .catch(() => scheduleStable());
+                .catch(() => { if (active && revision === expected) scheduleStable(); })
+                .finally(() => { settling = false; });
         }, delay);
     };
 
     const ensureHard = () => {
-        if (!active || hardTimer != null) return;
+        if (!active || hardTimer != null || waitTimedOut) return;
         hardTimer = getSetter()(() => {
             hardTimer = null;
-            generationActive = false;
             waitTimedOut = true;
-            manualArmed = false;
-            clearStable();
-            if (active) Promise.resolve().then(onTimeout).catch(() => {});
+            const expected = revision;
+            if (active) Promise.resolve().then(() => {
+                if (active && revision === expected) return onTimeout();
+            }).catch(() => {});
         }, hardTimeoutMs);
     };
 
@@ -134,14 +148,17 @@ export function createChatStreamObserver(opts = {}) {
         }, activityThrottleMs);
     };
 
-    const scheduleActivity = () => {
+    const scheduleActivity = (external = true) => {
         if (!active) return;
+        revision += 1;
         lastActivityAt = now();
+        replyActivitySeen ||= external;
+        if (!generationActive && !hostGenerationSeen) hostGenerationSeen = isHostGenerating(resolveDocument()) === true;
+        waitTimedOut = false;
+        clearHard();
         emitActivity();
         ensureHard();
-        // 生成期间结束事件可能缺失（宿主报错、版本差异），#chat 静默 idleMs 即先收尾；
-        // 仍在生成时下一次变更会重新进入载入态，避免只能等硬超时。
-        scheduleStable(lifecycleAvailable && generationActive ? idleMs : stableMs);
+        scheduleStable(generationActive ? idleMs : stableMs);
     };
 
     const onGenerationStarted = (type, params, dryRun) => {
@@ -149,20 +166,28 @@ export function createChatStreamObserver(opts = {}) {
         // quiet 为插件后台请求、dryRun 只组装提示词，二者都不写入楼层；dryRun 还不会发结束事件，
         // 若据此武装，会让之后任意 #chat 变更长期卡在“正在生成”。
         if (dryRun === true) return;
-        if (type === 'quiet' && !(params && params.quietToLoud)) return;
         if (isBackgroundGenerationActive()) return;
+        if (type === 'quiet' && !(params && params.quietToLoud)) { quietPending = true; return; }
+        quietPending = false;
+        revision += 1;
         generationActive = true;
-        generationSeen = true;
-        manualArmed = false;
+        completion = null;
+        waitTimedOut = false;
+        clearStable();
+        clearHard();
+        ensureHard();
         // 酒馆生成事件是全局信号，插件自身的 API 请求也会触发它。
         // 这里只武装生命周期；必须先看到 #chat 的外部变更，才进入载入态。
-        // 不清理已有稳定定时器，避免无关请求打断正文结束收尾。
     };
 
-    const onGenerationFinished = () => {
-        if (!active) return;
+    const onGenerationFinished = (reason) => {
+        if (!active || isBackgroundGenerationActive()) return;
+        if (quietPending) { quietPending = false; return; }
+        if (!generationActive && !manualArmed) return;
+        revision += 1;
         generationActive = false;
-        manualArmed = false;
+        if (completion !== 'stopped' && completion !== 'failed') completion = reason;
+        manualArmed = true;
         ensureHard();
         scheduleStable();
     };
@@ -182,10 +207,6 @@ export function createChatStreamObserver(opts = {}) {
         const eventTypes = opts.eventTypes || context && (context.event_types || context.eventTypes) || {};
         if (!eventSource || typeof eventSource.on !== 'function') return false;
         const started = eventTypes.GENERATION_STARTED || FALLBACK_GENERATION_EVENTS.started;
-        const finished = Array.from(new Set([
-            eventTypes.GENERATION_ENDED || FALLBACK_GENERATION_EVENTS.ended,
-            eventTypes.GENERATION_STOPPED || FALLBACK_GENERATION_EVENTS.stopped,
-        ].filter(Boolean)));
         const subscribe = (eventName, handler) => {
             eventSource.on(eventName, handler);
             lifecycleCleanup.push(() => {
@@ -195,7 +216,11 @@ export function createChatStreamObserver(opts = {}) {
         };
         try {
             subscribe(started, onGenerationStarted);
-            finished.forEach((eventName) => subscribe(eventName, onGenerationFinished));
+            subscribe(eventTypes.GENERATION_ENDED || FALLBACK_GENERATION_EVENTS.ended, () => onGenerationFinished('ended'));
+            subscribe(eventTypes.GENERATION_STOPPED || FALLBACK_GENERATION_EVENTS.stopped, () => onGenerationFinished('stopped'));
+            for (const name of new Set([eventTypes.GENERATION_FAILED, eventTypes.GENERATION_ERROR].filter(Boolean))) {
+                subscribe(name, () => onGenerationFinished('failed'));
+            }
             lifecycleAvailable = true;
             return true;
         } catch (error) {
@@ -237,10 +262,9 @@ export function createChatStreamObserver(opts = {}) {
                 observer = null;
             }
         }
-        // 流式中途才打开阅读器：开始事件早已错过，按宿主的停止按钮补武装，结束事件/静默/硬超时照常收尾。
+        // 流式中途打开时，按宿主的停止按钮补武装；超时只提醒，不当作完成。
         if (lifecycleAvailable && !generationActive && isHostGenerating(doc)) {
             generationActive = true;
-            generationSeen = true;
             scheduleActivity();
         }
         return { ok: true, observed: Boolean(observer), lifecycle: lifecycleAvailable };
@@ -248,9 +272,13 @@ export function createChatStreamObserver(opts = {}) {
 
     const cancelPending = () => {
         generationActive = false;
-        generationSeen = false;
         waitTimedOut = false;
         manualArmed = false;
+        completion = null;
+        revision += 1;
+        replyActivitySeen = false;
+        hostGenerationSeen = false;
+        quietPending = false;
         lastActivityAt = 0;
         clearStable();
         clearHard();
@@ -260,22 +288,26 @@ export function createChatStreamObserver(opts = {}) {
     // 新一次发送：还没看到本轮生成事件时清掉上一轮的“已结束”标记。
     // 生成已经开始则保留，避免发送函数返回前触发的开始事件被立刻抹掉。
     const prepareForReply = () => {
+        revision += 1;
         waitTimedOut = false;
+        completion = null;
+        manualArmed = true;
+        replyActivitySeen = false;
+        hostGenerationSeen = isHostGenerating(resolveDocument()) === true;
         lastActivityAt = 0;
-        if (!generationActive) generationSeen = false;
+        clearStable();
+        clearHard();
     };
 
-    // 生成结束的判定。前两条是正常路径：硬超时到了，或看到了开始事件又看到了结束事件。
-    // 第三条是兜底：宿主版本差异、quiet 请求、后台生成等情况可能只发结束事件或什么都不发，
-    // 补了没有开始事件的空档——否则全屏的「正在生成」会一直挂到 120 秒硬超时。
-    // 仍在生成时用更长的静默窗口，避免模型思考间隙里反复收起又弹回。
+    // 静默与超时都不是完成信号。缺少结束事件时，必须另有宿主停止按钮已收起的证据。
     const hasGenerationSettled = () => {
-        if (waitTimedOut) return true;
-        if (generationSeen && !generationActive) return true;
+        const hostGenerating = isHostGenerating(resolveDocument());
+        if (hostGenerating === true) { hostGenerationSeen = true; return false; }
+        if (completion) return true;
         if (!lastActivityAt) return false;
         const quietMs = now() - lastActivityAt;
-        if (quietMs < 0) return false;
-        return generationActive ? quietMs >= idleMs * 3 : quietMs >= idleMs;
+        return hostGenerating === false && (hostGenerationSeen || replyActivitySeen)
+            && quietMs >= idleMs;
     };
 
     const stop = () => {
@@ -289,7 +321,7 @@ export function createChatStreamObserver(opts = {}) {
     const noteActivity = () => {
         if (!active) return;
         manualArmed = true;
-        scheduleActivity();
+        scheduleActivity(false);
     };
 
     return {
@@ -301,6 +333,7 @@ export function createChatStreamObserver(opts = {}) {
         noteActivity,
         prepareForReply,
         hasGenerationSettled,
+        isCurrentRevision: (expected) => active && revision === expected,
     };
 }
 

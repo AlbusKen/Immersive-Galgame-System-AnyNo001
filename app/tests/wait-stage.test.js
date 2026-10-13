@@ -18,9 +18,87 @@ import {
     buildWhoSaidRound,
     collectWaitStageArt,
     collectWaitStageLines,
+    createWaitStageRuntime,
     rpsLineKey,
     rpsOutcome,
 } from '../src/visual/igs-ui/wait-stage-runtime.js';
+import { FakeEl, makeTimers } from './helpers/fake-dom.js';
+
+function runtimeHarness(settings = {}) {
+    const timers = makeTimers();
+    const doc = { createElement(tag) {
+        const node = new FakeEl(doc, tag);
+        node.classList = {
+            add(value) { node.className += ` ${value}`; },
+            remove(value) { node.className = node.className.split(' ').filter((item) => item !== value).join(' '); },
+        };
+        return node;
+    } };
+    const host = doc.createElement('div');
+    let ready = 0;
+    let dismissed = 0;
+    const runtime = createWaitStageRuntime({
+        doc, random: () => 0,
+        timers: { setTimeout: timers.schedule, clearTimeout: timers.clear },
+        onExitReady: () => { ready += 1; },
+        onDismiss: () => { dismissed += 1; runtime.close(); },
+    });
+    const root = runtime.open(host, { settings, model: buildWaitStageModel({ settings, random: () => 0 }) });
+    return { runtime, root, timers, ready: () => ready, dismissed: () => dismissed };
+}
+
+test('gate:wait-stage:empty-reply-interrupts-game-and-remains-until-dismissed', () => {
+    const h = runtimeHarness();
+    h.root.querySelector('.igs-ws-games').querySelector('button').fire('click');
+    h.runtime.showFailure('empty');
+    assert.equal(h.root.getAttribute('role'), 'alert');
+    assert.equal(h.root.getAttribute('data-igs-waitstage-phase'), 'error');
+    assert.equal(h.root.querySelector('.igs-ws-games').hidden, true);
+    assert.equal(h.root.querySelector('.igs-ws-board').hidden, true);
+    assert.match(h.root.querySelector('.igs-ws-error-title').textContent, /没有写出正文/);
+    assert.equal(h.timers.size(), 0);
+    h.runtime.update(buildWaitStageModel({ fallback: ['迟到的台词'] }));
+    assert.match(h.root.querySelector('.igs-ws-error-title').textContent, /没有写出正文/);
+    h.root.querySelector('.igs-ws-actions').querySelector('button').fire('click');
+    assert.equal(h.dismissed(), 1);
+    assert.equal(h.runtime.isOpen(), false);
+});
+
+test('gate:wait-stage:disabled-cameo-still-displays-failures', () => {
+    const h = runtimeHarness({ enabled: false });
+    assert.equal(h.root.querySelector('.igs-ws-line').hidden, true);
+    h.runtime.showFailure('failed');
+    assert.equal(h.root.querySelector('.igs-ws-line').hidden, false);
+    assert.match(h.root.querySelector('.igs-ws-state').textContent, /检查连接/);
+    assert.equal(h.root.querySelector('.igs-ws-actions').hidden, false);
+    h.runtime.close();
+});
+
+test('gate:wait-stage:finished-game-keeps-the-layer-during-reply-mount', () => {
+    const h = runtimeHarness();
+    h.root.querySelector('.igs-ws-games').querySelector('button').fire('click');
+    assert.equal(h.runtime.replyArrived(), false);
+    h.root.querySelector('.igs-ws-hands').querySelector('button').fire('click');
+    h.timers.advance(850);
+    assert.equal(h.ready(), 1);
+    assert.equal(h.runtime.isOpen(), true, '切楼成功前仍保留等待层');
+    assert.match(h.root.querySelector('.igs-ws-state').textContent, /正在打开/);
+    h.runtime.close();
+    assert.equal(h.timers.size(), 0);
+});
+
+test('gate:wait-stage:failure-cancels-a-pending-game-exit', () => {
+    const h = runtimeHarness();
+    h.root.querySelector('.igs-ws-games').querySelector('button').fire('click');
+    h.root.querySelector('.igs-ws-hands').querySelector('button').fire('click');
+    h.runtime.replyArrived();
+    h.runtime.showFailure('read');
+    h.timers.advance(10000);
+    assert.equal(h.ready(), 0);
+    assert.equal(h.runtime.isOpen(), true);
+    assert.match(h.root.querySelector('.igs-ws-error-title').textContent, /没能打开/);
+    h.runtime.close();
+});
 
 test('gate:wait-stage:settings-default-on-and-clamp-seconds', () => {
     const fallback = normalizeWaitStageSettings(null);

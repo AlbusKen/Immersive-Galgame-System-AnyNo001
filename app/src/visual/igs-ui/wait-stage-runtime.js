@@ -3,6 +3,7 @@ import { getMessagePrimaryText } from '../../scene/message-source.js';
 import { outfitsOfCharacter } from '../../scene/character-outfits.js';
 import {
     WAIT_STAGE_FALLBACK_LINES,
+    WAIT_STAGE_FAILURES,
     WAIT_STAGE_GAME_LABELS,
     availableWaitStageGames,
     normalizeWaitStageSettings,
@@ -206,6 +207,8 @@ export function createWaitStageRuntime(options = {}) {
     const random = typeof options.random === 'function' ? options.random : Math.random;
     const onVoice = typeof options.onVoice === 'function' ? options.onVoice : () => {};
     const onExitReady = typeof options.onExitReady === 'function' ? options.onExitReady : () => {};
+    const onDismiss = typeof options.onDismiss === 'function' ? options.onDismiss : () => {};
+    const timers = options.timers || globalThis;
     let doc = null;
     let root = null;
     let body = null;
@@ -213,6 +216,7 @@ export function createWaitStageRuntime(options = {}) {
     let noteBox = null;
     let gamesRow = null;
     let board = null;
+    let actions = null;
     let timer = null;
     let phase = 'wait';
     let model = null;
@@ -224,14 +228,14 @@ export function createWaitStageRuntime(options = {}) {
     let minimal = false;
 
     function clearTimer() {
-        if (timer) clearTimeout(timer);
+        if (timer != null) timers.clearTimeout(timer);
         timer = null;
     }
 
     function scheduleLine() {
         clearTimer();
         if (minimal || !root || phase !== 'wait' || game) return;
-        timer = setTimeout(() => {
+        timer = timers.setTimeout(() => {
             timer = null;
             if (!root || phase !== 'wait' || game) return;
             index += 1;
@@ -283,6 +287,7 @@ export function createWaitStageRuntime(options = {}) {
         noteBox = null;
         gamesRow = null;
         board = null;
+        actions = null;
         game = null;
         gameState = null;
         phase = 'wait';
@@ -290,14 +295,19 @@ export function createWaitStageRuntime(options = {}) {
 
     function finishRound() {
         if (phase !== 'exit') return;
-        closeRoot();
+        clearTimer();
+        game = null;
+        gameState = null;
+        if (board) board.hidden = true;
+        syncGameAttr();
+        setNote('回复已写完，正在打开…');
         onExitReady();
     }
 
     function settleRound() {
         if (phase !== 'exit' || !gameState || !gameState.done) return;
         clearTimer();
-        timer = setTimeout(() => { timer = null; finishRound(); }, 850);
+        timer = timers.setTimeout(() => { timer = null; finishRound(); }, 850);
     }
 
     function closeGame() {
@@ -462,7 +472,7 @@ export function createWaitStageRuntime(options = {}) {
                     return;
                 }
                 setNote(waitStageGameLine('wrong', random));
-                setTimeout(() => {
+                timers.setTimeout(() => {
                     if (aNode) hide(a, aNode);
                     if (bNode) hide(b, bNode);
                     opened.length = 0;
@@ -505,7 +515,7 @@ export function createWaitStageRuntime(options = {}) {
             gamesRow.hidden = true;
             return;
         }
-        gamesRow.hidden = Boolean(game) || phase === 'exit';
+        gamesRow.hidden = Boolean(game) || phase !== 'wait';
         for (const id of list) {
             const button = doc.createElement('button');
             button.type = 'button';
@@ -532,25 +542,38 @@ export function createWaitStageRuntime(options = {}) {
             game = null;
             gameState = null;
             root = mountNode(doc, opts.embedded ? 'igs-waitstage igs-embedded-loading' : 'igs-waitstage');
+            root.setAttribute('data-igs-waitstage-phase', phase);
             root.setAttribute('role', 'status');
             root.setAttribute('aria-live', 'polite');
             body = mountNode(doc, 'igs-ws-body');
             body.appendChild(mountNode(doc, 'igs-ws-dots', '<span class="igs-embedded-loading-dot"></span><span class="igs-embedded-loading-dot"></span><span class="igs-embedded-loading-dot"></span>'));
+            lineBox = mountNode(doc, 'igs-ws-line');
+            lineBox.hidden = minimal;
+            noteBox = mountNode(doc, 'igs-ws-note igs-ws-state');
+            body.appendChild(lineBox);
+            body.appendChild(noteBox);
             if (!minimal) {
-                lineBox = mountNode(doc, 'igs-ws-line');
-                noteBox = mountNode(doc, 'igs-ws-note');
                 gamesRow = mountNode(doc, 'igs-ws-games');
                 board = mountNode(doc, 'igs-ws-board');
                 board.hidden = true;
-                body.appendChild(lineBox);
-                body.appendChild(noteBox);
                 body.appendChild(gamesRow);
                 body.appendChild(board);
             }
+            actions = mountNode(doc, 'igs-ws-actions');
+            actions.hidden = true;
+            const back = doc.createElement('button');
+            back.type = 'button';
+            back.className = 'igs-ws-chip';
+            back.textContent = '返回当前楼';
+            const openedRoot = root;
+            back.addEventListener('click', () => { if (root === openedRoot) onDismiss(); });
+            actions.appendChild(back);
+            body.appendChild(actions);
             root.appendChild(body);
             host.appendChild(root);
             syncGameAttr();
             renderLine();
+            if (minimal) setNote('正在等待回复…');
             renderGames();
             scheduleLine();
             return root;
@@ -566,13 +589,48 @@ export function createWaitStageRuntime(options = {}) {
         },
         // 回复到达后不再开新局；已结算的一局稍作展示，未结算的等玩家完成或主动关闭。
         replyArrived() {
+            if (phase === 'error') return false;
             if (!root || !game) return true;
             phase = 'exit';
+            root.setAttribute('data-igs-waitstage-phase', phase);
             clearTimer();
             root.classList.add('is-exit');
             setNote('回复到了，玩完这局再回去。');
             settleRound();
             return false;
+        },
+        showFailure(kind = 'failed') {
+            if (!root) return false;
+            const failure = WAIT_STAGE_FAILURES[kind] || WAIT_STAGE_FAILURES.failed;
+            phase = 'error';
+            clearTimer();
+            game = null;
+            gameState = null;
+            syncGameAttr();
+            root.classList.remove('is-exit');
+            root.classList.add('is-error');
+            root.setAttribute('data-igs-waitstage-phase', phase);
+            root.setAttribute('data-igs-waitstage-error', kind);
+            root.setAttribute('role', 'alert');
+            if (gamesRow) gamesRow.hidden = true;
+            if (board) board.hidden = true;
+            lineBox.hidden = false;
+            lineBox.innerHTML = '';
+            const mark = mountNode(doc, 'igs-ws-error-mark');
+            mark.textContent = '!';
+            mark.setAttribute('aria-hidden', 'true');
+            const title = mountNode(doc, 'igs-ws-error-title');
+            title.textContent = failure.title;
+            lineBox.appendChild(mark);
+            lineBox.appendChild(title);
+            setNote(failure.text);
+            actions.hidden = false;
+            return true;
+        },
+        showSlow() {
+            if (!root || phase !== 'wait') return;
+            setNote('等待较久，尚未确认回复写完。请求可能仍在进行，可返回酒馆检查。');
+            actions.hidden = false;
         },
         // 生成期间宿主每 150ms 报一次活动：层已经挂着就别重建，否则台词永远停在第一句、点开的小游戏会被抹掉。
         isOpen(host) {

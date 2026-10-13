@@ -42,6 +42,8 @@ IGS.api.promptPresets.register(preset);
 
 公开 API 只增不破；破坏性变更必须进入主版本升级。
 
+阅读器自动跟回复的 `openViewerFromMessage` 调用可附带内部 `canReplace()` 条件；在开始准备正文和最终替换阅读源前复核，关闭阅读器、取消等待或新一轮生成后返回 `reply-stale`，不得重开或覆盖阅读器。普通调用不传此条件时语义不变。
+
 ## 兼容要求
 
 - 迁移期保留 Immersive Galgame System 既有公开能力的兼容入口：`openSettings()`、`getConfig()`、`getUnifiedSettings()`、`generateImage()`、`destroy()`。
