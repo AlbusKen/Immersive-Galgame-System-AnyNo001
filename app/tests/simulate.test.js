@@ -1930,6 +1930,40 @@ test('gate:simulation:dialogue-thought-paging-saves-and-preserves-speaker-across
     } finally { vn.destroy(); }
 });
 
+test('gate:simulation:text-fx-sentence-pages-render-without-leaking-markers', async () => {
+    const raw = '<content>\n[igs-char:李伯|谨慎|便服|{小:堂上已经认出来了。}这件事以后再说。]\n[igs-char:小雨|平和|好。]\n</content>';
+    for (const enabled of [true, false]) {
+        const document = createFakeDocument();
+        const storage = createMemoryStorage({
+            igs_bridge_config: JSON.stringify({ dialogueSentencePaging: true, sceneAssets: { enabled: true } }),
+            'igs-reader-settings-v9-default': JSON.stringify({ textFx: { enabled } }),
+        });
+        const vn = bootstrapIGS({
+            global: { document, localStorage: storage }, autoAttachMagicWand: false,
+            hostAdapter: { getCurrentMessage: async () => ({ id: 9, text: raw }), typeAndSend: async () => ({ ok: true }) },
+        });
+        try {
+            const opened = await vn.openLatestAvailable('pc');
+            const controller = opened.reader.controller;
+            const text = () => document.getElementById('igs-overlay').querySelector('#igs-text').innerHTML;
+            const content = () => vn.getState().igsUi.activeReader.snapshot.content;
+            assert.equal(content().segments.length, 3);
+            assert.equal(content().speaker, '李伯');
+            assert.equal(content().textType, 'dialogue');
+            assert.ok(text().includes('堂上已经认出来了。'));
+            assert.doesNotMatch(text(), /\{小[:：]|\}/);
+            assert.equal(text().includes('igs-tfx-small'), enabled);
+            await controller.invokeAction('next');
+            assert.equal(content().speaker, '李伯');
+            assert.ok(text().includes('这件事以后再说。'));
+            assert.doesNotMatch(text(), /\{小[:：]|\}|igs-tfx-small/);
+            await controller.invokeAction('next');
+            assert.equal(content().speaker, '小雨');
+            assert.ok(text().includes('好。'));
+        } finally { vn.destroy(); }
+    }
+});
+
 test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-next-dialogue', async () => {
     const document = createFakeDocument();
     const storage = createMemoryStorage({

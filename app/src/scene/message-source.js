@@ -10,6 +10,7 @@ import { extractChatBlocks } from './chat-blocks.js';
 import { IGS_DIRECTIVE_CLOSE_SOURCE, IGS_DIRECTIVE_LINE_RE, hasIgsDirectiveTags, normalizeIgsDirectiveLayout, stripOutfitFields } from './directive-tags.js';
 import { createOutfitResolver } from './character-outfits.js';
 import { normalizeImageMarkerLayout } from './image-marker-layout.js';
+import { matchTextFxMarkupAt } from './text-fx-markup.js';
 
 export const DEFAULT_SOURCE_FILTER = Object.freeze({
     enabled: true,
@@ -344,7 +345,11 @@ function splitSentenceBody(line) {
     let splitAfterTranslation = false;
     for (let i = 0; i < line.length; i++) {
         const ch = line[i];
-        out += ch;
+        const textFx = ch === '{' ? matchTextFxMarkupAt(line, i) : null;
+        if (textFx) {
+            out += textFx[0];
+            i += textFx[0].length - 1;
+        } else out += ch;
         if (ch === '〖') { depth += 1; continue; }
         if (ch === '〗') {
             depth = Math.max(0, depth - 1);
@@ -364,7 +369,7 @@ function splitSentenceBody(line) {
         // *…*/**…** 心理话标记内部的句末不切：标记被切成两页会丢失心理样式与配对。
         // 连续 *（如 ** 强调）是同一个标记单元，只翻转一次。
         if (ch === '*') { thought = !thought; while (line[i + 1] === '*') { out += '*'; i++; } continue; }
-        if (thought || !SENTENCE_PAGING_TERMINATORS.includes(ch)) continue;
+        if (thought || !(textFx ? textFxEndsSentence(textFx[2]) : SENTENCE_PAGING_TERMINATORS.includes(ch))) continue;
         // 末尾的？！与闭引号归前句；译文 〖〗 必须与原句同页。
         while (i + 1 < line.length && SENTENCE_PAGING_TERMINATORS.includes(line[i + 1])) out += line[++i];
         if (line[i + 1] === '〖') { splitAfterTranslation = true; continue; }
@@ -378,6 +383,15 @@ function splitSentenceBody(line) {
         out += '\n';
     }
     return out;
+}
+
+function textFxEndsSentence(inner) {
+    for (let i = inner.length - 1; i >= 0; i--) {
+        const ch = inner[i];
+        if (/\s/.test(ch) || (ch !== '〖' && SENTENCE_PAGING_CLOSERS.includes(ch))) continue;
+        return SENTENCE_PAGING_TERMINATORS.includes(ch);
+    }
+    return false;
 }
 
 function isNarrationLine(trimmed) {
