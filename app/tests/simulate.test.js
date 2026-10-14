@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fakeLlmHost } from './helpers/fake-llm-host.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -2938,10 +2939,12 @@ test('gate:illustration:image-settings-render-and-persist-roundtrip', () => {
 test('gate:simulation:auto-illustration-llm-fetch-models-and-select', async () => {
     const calls = [];
     const vn = bootstrapIGS({
-        global: { fetch: async (url, init) => {
+        global: fakeLlmHost({ fetch: async (url, init) => {
+            if (/^https?:/.test(String(url))) throw new TypeError('upstream blocks browser CORS');
+            if (url !== '/api/backends/chat-completions/status') return new Response('', { status: 404 });
             calls.push({ url, init });
             return new Response(JSON.stringify({ data: [{ id: 'planner-a' }, { id: 'planner-b' }] }), { status: 200 });
-        } },
+        } }),
         autoAttachMagicWand: false,
         hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) },
     });
@@ -2955,9 +2958,10 @@ test('gate:simulation:auto-illustration-llm-fetch-models-and-select', async () =
         assert.match(controller.getSnapshot().html, /data-action="fetch-llm-models"/);
         const fetched = await controller.invoke('fetch-llm-models');
         assert.equal(fetched.ok, true);
-        assert.deepEqual(calls.map(({ url }) => url), ['https://example.com/v1/models']);
-        assert.equal(calls[0].init.method, 'GET');
-        assert.equal(calls[0].init.headers.Authorization, 'Bearer fake-key');
+        assert.deepEqual(calls.map(({ url }) => url), ['/api/backends/chat-completions/status']);
+        assert.equal(calls[0].init.method, 'POST');
+        assert.equal(calls[0].init.headers['X-CSRF-Token'], 'fake-csrf');
+        assert.equal(JSON.parse(JSON.parse(calls[0].init.body).custom_include_headers).Authorization, 'Bearer fake-key');
         const snapshot = controller.getSnapshot();
         assert.match(snapshot.resultText.llmModels, /已拉取 2 个/);
         assert.match(snapshot.html, /<option value="planner-b"/);
@@ -6891,12 +6895,14 @@ test('gate:simulation:igs-ui-auto-llm-fetch-models-and-select', async () => {
     const calls = [];
     let fail = false;
     const vn = bootstrapIGS({
-        global: { document: createFakeDocument(), fetch: async (url, init) => {
+        global: fakeLlmHost({ document: createFakeDocument(), fetch: async (url, init) => {
+            if (/^https?:/.test(String(url))) throw new TypeError('upstream blocks browser CORS');
+            if (url !== '/api/backends/chat-completions/status') return new Response('', { status: 404 });
             calls.push({ url, init });
             return fail
                 ? new Response('unauthorized', { status: 401 })
                 : new Response(JSON.stringify({ data: [{ id: 'model-a' }, { id: 'model-b' }] }), { status: 200 });
-        } },
+        } }),
         autoAttachMagicWand: false,
         hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) },
     });
@@ -6911,9 +6917,10 @@ test('gate:simulation:igs-ui-auto-llm-fetch-models-and-select', async () => {
         assert.match(controller.getSnapshot().html, /data-action="fetch-llm-models"/);
         const result = await controller.invoke('fetch-llm-models');
         assert.equal(result.ok, true);
-        assert.equal(calls[0].url, 'https://example.com/v1/models');
-        assert.equal(calls[0].init.method, 'GET');
-        assert.equal(calls[0].init.headers.Authorization, 'Bearer fake-secret');
+        assert.equal(calls[0].url, '/api/backends/chat-completions/status');
+        assert.equal(calls[0].init.method, 'POST');
+        assert.equal(calls[0].init.headers['X-CSRF-Token'], 'fake-csrf');
+        assert.equal(JSON.parse(JSON.parse(calls[0].init.body).custom_include_headers).Authorization, 'Bearer fake-secret');
         assert.match(result.snapshot.html, /data-model-sync="bridge\.autoIllustration\.llm\.model"/);
         assert.match(result.snapshot.html, /<option value="model-b">model-b<\/option>/);
         assert.match(result.snapshot.resultText.llmModels, /已拉取 2 个副 LLM 模型/);

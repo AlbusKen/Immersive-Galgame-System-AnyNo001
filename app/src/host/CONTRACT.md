@@ -1,5 +1,11 @@
 # host 模块契约
 
+## 副 LLM 转发（v0.36.58）
+
+- 独立 OpenAI 兼容接口的模型列表与生成，分别 POST 到酒馆同源 `/api/backends/chat-completions/status` 和 `/generate`；使用宿主 `getRequestHeaders` 的 CSRF 头和当前酒馆会话，不向浏览器直连上游，也不依赖通用 `/proxy`。
+- 两种请求均使用 `custom` 来源，地址和插件密钥通过请求内的 `custom_url/custom_include_headers` 传递，不更改主连接或酒馆密钥库。空密钥显式覆盖 Authorization，不能借用主连接密钥。
+- HTTP 错误和 HTTP 200 的 `error` 响应都返回可展示失败；文案隐藏插件密钥。超时覆盖响应体读取并中止网络请求。宿主请求头不可用时明确报错，不退回跨域直连。
+
 ## 职责
 
 - 适配 TavernHelper、SillyTavern DOM 和酒馆魔法棒菜单。

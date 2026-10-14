@@ -1,6 +1,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fakeLlmHost } from './helpers/fake-llm-host.js';
 import {
     extractSceneDirectives,
     stripIllustrationMarkers,
@@ -375,34 +376,35 @@ test('gate:illustration:memory-store-roundtrip', async () => {
     assert.equal((await store.getSlots(key))[0].scene, 'hall');
 });
 
-test('gate:illustration:secondary-llm-openai-url-and-body', async () => {
+test('gate:illustration:secondary-llm-native-url-and-body', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     let url;
     let body;
-    const llm = createSecondaryLlm({}, { fetch: async (target, init) => {
+    const llm = createSecondaryLlm(fakeLlmHost(), { fetch: async (target, init) => {
         url = target;
         body = JSON.parse(init.body);
         return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 });
     } });
     assert.equal(await llm.request({ system: 'sys', user: 'usr' }, { source: 'openai', endpoint: 'https://x.com/v1', model: 'm' }), 'ok');
-    assert.equal(url, 'https://x.com/v1/chat/completions');
+    assert.equal(url, '/api/backends/chat-completions/generate');
+    assert.equal(body.custom_url, 'https://x.com/v1');
     assert.equal(body.messages[0].role, 'system');
 });
 
 test('gate:illustration:secondary-llm-fetch-models', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     const calls = [];
-    const llm = createSecondaryLlm({}, { fetch: async (url, init) => {
-        calls.push({ url, method: init.method, auth: init.headers.Authorization });
+    const llm = createSecondaryLlm(fakeLlmHost(), { fetch: async (url, init) => {
+        calls.push({ url, method: init.method, auth: JSON.parse(JSON.parse(init.body).custom_include_headers).Authorization });
         return new Response(JSON.stringify({ data: [{ id: 'model-a' }, { id: 'model-b' }, { id: 'model-a' }] }), { status: 200 });
     } });
     const result = await llm.fetchModels({ endpoint: 'https://example.com/v1', apiKey: 'fake-key' });
     assert.deepEqual(result.models, ['model-a', 'model-b']);
-    assert.deepEqual(calls, [{ url: 'https://example.com/v1/models', method: 'GET', auth: 'Bearer fake-key' }]);
-    const empty = createSecondaryLlm({}, { fetch: async () => new Response(JSON.stringify({ data: [] }), { status: 200 }) });
+    assert.deepEqual(calls, [{ url: '/api/backends/chat-completions/status', method: 'POST', auth: 'Bearer fake-key' }]);
+    const empty = createSecondaryLlm(fakeLlmHost(), { fetch: async () => new Response(JSON.stringify({ data: [] }), { status: 200 }) });
     await assert.rejects(empty.fetchModels({ endpoint: 'https://example.com/v1' }), /未返回可用模型/);
     let count = 0;
-    const missing = createSecondaryLlm({}, { fetch: async () => { count += 1; throw new Error('unexpected'); } });
+    const missing = createSecondaryLlm(fakeLlmHost(), { fetch: async () => { count += 1; throw new Error('unexpected'); } });
     await assert.rejects(missing.fetchModels({}), /填写副 LLM 地址/);
     assert.equal(count, 0);
 });
@@ -898,7 +900,7 @@ test('gate:illustration:failed-floor-retries-and-reports-real-error', async () =
     const reports = [];
     const naiCalls = [];
     const svc = createAutoIllustrationService({
-        messageHost: host, llm: createSecondaryLlm({}, { fetch }), store: createMemoryIllustrationStore(),
+        messageHost: host, llm: createSecondaryLlm(fakeLlmHost(), { fetch }), store: createMemoryIllustrationStore(),
         nai: { generate: async (slot) => { naiCalls.push(slot); return { ok: true, dataUrl: 'data:image/png;base64,x' }; } },
         getSettings: () => ({ nsfwEnabled: true, llm: { source: 'openai', endpoint: 'https://llm.example/v1', model: 'm', prompts: { illustration: 'CUSTOM' } } }),
         report: (level, message) => reports.push({ level, message }),
@@ -906,7 +908,7 @@ test('gate:illustration:failed-floor-retries-and-reports-real-error', async () =
     });
     const first = await svc.processMessage(1);
     assert.equal(first.reason, 'plan-failed');
-    assert.match(first.error, /CORS/);
+    assert.match(first.error, /无法连接酒馆后端/);
     assert.ok(reports.some((r) => r.level === 'error' && /未发送生图请求/.test(r.message)));
     online = true;
     const second = await svc.processMessage(1);
