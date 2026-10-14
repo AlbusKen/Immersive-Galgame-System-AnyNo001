@@ -63,7 +63,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.55';
+const IGS_VERSION = '0.36.56';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -401,8 +401,10 @@ export function bootstrapIGS(options = {}) {
     if (!options.storage && storageLike && options.tavernSettingsSync !== false) {
         state.settingsSync = createTavernSettingsSync(globalObject, {
             storage: storageLike,
+            onUploaded: () => { if (!state.destroyed) void media.referencesChanged().catch(() => {}); },
             onRestored: () => {
                 if (state.destroyed) return;
+                void media.referencesChanged().catch(() => {});
                 state.legacyIgs = readLegacyIgsSettings(storageLike);
                 state.config = mergeInitialConfig(options.config, state.legacyIgs);
                 state.settingsRevision = (state.settingsRevision || 0) + 1;
