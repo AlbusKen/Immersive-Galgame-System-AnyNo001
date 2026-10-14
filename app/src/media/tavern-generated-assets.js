@@ -44,6 +44,8 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
     }
     const wrapper = {
         ...store,
+        restore: journal.restore,
+        hydrateImage: files.hydrate,
         getImageRecord: raw,
         async listImages() { await journal.restore(); return store.listImages(); },
         async listAssets() { await journal.restore(); return store.listAssets(); },

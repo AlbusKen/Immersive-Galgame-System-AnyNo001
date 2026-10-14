@@ -63,7 +63,7 @@ import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacem
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.56';
+const IGS_VERSION = '0.36.57';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -277,6 +277,7 @@ export function bootstrapIGS(options = {}) {
         imageEditBackend: imageBackend,
         alphaMatte: options.alphaMatte || createAlphaMatte(globalObject),
         onGeneratedAssetUpdated: (handler) => events.on(GENERATED_ASSET_UPDATED_EVENT, handler),
+        onSettingsUpdated: (handler) => events.on('igs:legacy-settings-updated', handler),
         itemImages: itemCg.itemImages,
         cgGallery: itemCg.cgGallery,
         onItemImageUpdated: itemCg.onItemImageUpdated,

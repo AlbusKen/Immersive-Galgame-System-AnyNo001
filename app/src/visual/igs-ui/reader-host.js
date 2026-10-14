@@ -488,6 +488,15 @@ export function createIgsReaderHost(options = {}) {
             if (currentSettingsPage(settings) === 'review') rerenderSettings();
         })
         : () => {};
+    const offSettingsUpdated = typeof options.onSettingsUpdated === 'function'
+        ? options.onSettingsUpdated(() => {
+            renderConfigCache = null;
+            floorAssetPlan = { key: '', reader: null, urls: [] };
+            if (!state.activeReader) return;
+            if (state.activeSettings) readerStaleBehindSettings = true;
+            else if (state.activeReader) scheduleImageRefresh({ reader: true });
+        })
+        : () => {};
     // 日志更新时只替换列表 DOM，不整页重渲染，避免打断正在输入的设置项。
     const offImageJobLog = options.imageJobLog && typeof options.imageJobLog.onChange === 'function'
         ? options.imageJobLog.onChange(() => {
@@ -1090,6 +1099,7 @@ export function createIgsReaderHost(options = {}) {
         offImageActivity();
         generationStrip.dispose();
         offGeneratedAssetUpdated();
+        offSettingsUpdated();
         offItemImageUpdated();
         offImageJobLog();
         teardownStatusHudSubscription();
@@ -2243,6 +2253,7 @@ export function createIgsReaderHost(options = {}) {
         syncReaderMountForMode(state.activeReader, nextMode);
         state.activeReader.snapshot = snapshot;
         updateMountedReader(snapshot);
+        readerStaleBehindSettings = false;
         return { ok: true };
     }
 

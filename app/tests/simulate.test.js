@@ -12,6 +12,13 @@ import { createImageResourceCache, createResourceCache } from '../src/media/reso
 import { buildIgsTextPayload } from '../src/scene/message-source.js';
 import { createIgsReaderHost } from '../src/visual/igs-ui/reader-host.js';
 import { createIllustrationMessageHost } from '../src/host/illustration-message-host.js';
+import { createAssetGenerationService } from '../src/generated-images/illustration/asset-generation-service.js';
+import { createIndexedDbGeneratedAssetStore } from '../src/media/generated-asset-store.js';
+import { withTavernGeneratedAssetFiles } from '../src/media/tavern-generated-assets.js';
+import { localImageCacheFor } from '../src/media/tavern-image-cache.js';
+import { stopMediaJournals } from '../src/media/media-record-journal.js';
+import { mediaFileGcFor } from '../src/media/media-file-gc.js';
+import { fakeMediaServer, pixel } from './helpers/fake-media-server.js';
 
 // 阅读器里的确认挂在遮罩上，不走浏览器 confirm。点「确定」后再等动作完成。
 async function acceptPageModal(doc, pending) {
@@ -1856,6 +1863,91 @@ test('gate:simulation:settings-generated-sprite-refreshes-current-stage', async 
         assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.get('igs-gen:new'));
         assert.match(sprite.style.backgroundImage, /TkVX/, '设置器关闭后舞台必须立即显示新立绘');
     } finally { host.destroy(); }
+});
+
+function coldReaderFixture() {
+    const server = fakeMediaServer(), records = {};
+    for (const [id, type] of [['hero', 'sprite'], ['room', 'background']]) {
+        const dataUrl = `user/images/igs-media/${id}.png`;
+        records[`image:${id}`] = { version: '0000000000001:000000:fixture', deleted: false, value: { id, type, dataUrl } };
+        server.images.set(dataUrl, pixel(id));
+    }
+    server.files.set('igs-asset-records.json', { version: 2, savedAt: 1, records });
+    const host = server.host(); host.document = createFakeDocument();
+    const context = host.SillyTavern.getContext();
+    host.SillyTavern.getContext = () => ({ ...context, characterId: 0, name1: '玩家', name2: '冷启动角色卡',
+        characters: [{ name: '冷启动角色卡', avatar: 'cold-card.png' }], getCurrentChatId: () => 'chat' });
+    const sceneAssets = { enabled: true, scenes: {}, characters: {}, cards: { 'card:冷启动角色卡': {
+        scenes: { Room: { url: 'igs-gen:room', times: { 白天: 'igs-gen:room' } } }, characters: { 玉子: { 默认: 'igs-gen:hero' } },
+    } } };
+    const raw = '[igs-scene:Room|白天|晴天]\n[igs-char:玉子|平和|你好。]';
+    return { server, host, sceneAssets, raw };
+}
+
+test('gate:simulation:restart-first-gal-loads-stored-background-and-sprite-without-settings', async () => {
+    const f = coldReaderFixture(), cache = localImageCacheFor(f.host);
+    const store = withTavernGeneratedAssetFiles(createIndexedDbGeneratedAssetStore(f.host), f.host);
+    let notify = () => {};
+    const service = createAssetGenerationService({ store, mediaCache: cache,
+        messageHost: { getChatId: () => 'chat', on: () => () => {} },
+        getSettings: () => ({ sceneAssets: f.sceneAssets }), events: { emit: (_name, detail) => notify(detail) } });
+    const reader = createIgsReaderHost({ global: f.host, media: { cache }, generatedAssets: service,
+        onGeneratedAssetUpdated: handler => { notify = handler; return () => { notify = () => {}; }; },
+        getUnifiedSettings: () => ({ bridge: { openMode: 'pc', sceneAssets: f.sceneAssets }, readerSettings: { titleScreen: false } }),
+    });
+    try {
+        service.start();
+        assert.equal(reader.openReader({ messageId: 1, raw: f.raw, message: { id: 1, text: f.raw } }, { mode: 'pc' }).ok, true);
+        for (let i = 0; i < 80; i += 1) {
+            const content = reader.getState().activeReader.snapshot.content;
+            if (content.spriteImage && content.backgroundImage) break;
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        const current = reader.getState();
+        assert.equal(current.activeSettings, null);
+        assert.equal(current.activeReader.snapshot.content.spriteImage, pixel('hero'));
+        assert.equal(current.activeReader.snapshot.content.backgroundImage, pixel('room'));
+        assert.match(f.host.document.getElementById('igs-overlay').querySelector('#igs-sprite').style.backgroundImage, /aGVybw==/);
+        assert.deepEqual(f.server.uploads, []);
+    } finally { reader.destroy(); service.stop(); await stopMediaJournals(f.host); await mediaFileGcFor(f.host).stop(); await cache.destroy(); }
+});
+
+test('gate:simulation:startup-settings-restore-refreshes-an-already-open-first-gal', async () => {
+    for (const initialEnabled of [false, true]) {
+        const f = coldReaderFixture();
+        writeLegacyIgsSettings(f.host.localStorage, { bridge: { openMode: 'pc', sceneAssets: { enabled: initialEnabled, scenes: {}, characters: {} } }, readerSettings: { titleScreen: false } });
+        f.server.files.set('igs-settings.json', { version: 2, savedAt: Date.now(), settings: {
+            igs_bridge_config: JSON.stringify({ openMode: 'pc', sceneAssets: f.sceneAssets }),
+            'igs-reader-settings-v9-default': JSON.stringify({ titleScreen: false }),
+        } });
+        let release;
+        const settingsGate = new Promise(resolve => { release = resolve; });
+        const fetch = f.host.fetch;
+        f.host.fetch = async (url, options) => {
+            if (String(url).startsWith('/user/files/igs-settings.json')) await settingsGate;
+            return fetch(url, options);
+        };
+        const app = bootstrapIGS({ global: f.host, autoAttachMagicWand: false,
+            hostAdapter: { getCurrentMessage: async () => ({ id: 1, text: f.raw }), typeAndSend: async () => ({ ok: true }) },
+        });
+        try {
+            assert.equal((await app.openLatestAvailable('pc')).ok, true);
+            await new Promise(resolve => setTimeout(resolve, 160));
+            assert.equal(app.getState().igsUi.activeReader.snapshot.content.spriteImage, null);
+            release();
+            for (let i = 0; i < 100; i += 1) {
+                const content = app.getState().igsUi.activeReader.snapshot.content;
+                if (content.spriteImage && content.backgroundImage) break;
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            const current = app.getState().igsUi;
+            assert.equal(current.activeSettings, null);
+            assert.equal(current.activeReader.snapshot.content.spriteImage, pixel('hero'));
+            assert.equal(current.activeReader.snapshot.content.backgroundImage, pixel('room'));
+            assert.match(f.host.document.getElementById('igs-overlay').querySelector('#igs-sprite').style.backgroundImage, /aGVybw==/);
+            assert.deepEqual(f.server.uploads, []);
+        } finally { release(); await app.shutdown(); }
+    }
 });
 
 test('gate:simulation:settings-generated-sprite-cold-image-arrival-refreshes-stage-once', async () => {

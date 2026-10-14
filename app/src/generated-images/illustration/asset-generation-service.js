@@ -77,6 +77,24 @@ export function createAssetGenerationService(deps) {
     });
     let offRendered = null;
     let stopped = false;
+    let preparing = null, prepared = false;
+
+    function ready() {
+        if (stopped) return Promise.reject(new Error('media-stopped'));
+        if (prepared) return Promise.resolve();
+        if (!preparing) preparing = Promise.resolve().then(() => store.restore?.()).then(() => {
+            if (stopped) throw new Error('media-stopped');
+            prepared = true;
+        }).finally(() => { preparing = null; });
+        return preparing;
+    }
+    async function displayRecord(id) {
+        await ready().catch(error => { if (stopped || typeof store.getImageRecord !== 'function') throw error; });
+        return typeof store.getImageRecord === 'function' ? store.getImageRecord(id) : null;
+    }
+    async function displayImage(id, record) {
+        return store.hydrateImage && record ? store.hydrateImage(record, { fields: ['dataUrl'] }) : store.getImage(id, { fields: ['dataUrl'] });
+    }
 
     const readSettings = () => {
         const raw = getSettings ? getSettings() || {} : {};
@@ -174,24 +192,29 @@ export function createAssetGenerationService(deps) {
         if (!pendingImages.has(id) && !lostImages.has(id)) {
             pendingImages.add(id);
             const generation = tempCache.epoch();
-            const stamp = cache.token(key);
-            cache.load(key, async () => (await store.getImage(id, { fields: ['dataUrl'] }))?.dataUrl || '', { persist: false })
-                .then(value => {
-                    if (tempCache.epoch() !== generation || cache.token(key) !== stamp) return;
-                    if (value) emit({ imageId: id, reason: 'image-loaded' });
-                    else { lostImages.add(id); emit({ imageId: id, reason: 'image-lost' }); }
-                })
+            // 恢复记录会失效旧像素引用，必须先完成恢复再取得读图 token。
+            displayRecord(id).then(async record => {
+                if (stopped || tempCache.epoch() !== generation) return;
+                const stamp = cache.token(key);
+                const value = await cache.load(key, async () => (await displayImage(id, record))?.dataUrl || '', { persist: false });
+                if (tempCache.epoch() !== generation || cache.token(key) !== stamp) return;
+                if (value) emit({ imageId: id, reason: 'image-loaded' });
+                else { lostImages.add(id); emit({ imageId: id, reason: 'image-lost' }); }
+            })
                 .catch(() => {}).finally(() => { if (tempCache.epoch() === generation) pendingImages.delete(id); });
         }
         return '';
     }
 
     async function loadSmallThumb(id) {
-        const key = thumbKey(id), stamp = cache.token(key), generation = tempCache.epoch();
+        const generation = tempCache.epoch();
+        const record = await displayRecord(id);
+        if (stopped || tempCache.epoch() !== generation) return;
+        const key = thumbKey(id), stamp = cache.token(key);
         const value = await cache.load(key, async () => {
             let dataUrl = await thumbStore.get(id).catch(() => '');
             if (dataUrl) return dataUrl;
-            const full = (await store.getImage(id, { fields: ['dataUrl'] }))?.dataUrl || '';
+            const full = (await displayImage(id, record))?.dataUrl || '';
             if (!full) return '';
             const small = await Promise.resolve().then(() => makeThumb(full)).catch(() => '');
             if (small && cache.token(key) === stamp) await thumbStore.put(id, small, stamp);
@@ -1201,6 +1224,8 @@ export function createAssetGenerationService(deps) {
             offRendered = messageHost.on('CHARACTER_MESSAGE_RENDERED', (messageId) => {
                 void processMessage(Number(messageId));
             });
+            if (readSettings().sceneAssets.enabled) void ready().then(() => emit({ reason: 'records-ready' }))
+                .catch(error => { if (!stopped) report('error', `素材记录恢复失败：${error.message}`); });
         },
         clearCache() { tempCache.clear(); },
         stop() {
