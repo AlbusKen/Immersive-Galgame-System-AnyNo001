@@ -1555,6 +1555,72 @@ test('gate:simulation:pending-current-sprite-survives-one-image-cache-and-floor-
     } finally { host.destroy(); service.stop(); await cache.destroy(); }
 });
 
+test('gate:simulation:white-thought-with-empty-cg-keeps-a-same-character-library-sprite', async () => {
+    const { localImageCacheFor } = await import('../src/media/tavern-image-cache.js');
+    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    for (const mode of ['mobile', 'fullscreen']) {
+        const document = createFakeDocument(), global = { document }, cache = localImageCacheFor(global);
+        let notify = () => {};
+        const image = 'data:image/png;base64,V0hJVEU=';
+        const service = createAssetGenerationService({
+            mediaCache: cache, getSettings: () => ({}),
+            messageHost: { getChatId: () => 'fixture', on: () => () => {} },
+            store: { getImage: async id => id === 'available' ? { dataUrl: image } : null },
+            events: { emit: (_name, detail) => notify(detail) },
+        });
+        const raw = '[igs-scene:莲宸殿|下午|晴天]\n[igs-thought:白墨|惊艳|她竟会这样说。]\n[igs-img:94]';
+        const host = createIgsReaderHost({
+            global, media: { cache }, generatedAssets: service, getIllustrationUrl: () => '',
+            onGeneratedAssetUpdated: handler => { notify = handler; return () => {}; },
+            getUnifiedSettings: () => ({ bridge: { sceneAssets: { enabled: true, characters: { 白墨: { 平和: 'igs-gen:unreadable' } }, generated: { characters: { 白墨: { 默认: 'igs-gen:available' } } } } }, readerSettings: { titleScreen: false } }),
+        });
+        try {
+            host.openReader({ messageId: 40, message: { id: 40, text: raw }, raw }, { mode });
+            await new Promise(resolve => setTimeout(resolve, 400));
+            const content = host.getState().activeReader.snapshot.content;
+            assert.equal(content.textType, 'thought'); assert.equal(content.speaker, '白墨');
+            assert.equal(content.cgActive, false); assert.equal(content.cgWaiting, true);
+            assert.equal(content.spriteImage, image); assert.equal(content.spriteMatch.source, 'library');
+            assert.equal(document.getElementById('igs-sprite').style.display, 'block');
+        } finally { host.destroy(); service.stop(); await cache.destroy(); }
+    }
+});
+
+test('gate:simulation:network-recovery-restores-the-original-sprite-without-settings', async () => {
+    const { localImageCacheFor } = await import('../src/media/tavern-image-cache.js');
+    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    for (const mode of ['mobile', 'fullscreen']) {
+        const signals = new EventTarget(), document = createFakeDocument();
+        const global = { document, addEventListener: signals.addEventListener.bind(signals), removeEventListener: signals.removeEventListener.bind(signals) };
+        const cache = localImageCacheFor(global);
+        let offline = true, notify = () => {}, reads = 0;
+        const images = { target: 'data:image/png;base64,VEFSR0VU', calm: 'data:image/png;base64,Q0FMTQ==' };
+        const service = createAssetGenerationService({
+            global, mediaCache: cache, getSettings: () => ({}),
+            messageHost: { getChatId: () => 'fixture', on: () => () => {} },
+            store: { getImage: async id => { reads++; if (id === 'target' && offline) throw new Error('image-file-unreadable'); return { dataUrl: images[id] }; } },
+            events: { emit: (_name, detail) => notify(detail) },
+        });
+        const raw = '[igs-thought:白墨|惊艳|她竟会这样说。]';
+        const host = createIgsReaderHost({
+            global, media: { cache }, generatedAssets: service,
+            onGeneratedAssetUpdated: handler => { notify = handler; return () => {}; },
+            getUnifiedSettings: () => ({ bridge: { sceneAssets: { enabled: true, characters: { 白墨: { 惊艳: 'igs-gen:target', 平和: 'igs-gen:calm' } } } }, readerSettings: { titleScreen: false } }),
+        });
+        try {
+            service.start(); host.openReader({ messageId: 40, message: { id: 40, text: raw }, raw }, { mode });
+            await new Promise(resolve => setTimeout(resolve, 400));
+            assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.calm);
+            const before = reads; await new Promise(resolve => setTimeout(resolve, 100)); assert.equal(reads, before, '静置不重试或轮询');
+            offline = false; signals.dispatchEvent(new Event('online'));
+            await new Promise(resolve => setTimeout(resolve, 400));
+            assert.equal(host.getState().activeReader.snapshot.content.spriteImage, images.target);
+            assert.equal(document.getElementById('igs-sprite').style.display, 'block');
+            assert.equal(host.getState().activeSettings, null);
+        } finally { host.destroy(); service.stop(); await cache.destroy(); }
+    }
+});
+
 test('gate:simulation:nsfw-scene-keeps-sprite-when-hide-toggle-off', async () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const storage = createMemoryStorage({

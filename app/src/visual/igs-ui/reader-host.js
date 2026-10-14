@@ -295,6 +295,11 @@ function missingImageProbe(generatedAssets) {
         ? generatedAssets.isMissingImage : undefined;
 }
 
+function unavailableImageProbe(generatedAssets) {
+    return generatedAssets && typeof generatedAssets.hasUnavailableImages === 'function' && generatedAssets.hasUnavailableImages()
+        ? generatedAssets.isUnavailableImage : undefined;
+}
+
 export function createIgsReaderHost(options = {}) {
     bindImageCacheDocument(getRootDocument(options.global), options.media?.cache);
     let statusHudClient = null;
@@ -958,6 +963,7 @@ export function createIgsReaderHost(options = {}) {
                         tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
                         tempSprite: generatedAssets ? generatedAssets.tempSprite : null,
                         isMissingImage: missingImageProbe(generatedAssets),
+                        isUnavailableImage: unavailableImageProbe(generatedAssets),
                     },
                 }),
             };
@@ -3504,6 +3510,7 @@ export function createIgsReaderHost(options = {}) {
             tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
             tempSprite: generatedAssets ? generatedAssets.tempSprite : null,
             isMissingImage: missingImageProbe(generatedAssets),
+            isUnavailableImage: unavailableImageProbe(generatedAssets),
         };
         const sceneDirectives = Array.isArray(extracted.sceneDirectives) ? extracted.sceneDirectives
             : Array.isArray(payload.sceneDirectives) ? payload.sceneDirectives : [];
@@ -3972,7 +3979,7 @@ export function createIgsReaderHost(options = {}) {
                         spriteMood = speakerReactMood;
                     }
                 }
-                if (spriteChar) spriteMatch = { character: spriteChar, mood: spriteMood || '', outfit: wantedOutfit || '', source: spriteHit.source, quality: spriteHit.quality || '', slot: spriteHit.slot || '', ...outfitWhy };
+                if (spriteChar) spriteMatch = { character: spriteChar, mood: spriteMood || '', outfit: wantedOutfit || '', source: spriteHit.source, quality: spriteHit.quality || '', slot: spriteHit.slot || '', reason: spriteHit.reason || '', ...outfitWhy };
                 if (spriteChar) noteUnlistedMood(spriteHit, spriteMood, sceneAssets);
                 spriteImage = spriteChar ? resolveGenerated(spriteHit.url) || null : null;
                 if (!spriteImage && spriteChar && isGeneratedAssetUrl(spriteHit.url)) pendingSpriteRef = spriteHit.url;

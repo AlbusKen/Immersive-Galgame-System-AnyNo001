@@ -59,6 +59,23 @@ test('gate:assets:first-thumbnail-load-also-waits-for-record-recovery', async t 
     assert.ok(f.cache.peek('thumb:asset:hero'));
 });
 
+test('gate:assets:real-file-adapter-keeps-a-503-temporary-and-recovers-after-a-full-thumb-read', async t => {
+    const f = await fixture(t, { thumbs: true }), fetch = f.host.fetch;
+    let offline = true, reads = 0;
+    f.host.fetch = (url, options) => {
+        if (String(url).startsWith('/user/images/')) { reads++; if (offline) return Promise.resolve({ ok: false, status: 503 }); }
+        return fetch(url, options);
+    };
+    f.service.resolveUrl('igs-gen:hero'); await settleMedia(); await settleMedia();
+    assert.equal(f.service.isMissingImage('igs-gen:hero'), false, 'HTTP 503 不是文件不存在');
+    assert.equal(f.service.isUnavailableImage('igs-gen:hero'), true);
+    f.service.resolveUrl('igs-gen:hero'); await settleMedia(); assert.equal(reads, 1);
+    offline = false; f.service.resolveThumbUrl('igs-gen:hero'); await settleMedia(); await settleMedia();
+    assert.equal(f.service.isUnavailableImage('igs-gen:hero'), false);
+    f.service.resolveUrl('igs-gen:hero'); await settleMedia(); await settleMedia();
+    assert.ok(f.cache.peek('asset:hero'));
+});
+
 test('gate:assets:backup-network-error-still-allows-existing-local-image-records', async t => {
     const f = await fixture(t, { reuseLocal: true });
     f.server.failRead = true;

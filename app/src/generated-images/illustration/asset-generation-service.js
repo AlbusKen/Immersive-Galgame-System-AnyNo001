@@ -60,8 +60,7 @@ export function createAssetGenerationService(deps) {
     const locks = new Map();
     const cache = requireMediaCache(deps.mediaCache, 'asset-generation', deps.thumbStore?.mediaCache);
     const pendingImages = new Set();
-    // 读回为空的图本体：记一次、通知一次，之后不再重读；舞台按缺图走平和/默认兜底。
-    const lostImages = new Set();
+    const failedImages = cache.auxiliary.createMap('asset-image-failures');
     const thumbStore = deps.thumbStore || null;
     const makeThumb = typeof deps.makeThumb === 'function' ? deps.makeThumb : null;
     const smallThumbs = Boolean(thumbStore && makeThumb);
@@ -71,11 +70,12 @@ export function createAssetGenerationService(deps) {
     let tempCursor = {}, retryTarget = null;
     const tempCache = createAssetRecordCache({ store, mediaCache: cache, owner: 'asset-records',
         onChanged: chatId => emit({ chatId, reason: 'hydrated' }),
-        onClear: () => { pendingImages.clear(); lostImages.clear(); pendingThumbs.clear(); tempCursor = {}; },
+        onClear: () => { pendingImages.clear(); failedImages.clear(); pendingThumbs.clear(); tempCursor = {}; },
         onError: () => report('error', '素材记录读取失败，本次补图暂停；可在素材 → 待确认中重新读取。'),
         pendingCount: () => pendingImages.size + pendingThumbs.size,
     });
     let offRendered = null;
+    let offOnline = null;
     let stopped = false;
     let preparing = null, prepared = false;
 
@@ -93,7 +93,7 @@ export function createAssetGenerationService(deps) {
         return typeof store.getImageRecord === 'function' ? store.getImageRecord(id) : null;
     }
     async function displayImage(id, record) {
-        return store.hydrateImage && record ? store.hydrateImage(record, { fields: ['dataUrl'] }) : store.getImage(id, { fields: ['dataUrl'] });
+        return store.hydrateImage && record ? store.hydrateImage(record, { fields: ['dataUrl'], strictRead: true }) : store.getImage(id, { fields: ['dataUrl'], strictRead: true });
     }
 
     const readSettings = () => {
@@ -125,10 +125,31 @@ export function createAssetGenerationService(deps) {
         void cache.drop(thumbKey(id)).catch(() => {});
         if (smallThumbs) void thumbStore.remove([id]).catch(() => {});
     }
-    function forgetImage(id) { lostImages.delete(id); cache.forget(imageKey(id)); }
-    function rememberImage(id, dataUrl) { if (!stopped) { lostImages.delete(id); cache.forget(imageKey(id)); cache.remember(imageKey(id), dataUrl); } }
-    const isMissingImage = (url) => lostImages.size > 0 && isGeneratedAssetUrl(url) && lostImages.has(generatedAssetIdOf(url));
-    const hasMissingImages = () => lostImages.size > 0;
+    function forgetImage(id) { failedImages.delete(id); cache.forget(imageKey(id)); }
+    function rememberImage(id, dataUrl) { if (!stopped) { failedImages.delete(id); cache.forget(imageKey(id)); cache.remember(imageKey(id), dataUrl); } }
+    function imageFailure(url) {
+        if (!isGeneratedAssetUrl(url)) return null;
+        const id = generatedAssetIdOf(url);
+        if (cache.peek(imageKey(id))) { failedImages.delete(id); return null; }
+        const failure = failedImages.get(id);
+        if (failure && failure.token !== cache.token(imageKey(id))) { failedImages.delete(id); return null; }
+        return failure || null;
+    }
+    const isMissingImage = url => imageFailure(url)?.missing === true;
+    const hasMissingImages = () => [...failedImages.values()].some(value => value.missing);
+    const isUnavailableImage = url => Boolean(imageFailure(url));
+    const hasUnavailableImages = () => failedImages.size > 0;
+    function noteImageFailure(id, error) {
+        const missing = ['image-file-not-found', 'image-empty'].includes(error.message);
+        const existed = failedImages.has(id);
+        failedImages.set(id, { missing, reason: error.message || 'image-read-failed', token: cache.token(imageKey(id)) });
+        if (!existed) emit({ imageId: id, reason: missing ? 'image-lost' : 'image-unavailable' });
+    }
+    function retryImageReads() {
+        if (stopped || !failedImages.size) return;
+        failedImages.clear();
+        emit({ reason: 'image-retry-ready' });
+    }
 
     async function persistTempRecord(record) {
         let old;
@@ -188,20 +209,26 @@ export function createAssetGenerationService(deps) {
         if (!isGeneratedAssetUrl(url)) return String(url || '');
         if (stopped) return '';
         const id = generatedAssetIdOf(url), key = imageKey(id), hit = cache.peek(key);
-        if (hit) return hit;
-        if (!pendingImages.has(id) && !lostImages.has(id)) {
+        if (hit) { failedImages.delete(id); return hit; }
+        if (!pendingImages.has(id) && !imageFailure(url)) {
             pendingImages.add(id);
             const generation = tempCache.epoch();
+            let stamp = null;
             // 恢复记录会失效旧像素引用，必须先完成恢复再取得读图 token。
             displayRecord(id).then(async record => {
                 if (stopped || tempCache.epoch() !== generation) return;
-                const stamp = cache.token(key);
-                const value = await cache.load(key, async () => (await displayImage(id, record))?.dataUrl || '', { persist: false });
+                stamp = cache.token(key);
+                const value = await cache.load(key, async () => {
+                    const value = (await displayImage(id, record))?.dataUrl || '';
+                    if (!value) throw new Error('image-empty');
+                    return value;
+                }, { persist: false });
                 if (tempCache.epoch() !== generation || cache.token(key) !== stamp) return;
-                if (value) emit({ imageId: id, reason: 'image-loaded' });
-                else { lostImages.add(id); emit({ imageId: id, reason: 'image-lost' }); }
+                if (value) { failedImages.delete(id); emit({ imageId: id, reason: 'image-loaded' }); }
             })
-                .catch(() => {}).finally(() => { if (tempCache.epoch() === generation) pendingImages.delete(id); });
+                .catch(error => {
+                    if (!stopped && tempCache.epoch() === generation && (stamp == null || cache.token(key) === stamp || error.message === 'image-load-timeout')) noteImageFailure(id, error);
+                }).finally(() => { if (tempCache.epoch() === generation) pendingImages.delete(id); });
         }
         return '';
     }
@@ -216,6 +243,7 @@ export function createAssetGenerationService(deps) {
             if (dataUrl) return dataUrl;
             const full = (await displayImage(id, record))?.dataUrl || '';
             if (!full) return '';
+            if (!stopped && tempCache.epoch() === generation) failedImages.delete(id);
             const small = await Promise.resolve().then(() => makeThumb(full)).catch(() => '');
             if (small && cache.token(key) === stamp) await thumbStore.put(id, small, stamp);
             return small || full;
@@ -1214,7 +1242,7 @@ export function createAssetGenerationService(deps) {
     }
 
     return {
-        processMessage, resolveUrl, isMissingImage, hasMissingImages, resolveThumbUrl, thumbSourceId, tempBackground, tempSceneTime, tempSprite, tempSpriteTags, listReview, reviewPage, listTemp, tempPage, changeTempPage, retryMetadata, readRecord, setStatus, deleteImages, getImageDataUrl, getImagePrompt, saveImagePrompt, readStoredImage, writeStoredImage, importAssetImage,
+        processMessage, resolveUrl, isMissingImage, hasMissingImages, isUnavailableImage, hasUnavailableImages, resolveThumbUrl, thumbSourceId, tempBackground, tempSceneTime, tempSprite, tempSpriteTags, listReview, reviewPage, listTemp, tempPage, changeTempPage, retryMetadata, readRecord, setStatus, deleteImages, getImageDataUrl, getImagePrompt, saveImagePrompt, readStoredImage, writeStoredImage, importAssetImage,
         generateExpressionSet, generateExpressionImage, paintExpressionCaptions, generateSceneVariants, generateCharacterSprite, generateCharacterAvatar, writeWardrobePrompt, paintWardrobeReference,
         getEditableImage, saveMatteEdit,
         getRecord: (key) => !stopped && currentChat() ? tempCache.peek(tempCache.scope, key) : null,
@@ -1224,6 +1252,10 @@ export function createAssetGenerationService(deps) {
             offRendered = messageHost.on('CHARACTER_MESSAGE_RENDERED', (messageId) => {
                 void processMessage(Number(messageId));
             });
+            if (typeof deps.global?.addEventListener === 'function') {
+                deps.global.addEventListener('online', retryImageReads);
+                offOnline = () => deps.global.removeEventListener('online', retryImageReads);
+            }
             if (readSettings().sceneAssets.enabled) void ready().then(() => emit({ reason: 'records-ready' }))
                 .catch(error => { if (!stopped) report('error', `素材记录恢复失败：${error.message}`); });
         },
@@ -1231,6 +1263,7 @@ export function createAssetGenerationService(deps) {
         stop() {
             stopped = true;
             tempCache.clear();
+            if (offOnline) { offOnline(); offOnline = null; }
             if (offRendered) { offRendered(); offRendered = null; }
         },
     };
