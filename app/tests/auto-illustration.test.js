@@ -9,6 +9,7 @@ import {
     resolveHeldSourceOffset,
     locateNarrativeOffset,
     resolveHeldSourceOffsets,
+    prepareIllustrationPages,
     resolveIllustrationForPage,
 } from '../src/scene/scene-directives.js';
 import { buildIgsTextPayload } from '../src/scene/message-source.js';
@@ -1062,6 +1063,15 @@ test('gate:illustration:nsfw-cg-keeps-floor-wide-behaviour', () => {
     assert.deepEqual(cgSlots(src, segments), [1, 1, 1, 1, 1, 1, 1]);
     // 本楼没写场景时沿用上一楼的 NSFW 状态。
     assert.deepEqual(cgSlots(src.replace(/^.*\n/, ''), segments, { inheritedNsfw: true }), [1, 1, 1, 1, 1, 1, 1]);
+});
+
+// NSFW 场景翻过本场景的图后不提前挂下一场景的 SFW 图；进 SFW 场景后保持 NSFW 图，直到新 CG 的锚句页接管。
+test('gate:illustration:nsfw-lookahead-stops-at-sfw-scene-cg', () => {
+    const segments = ['甲。', '乙。', '丙。', '丁。', '戊。', '己。'];
+    const src = '[igs-scene:街道|傍晚|晴|NSFW]\n甲。\n[igs-img:1]\n乙。\n[igs-scene:客厅|傍晚|晴]\n丙。\n丁。\n[igs-img:2]\n戊。\n己。';
+    assert.deepEqual(cgSlots(src, segments), [1, 1, 1, 2, 2, 2]);
+    const offsets = resolveHeldSourceOffsets(src, segments);
+    assert.deepEqual(prepareIllustrationPages({ source: src, offsets, segments, holdPages: 2 }).map(hit => hit ? hit.slot : 0), [1, 1, 1, 2, 2, 2]);
 });
 
 test('gate:illustration:dbgen-cg-does-not-splice-character-dna', async () => {

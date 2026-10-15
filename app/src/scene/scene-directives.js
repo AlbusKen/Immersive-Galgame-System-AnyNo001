@@ -268,9 +268,11 @@ export function prepareIllustrationPages({ source, offsets = [], segments = [], 
         if (speaker) spoken.add(speaker);
         if (offset < 0) return null;
         while (next < markers.length && markers[next].offset < offset) next++;
-        if (stateAt(offset).nsfw) return markers[next] || markers[markers.length - 1];
         const passed = next ? markers[next - 1] : null;
-        if (passed && stateAt(passed.offset).nsfw) return passed;
+        // NSFW 页只提前挂 NSFW 的下一张；下一张属于 SFW 场景时保持已翻过的那张。
+        if (stateAt(offset).nsfw) return markers[next] && stateAt(markers[next].offset).nsfw ? markers[next] : (passed || null);
+        // 新的 SFW 事件 CG 从锚句页起接管，不再沿用之前的 NSFW 图。
+        if (passed && stateAt(passed.offset).nsfw && !(current && current.offset > passed.offset)) return passed;
         if (!current || ended || index - start >= hold * 2) return null;
         const opening = stateAt(offsets[start]), here = stateAt(offset);
         return here.scene === opening.scene && here.time === opening.time ? current : null;
@@ -293,15 +295,16 @@ export function resolveIllustrationForPage({ source, offsets, segments, index, h
         const state = resolveSceneAtSourceOffset(src, position);
         return state.scene ? state : { ...state, nsfw: inheritedNsfw === true };
     };
-    if (sceneAt(pages[at]).nsfw) return resolveIllustrationAtSourceOffset(src, pages[at]);
     const markers = [];
     for (const match of src.matchAll(/\[igs-img:\s*(\d+)\s*\]|<IMG>\s*(\d+)\s*<\/IMG>/gi)) {
         const slot = Number(match[1] || match[2]);
         if (Number.isInteger(slot) && slot >= 1) markers.push({ slot, offset: match.index });
     }
-    // NSFW 图翻过后，即使转到 SFW 场景也保持到下一张。
-    const passed = markers.filter((marker) => marker.offset < pages[at]).pop();
-    if (passed && sceneAt(passed.offset).nsfw) return passed;
+    const passed = markers.filter((marker) => marker.offset < pages[at]).pop() || null;
+    if (sceneAt(pages[at]).nsfw) {
+        const ahead = resolveIllustrationAtSourceOffset(src, pages[at]);
+        return ahead && ahead.offset >= pages[at] && !sceneAt(ahead.offset).nsfw ? passed : ahead;
+    }
     let current = null;
     let start = -1;
     for (const marker of markers) {
@@ -315,6 +318,8 @@ export function resolveIllustrationForPage({ source, offsets, segments, index, h
             start = page;
         }
     }
+    // NSFW 图翻过后，即使转到 SFW 场景也保持到下一张；新的 SFW 事件 CG 从锚句页起接管。
+    if (passed && sceneAt(passed.offset).nsfw && !(current && current.offset > passed.offset)) return passed;
     if (!current) return null;
     const hold = Math.max(1, Number(holdPages) || 4);
     if (at - start >= hold * 2) return null;
