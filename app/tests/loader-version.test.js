@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../../loader/igs-loader.js', import.meta.url), 'utf8');
 const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const ref = `${version}-test`;
+const ref = `v${version}`;
 const fixedContent = source.replace("const PINNED_REF = '';", `const PINNED_REF = ${JSON.stringify(ref)};`);
 const autoContent = JSON.parse(fs.readFileSync(new URL('../../loader/igs-loader.json', import.meta.url), 'utf8')).content;
 const base = `https://cdn.jsdelivr.net/gh/Anyno001/Immersive-Galgame-System-AnyNo001@${ref}`;

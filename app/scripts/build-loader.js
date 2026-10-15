@@ -99,8 +99,8 @@ const releaseArgIndex = process.argv.indexOf('--release');
 if (releaseArgIndex !== -1) {
     const releaseRef = process.argv[releaseArgIndex + 1];
     const version = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8')).version;
-    if (releaseRef !== `${version}-test`) {
-        throw new Error(`--release requires ${version}-test, matching app/package.json.`);
+    if (releaseRef !== `v${version}`) {
+        throw new Error(`--release requires v${version}, matching app/package.json.`);
     }
     for (const name of fs.readdirSync(loaderRoot)) {
         if (RELEASE_FILE_RE.test(name)) fs.unlinkSync(path.join(loaderRoot, name));
@@ -108,7 +108,7 @@ if (releaseArgIndex !== -1) {
     writePinnedLoader(releaseRef);
 }
 
-// 固定版 loader 按需生成：`node scripts/build-loader.js --pin 0.36.66-test v0.23.21`
+// 固定版 loader 按需生成：`node scripts/build-loader.js --pin v0.36.70 v0.23.21`（历史 X.Y.Z-test 也认）
 // 不传 --pin 时只更新自动更新版 + debug 版，不生成任何 pinned（避免每次升号堆文件）。
 const pinArgIndex = process.argv.indexOf('--pin');
 if (pinArgIndex !== -1) {

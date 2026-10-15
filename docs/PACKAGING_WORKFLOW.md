@@ -3,6 +3,7 @@
 ## 0.36.69 加载恢复与当前交付约定
 
 - 按用户最新要求，直接推送内测 `main`，不自动创建测试或正式标签；普通更新运行 `build` 与不带 `--release` 的 `build:loader`，保留历史固定版。
+- 2026-10-15 起改回正式标签：发版用 `build:loader -- --release vX.Y.Z`（须与 app/package.json 一致），生成 `沉浸式Galgame系统 vX.Y.Z.json` 并推送同名 tag；不再用 `X.Y.Z-test`。`--pin` 仍认历史 `X.Y.Z-test`。
 - CDN 模块失败或超时后，备用来源为 GitHub raw 的同一个提交或指定 ref，不跨版本回退到 CDN main。下载内容校验 IGS 文件头和版本后以 JavaScript Blob 模块加载，资源基址保留原下载地址，加载结束释放 Blob；连接中断最多重试一次。
 - 本次是启动器源码变更：用户需要重新导入 `loader/igs-loader.json` 一次，仅刷新旧脚本不能获得新下载逻辑。样式和字体仍从同 ref 的 CDN 加载；真实酒馆和手机验收与本地执行分开记录。
 

@@ -167,9 +167,9 @@ test('gate:loader-json:matches loader source and references public bundle', () =
     assert.match(loaderJson.content, /QR_BUTTON_NAME = 'Gal模拟'/);
     assert.match(loaderJson.content, /getButtonEvent\(QR_BUTTON_NAME\)/);
     // main 更新不要求创建新 tag；历史固定版保留自己的版本，不冒充本次自动更新件。
-    const releaseFiles = fs.readdirSync(path.join(projectRoot, 'loader')).filter((name) => / \d+\.\d+\.\d+-test\.json$/.test(name));
+    const releaseFiles = fs.readdirSync(path.join(projectRoot, 'loader')).filter((name) => / v?\d+\.\d+\.\d+(?:-test)?\.json$/.test(name));
     for (const file of releaseFiles) {
-        const pinnedRef = / (\d+\.\d+\.\d+-test)\.json$/.exec(file)[1];
+        const pinnedRef = / (v?\d+\.\d+\.\d+(?:-test)?)\.json$/.exec(file)[1];
         const pinnedJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'loader', file), 'utf8'));
         assert.equal(pinnedJson.name, `沉浸式Galgame系统 ${pinnedRef}`);
         assert.ok(pinnedJson.content.includes(`const PINNED_REF = ${JSON.stringify(pinnedRef)};`));
