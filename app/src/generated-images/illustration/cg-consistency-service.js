@@ -6,11 +6,14 @@ import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { normalizeCharacterDna } from '../../scene/character-dna.js';
 import { consistencyPromptTask, checkConsistencyCaptions } from './cg-consistency-prompt.js';
 import { promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
+import { prepareConsistencyAppearances, consistencyAppearanceSignature,
+    consistencyImagesUnchanged, consistencyAppearanceAudit } from './cg-consistency-appearance.js';
 import { normalizeConsistencyStrength, isConsistencyStrengthValid,
     normalizeConsistencyModel, isConsistencyModelValid } from './auto-illustration-settings.js';
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
-const failure = (reason, error = '一致性重绘未保存，原图保持不变') => ({ ok: false, reason, error });
+const failure = (reason, error = '一致性重绘未保存，原图保持不变') => ({ ok: false, reason, error,
+    ...((reason === 'cancelled' || reason?.startsWith('stale-')) && { stopGeneration: true }) });
 let serial = 0;
 
 // 单任务、同基线并发、固定顺序合成的内存候选。提交由存储适配器负责。
@@ -99,10 +102,21 @@ export function createCgConsistencyService(deps) {
     const strengthUnchanged = (task) => strength() === task.strength;
     const model = () => normalizeConsistencyModel(deps.consistencyModel?.());
     const modelUnchanged = (task) => model() === task.model;
-    const canStart = (task) => !task.failed && live(task) && dnaUnchanged(task) && requirementsUnchanged(task) && strengthUnchanged(task) && modelUnchanged(task) && configCurrent(task);
+    const sourcesCurrent = task => {
+        if (!task.builtin || !task.sourceSignature) return true;
+        try {
+            if (task.sourceInvalid) return false;
+            const keys = task.characters.map(c => c.characterKey);
+            const signature = consistencyAppearanceSignature(getSceneAssets(), deps.captureAppearanceScope(keys), keys);
+            if (signature !== task.sourceSignature) task.sourceInvalid = true;
+            return !task.sourceInvalid;
+        } catch { task.sourceInvalid = true; return false; }
+    };
+    const canStart = (task) => !task.failed && live(task) && sourcesCurrent(task) && dnaUnchanged(task) && requirementsUnchanged(task) && strengthUnchanged(task) && modelUnchanged(task) && configCurrent(task);
     const configCurrent = (task) => task.configIsCurrent?.() === true;
     const unchanged = async (task) => {
         guard(task);
+        if (!sourcesCurrent(task)) throw new Error('stale-appearance');
         const record = await store.getSlotRecord(task.record.key);
         guard(task);
         if (!record || (record.revision || 0) !== (task.record.revision || 0)
@@ -117,6 +131,13 @@ export function createCgConsistencyService(deps) {
             throw new Error('stale-config');
         if (!dnaUnchanged(task)) throw new Error('stale-dna');
         if (!requirementsUnchanged(task) || !strengthUnchanged(task) || !modelUnchanged(task)) throw new Error('stale-config');
+        if (task.appearance && !await wait(task, consistencyImagesUnchanged(task.appearance,
+            deps.readReferenceImage, task.controller.signal))) {
+            task.sourceInvalid = true;
+            throw new Error('stale-appearance');
+        }
+        guard(task);
+        if (!sourcesCurrent(task)) throw new Error('stale-appearance');
     };
     const capability = (selectedModel = model()) => {
         if (!isConsistencyModelValid(selectedModel)) return failure('consistency-model-invalid',
@@ -141,6 +162,9 @@ export function createCgConsistencyService(deps) {
         task.model = model();
         const cap = capability(task.model);
         if (!cap.ok) return cap;
+        task.builtin = nai.describeEdit(undefined, { model: task.model })?.via === 'nai';
+        if (task.builtin && (typeof deps.readReferenceImage !== 'function' || typeof deps.captureAppearanceScope !== 'function'))
+            return failure('consistency-unavailable', '内置一致性预检来源未接入，未发送请求');
         task.strength = strength();
         if (!isConsistencyStrengthValid(task.strength)) return failure('consistency-strength-invalid',
             '一致性重绘强度必须为 0.1–1，请在生图设置中重新选择；原设置未被改写');
@@ -156,6 +180,20 @@ export function createCgConsistencyService(deps) {
         task.record = record;
         task.assets = assets;
         task.characters = chars.slice().sort((a, b) => a.captionIndex - b.captionIndex);
+        if (task.builtin) {
+            task.scope = clone(deps.captureAppearanceScope(task.characters.map(c => c.characterKey)));
+            task.sourceSignature = consistencyAppearanceSignature(assets, task.scope, task.characters.map(c => c.characterKey));
+            task.offSources = deps.subscribeAppearance?.(detail => {
+                if (detail?.targetChanged || (detail?.imageId && task.appearance?.evidence.some(c => c.url === `igs-gen:${detail.imageId}`)))
+                    task.sourceInvalid = true;
+                sourcesCurrent(task);
+                if (task.sourceInvalid) {
+                    task.stopReason = 'stale-appearance';
+                    task.controller.abort();
+                    if (task.state !== 'accepting') release(task);
+                }
+            });
+        }
         if (deps.writingRequirements) task.writingRequirements = clone(deps.writingRequirements());
         const config = await wait(task, nai.getEditConfig({ imageKind: 'cg', promptKind: 'cg', model: task.model }));
         guard(task);
@@ -170,7 +208,8 @@ export function createCgConsistencyService(deps) {
 
     async function writeTemplates(task) {
         task.phase = 'binding';
-        const bundle = consistencyPromptTask(task.record, task.characters, task.assets, task.plans);
+        const bundle = consistencyPromptTask(task.record, task.characters, task.assets, task.plans,
+            task.builtin ? task.appearance.selections : undefined);
         if (!bundle.ok) return bundle;
         task.bundle = bundle;
         await unchanged(task);
@@ -256,6 +295,7 @@ export function createCgConsistencyService(deps) {
     }
     function release(task) {
         task.detach?.();
+        task.offSources?.();
         task.references = null;
         task.pixels = null;
         task.dataUrl = '';
@@ -265,8 +305,9 @@ export function createCgConsistencyService(deps) {
     async function generate(task) {
         try {
             progress(task, { phase: 'prepare' });
-            const prepared = await prepare(task);
+            const prepared = task.prepared ? { ok: true } : await prepare(task);
             if (!prepared.ok) return prepared;
+            await unchanged(task);
             task.phase = 'reference';
             progress(task, { phase: 'reference', done: 0, total: task.characters.length });
             const hydrated = store.hydrateSlot ? await wait(task, store.hydrateSlot(task.record)) : task.record;
@@ -275,19 +316,19 @@ export function createCgConsistencyService(deps) {
             guard(task);
             const size = task.record.originalSize;
             if (size && (size.width !== pixels.width || size.height !== pixels.height)) throw new Error('cg-size-mismatch');
-            task.plans = task.characters.map((c) => planReferenceCanvas(pixels.width, pixels.height,
-                { characters: task.characters }, c.characterKey));
-            const invalid = task.plans.find((p) => !p.ok);
-            if (invalid) return invalid;
-            task.references = [];
-            // 先载入全部已保存参考，缺一张也不发送部分角色请求。
-            for (const binding of task.characters) {
+            task.references = task.appearance?.references || [];
+            // 全部参考与几何就绪后才进入写词。
+            for (const binding of task.builtin ? [] : task.characters) {
                 const src = await wait(task, resolveReference(binding.characterKey, task.assets));
                 guard(task);
                 if (!src) return failure('cg-reference-missing', `角色「${binding.characterKey}」没有可读取的已保存默认立绘`);
                 task.references.push(await wait(task, codec.decodeImage(src, { signal: task.controller.signal })));
                 progress(task, { phase: 'reference', done: task.references.length, total: task.characters.length });
             }
+            task.plans = task.characters.map((c, i) => planReferenceCanvas(pixels.width, pixels.height,
+                { characters: task.characters }, c.characterKey, task.builtin ? task.references[i] : undefined));
+            const invalid = task.plans.find(p => !p.ok);
+            if (invalid) return invalid;
             const templates = await writeTemplates(task);
             if (!templates.ok) return templates;
             const baseline = pixels;
@@ -308,13 +349,16 @@ export function createCgConsistencyService(deps) {
                     model: task.model, artist: task.editConfig.artist, expectedConfigToken: task.editConfig.configToken,
                     signal: task.controller.signal, shouldStart: () => canStart(task) })));
                 await unchanged(task);
-                if (!result?.ok || !result.dataUrl) return failure(result?.reason || 'edit-failed', result?.error);
+                if (!result?.ok || !result.dataUrl) return { ...failure(result?.reason || 'edit-failed', result?.error),
+                    ...(result?.stopGeneration !== undefined && { stopGeneration: result.stopGeneration }) };
                 if (!result.promptRecipe || !result.dnaSnapshot || !result.sentPrompt)
                     return failure('PROMPT_MODE_CONFLICT', '重绘结果缺少实际发送来源，原图保持不变');
                 const generated = await wait(task, codec.decodeImage(result.dataUrl, { signal: task.controller.signal }));
                 guard(task);
                 progress(task, { phase: 'paint', done: ++completed, total: task.characters.length });
-                return { ok: true, generated, audit: { slotId: round.slotId, characterKey: binding.characterKey, ...promptProvenance(result) } };
+                return { ok: true, generated, audit: { slotId: round.slotId, characterKey: binding.characterKey,
+                    ...promptProvenance(result), ...(task.appearance && { appearance: consistencyAppearanceAudit(
+                        task.appearance, binding.characterKey, task.confirmed) }) } };
             }));
             if (!edited.ok) return edited;
             task.phase = 'compose';
@@ -331,7 +375,7 @@ export function createCgConsistencyService(deps) {
             return { ok: true, reason: 'candidate', candidateId: task.id, dataUrl: task.dataUrl,
                 originalDataUrl: task.originalDataUrl, width: pixels.width, height: pixels.height };
         } catch (error) {
-            return failure(task.controller.signal.aborted ? 'cancelled' : (error?.message || 'consistency-failed'));
+            return failure(task.stopReason || (task.controller.signal.aborted ? 'cancelled' : (error?.message || 'consistency-failed')));
         } finally {
             progress(task, { phase: 'done' });
             task.references = null;
@@ -339,7 +383,59 @@ export function createCgConsistencyService(deps) {
         }
     }
 
+    function newTask(target, options) {
+        const task = { id: `cg-consistency-${++serial}`, target: structuredClone(target), options,
+            controller: new AbortController(), state: 'running', phase: 'prepare' };
+        active = task;
+        const abort = () => cancel(task.id);
+        options.signal?.addEventListener('abort', abort, { once: true });
+        task.detach = () => options.signal?.removeEventListener('abort', abort);
+        if (options.signal?.aborted) task.controller.abort();
+        return task;
+    }
+    async function preflight(target, options = {}) {
+        if (nai?.describeEdit?.(undefined, { model: model() })?.via !== 'nai')
+            return { ok: true, reason: 'legacy-ready' };
+        if (active) return failure('consistency-busy');
+        const task = newTask(target, options);
+        try {
+            const prepared = await prepare(task);
+            if (!prepared.ok) { release(task); return prepared; }
+            const appearance = await wait(task, prepareConsistencyAppearances({ record: task.record,
+                characters: task.characters, assets: task.assets, scope: task.scope,
+                readImage: deps.readReferenceImage, codec, signal: task.controller.signal }));
+            if (!appearance.ok) { release(task); return appearance; }
+            task.appearance = appearance;
+            await unchanged(task);
+            task.prepared = true;
+            task.state = 'prepared';
+            return { ok: true, reason: appearance.confirmations.length ? 'needs-confirmation' : 'ready',
+                preflightToken: task.id, confirmations: clone(appearance.confirmations) };
+        } catch (error) {
+            const result = failure(task.stopReason || (task.controller.signal.aborted ? 'cancelled' : error.message));
+            release(task);
+            return result;
+        }
+    }
     function run(target, options = {}) {
+        const builtin = nai?.describeEdit?.(undefined, { model: model() })?.via === 'nai';
+        if (builtin && !options.preflightToken) return preflight(target, options).then(result => {
+            if (!result.ok || result.reason === 'needs-confirmation') return result;
+            return run(target, { ...options, preflightToken: result.preflightToken });
+        });
+        if (builtin) {
+            const task = active;
+            if (!task || task.id !== options.preflightToken || task.state !== 'prepared'
+                || JSON.stringify(task.target) !== JSON.stringify(target)) return Promise.resolve(failure('stale-preflight'));
+            if (task.appearance.confirmations.length && options.confirmed !== true)
+                return Promise.resolve(failure('confirmation-required'));
+            task.state = 'running';
+            task.confirmed = options.confirmed === true;
+            return generate(task).then(result => {
+                if (!result.ok) reportFailure(task, result);
+                return result;
+            });
+        }
         if (active) return Promise.resolve(failure('consistency-busy', '已有一致性任务或候选，请先停止或取消'));
         const task = { id: `cg-consistency-${++serial}`, target, options, controller: new AbortController(), state: 'running', phase: 'prepare' };
         active = task;
@@ -385,7 +481,7 @@ export function createCgConsistencyService(deps) {
             report(task, warning ? 'warn' : 'success', `已接受并保存${warning ? '；目录或显示同步需刷新复查' : ''}`);
             return { ok: true, reason: 'accepted', ...(warning && { warning }) };
         } catch (error) {
-            const rejected = failure(['stale-target', 'stale-revision', 'stale-dna', 'stale-config'].includes(error?.message) ? error.message : 'slot-update-failed',
+            const rejected = failure(['stale-target', 'stale-revision', 'stale-dna', 'stale-config', 'stale-appearance'].includes(error?.message) ? error.message : 'slot-update-failed',
                 '保存失败或目标已变化，未接受候选；请重新读取当前 CG');
             reportFailure(task, rejected);
             return rejected;
@@ -400,5 +496,5 @@ export function createCgConsistencyService(deps) {
         if (task.state !== 'accepting') release(task);
         return { ok: true, reason: 'cancelled' };
     }
-    return { run, accept, cancel, capability, isBusy: () => Boolean(active) };
+    return { run, preflight, accept, cancel, capability, isBusy: () => Boolean(active) };
 }

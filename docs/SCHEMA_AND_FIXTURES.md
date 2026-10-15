@@ -54,6 +54,14 @@ fixtures 文件应短小、可读、可复用。需要大资源时只放 manifes
 - `app/tests/image-source-adapters.test.js` 的 `gate:dna-template` 使用合成角色，覆盖 DBGen 工作台扁平回复交接、自身身份展开、相似名与跨角色提及、缺身份／景别、冲突模式、取消和其他来源隔离。真实 DBGen service/gateway 配合假 transport 捕获最终 wire；内置 NAI 普通生成及 infill 采用同样捕获方式。
 - DBGen `tests/domain/flat-imagegen.test.js`、`tests/application/generate-slots.test.js`、`tests/domain/nai.test.js`、`tests/domain/img2img.test.js`、`tests/adapters/gateway.test.js` 覆盖旧 API、两条写词入口、新旁路与定稿 generate/img2img/infill。离线 fixture 不证明真实模型身份一致性、服务端开关行为、业务采用或全部存储回读。
 
+### 命名衣装与内置一致性覆盖
+
+- 衣装、作用域和预设的既有用例覆盖唯一新默认、原装映射、旧档保留、角色卡归属及保存失败；不从旧服装字段推断新默认。
+- `auto-illustration.test.js` 的内置一致性、衣装预检、目标衣装契约和完整参考几何用例验证确认前零请求、来源失效、取消／迟到拒收、原快照保留及统一几何 plan。
+- `cg-records-backup.test.js` 使用真实 IndexedDB Adapter 接口和已有事务替身，覆盖新旧轮次经文件备份、清缓存恢复的往返，以及坏来源拒收和私有租约剔除；不代表浏览器或酒馆实机事务验收。
+- `preset-generated-library.test.js`、`asset-generation.test.js` 覆盖全库衣柜、候选和 CG 引用保留，读取失败拒删及删除边界的迟到引用复核。跨设置、CG 库与酒馆文件不承诺原子性。
+- 本轮执行范围仅内置链路，DBG 不纳入修改或验收。实际计数、历史失败、产物边界和真实视觉验收表见 [命名衣装与内置一致性重绘](IGS_WARDROBE_CONSISTENCY.md)。
+
 ## 命令约定
 
 后续接入真实构建后，优先使用：

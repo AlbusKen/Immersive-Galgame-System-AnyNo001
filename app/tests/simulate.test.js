@@ -374,19 +374,163 @@ test('gate:simulation:image-resource-cache-loads-on-demand-and-deduplicates-url'
     });
 
     assert.equal(fetchCount, 0);
+    assert.equal(cache.inspect('https://example.com/scene.png').status, 'unverified');
     assert.equal(cache.get('https://example.com/scene.png'), '');
     const first = cache.load('https://example.com/scene.png');
     const second = cache.load('https://example.com/scene.png');
     assert.equal(first, second);
+    assert.equal(cache.inspect('https://example.com/scene.png').status, 'loading');
     assert.equal(fetchCount, 1);
     assert.equal(await first, 'blob:scene-cache');
+    assert.equal(cache.inspect('https://example.com/scene.png').status, 'unverified', '没有解码器不伪称已验证');
     assert.equal(await second, 'blob:scene-cache');
     assert.equal(cache.get('https://example.com/scene.png'), 'blob:scene-cache');
     assert.equal(cache.size(), 1);
     cache.clear();
     assert.deepEqual(revoked, ['blob:scene-cache']);
     assert.equal(cache.size(), 0);
+    assert.equal(cache.inspect('https://example.com/scene.png').status, 'unverified');
+
+    const pending = [];
+    const decoded = createImageResourceCache({ Image: class {
+        set src(value) { this.source = value; pending.push(this); }
+    } });
+    const url = 'data:image/png;base64,AAAA';
+    const broken = decoded.load(url);
+    assert.equal(decoded.inspect(url).status, 'loading');
+    assert.equal(decoded.load(url), broken);
+    pending.shift().onerror();
+    assert.equal(await broken, url, '保留 load 的字符串返回契约');
+    assert.equal(decoded.inspect(url).status, 'decode-error');
+    assert.equal(decoded.load(url), broken, '失败不触发无限自动重读');
+    decoded.clearFailures();
+    assert.equal(decoded.inspect(url).status, 'unverified');
+    assert.equal(pending.length, 0, '清除失败状态不主动读取');
+    const restored = decoded.load(url);
+    decoded.clearFailures();
+    assert.equal(decoded.load(url), restored, '在途任务不因清除失败项重启');
+    pending.shift().onload();
+    assert.equal(await restored, url);
+    assert.equal(decoded.inspect(url).status, 'available');
+    decoded.clearFailures();
+    assert.equal(decoded.load(url), restored, '已验证资源继续复用');
+    decoded.clear();
+    const late = decoded.load(url);
+    decoded.clear();
+    pending.shift().onload();
+    await late;
+    assert.equal(decoded.size(), 0, '销毁后的迟到完成不重建缓存');
+    assert.equal(decoded.inspect(url).status, 'unverified');
+
+    const unreadable = createImageResourceCache({
+        fetch: async () => { throw new Error('offline'); },
+        URL: { createObjectURL: () => 'blob:unused', revokeObjectURL() {} },
+        Image: class { set src(value) { queueMicrotask(() => this.onerror?.()); } },
+    });
+    await unreadable.load('https://example.com/offline.png');
+    assert.equal(unreadable.inspect('https://example.com/offline.png').status, 'read-error');
+    unreadable.clearFailures();
+    assert.equal(unreadable.inspect('https://example.com/offline.png').status, 'unverified');
+    unreadable.clear();
+
+    const disposedUrls = [];
+    const lateImages = [];
+    const disposable = createImageResourceCache({
+        fetch: async () => ({ ok: true, blob: async () => ({}) }),
+        URL: { createObjectURL: () => 'blob:late', revokeObjectURL: value => disposedUrls.push(value) },
+        Image: class { set src(value) { lateImages.push(this); } },
+    });
+    const loading = disposable.load('https://example.com/late.png');
+    await new Promise(resolve => setImmediate(resolve));
+    disposable.clear();
+    lateImages[0].onload();
+    await loading;
+    assert.deepEqual(disposedUrls, ['blob:late'], '清理中途完成的 Blob 也必须释放');
+    assert.equal(disposable.size(), 0);
 });
+
+test('gate:simulation:reader-outfit-resource-states-refresh-without-error-driven-clothes-change', async () => {
+    const document = createFakeDocument();
+    const assets = { enabled: true, scenes: {}, characters: { Alice: { 默认: 'legacy.png' } },
+        characterOutfits: { Alice: {
+            常服: { moods: { 平和: 'data:image/png;base64,DAILY' } },
+            礼服: { moods: { 平和: 'igs-gen:dress' } },
+        } }, characterDefaultOutfits: { Alice: { version: 1, outfitName: '常服' } } };
+    let status = 'unverified', update, failureClears = 0;
+    const pending = new Map();
+    const dressUrl = 'data:image/png;base64,DRESS';
+    const host = createIgsReaderHost({
+        global: { document, Image: class {
+            set src(value) {
+                if (value === dressUrl) pending.set(value, this);
+                else queueMicrotask(() => this.onload?.());
+            }
+        } },
+        getUnifiedSettings: () => ({ bridge: { sceneAssets: assets }, readerSettings: {} }),
+        generatedAssets: {
+            imageAvailability: () => ({ status }),
+            resolveUrl: () => {
+                if (status === 'unverified') status = 'loading';
+                return status === 'available' ? dressUrl : '';
+            },
+            clearImageReadFailures: () => {
+                failureClears++;
+                if (['missing', 'read-error'].includes(status)) status = 'unverified';
+            },
+        },
+        collectMessageImages: async () => ({ ok: true, slots: [] }),
+        onGeneratedAssetUpdated: listener => { update = listener; return () => { update = null; }; },
+    });
+    const content = () => host.getState().activeReader.snapshot.content;
+    const settle = () => new Promise(resolve => setTimeout(resolve, 150));
+    try {
+        const raw = '[igs-char:Alice|平和|礼服|Hello.]';
+        const opened = host.openReader({ messageId: 9, message: { id: 9, text: raw }, raw }, { mode: 'pc' });
+        assert.equal(opened.ok, true);
+        assert.equal(content().spriteMatch.requestedOutfit, '礼服');
+        assert.equal(content().spriteMatch.reason, 'outfit-image-pending');
+        assert.equal(content().spriteImage, null);
+        status = 'read-error';
+        update({ reason: 'image-read-error', imageId: 'dress' });
+        assert.equal(content().spriteMatch.reason, 'outfit-image-read-error');
+        assert.equal(content().spriteImage, null);
+        status = 'available';
+        update({ reason: 'image-loaded', imageId: 'dress' });
+        await settle();
+        assert.equal(content().spriteMatch.reason, 'outfit-image-pending');
+        assert.ok(pending.has(dressUrl));
+        pending.get(dressUrl).onerror();
+        await settle();
+        assert.equal(content().spriteMatch.reason, 'outfit-image-decode-error');
+        assert.equal(content().spriteImage, null, '解码失败不能换成常服');
+        status = 'missing';
+        update({ reason: 'image-missing', imageId: 'dress' });
+        await settle();
+        assert.equal(content().spriteOutfit, '常服');
+        assert.equal(content().spriteMatch.requestedOutfit, '礼服');
+        assert.equal(content().spriteMatch.fallbackReason, 'outfit-image-missing');
+        assert.equal(content().spriteMatch.selectionSource, 'default-fallback');
+        assert.equal(content().spriteImage, 'data:image/png;base64,DAILY');
+        assert.equal(content().displayText, 'Hello.');
+        assert.equal(failureClears, 0, '普通重绘不自动清除失败状态');
+        assert.equal((await opened.controller.invokeAction('rescan')).ok, true);
+        assert.equal(failureClears, 1);
+        assert.equal(content().spriteMatch.reason, 'outfit-image-pending');
+        assert.equal(content().spriteImage, null, '重试中不能继续把常服当成要求衣装');
+        status = 'available';
+        update({ reason: 'image-loaded', imageId: 'dress' });
+        await settle();
+        assert.equal(content().spriteMatch.reason, 'outfit-image-pending');
+        pending.get(dressUrl).onload();
+        await settle();
+        assert.equal(content().spriteMatch.reason, '');
+        assert.equal(content().spriteOutfit, '礼服');
+        assert.equal(content().spriteImage, dressUrl);
+        assert.equal(content().spriteMatch.selectionSource, 'requested');
+        assert.equal(content().displayText, 'Hello.');
+    } finally { host.destroy(); }
+});
+
 
 test('gate:simulation:igs-open-latest-and-open-message-use-compat-api', async () => {
     const latestMessage = readJson('fixtures/tavern/standard-message.json');
@@ -635,6 +779,7 @@ test('gate:simulation:scene-assets-injects-prompt-and-renders-single-configured-
                         '平静': 'https://example.com/kaito.png',
                     },
                 },
+                ...defaultOutfitFixture({ 小林海斗: { 平静: 'https://example.com/kaito.png' } }),
             },
         }),
     });
@@ -846,6 +991,7 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
                 assets.wardrobe.shared = { prompt: mode === 'shared-wardrobe-changed' ? 'wears a blue coat' : description };
                 assets.cards['card:current'].characterOutfits.Alice = {
                     日常: { words: [], moods: {}, default: true, wardrobe: 'shared' } };
+                assets.cards['card:current'].characterDefaultOutfits = { Alice: { version: 1, outfitName: '日常' } };
             }
             if (mode === 'borrowed') {
                 assets.characters = {}; assets.characterAliases = {};
@@ -909,18 +1055,21 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
                     assert.equal(savedRecord.status, 'library');
                     assert.equal(reads, 1);
                     const adopted = settings.bridge.sceneAssets.cards['card:current'];
-                    assert.equal(adopted.characters.Alice.默认, `igs-gen:${record.imageId}`);
+                    assert.equal(adopted.characters.Alice.默认, 'old.png');
                     assert.deepEqual(adopted.characterDna.Alice.views, record.dnaCandidates.characters[0].views);
                     assert.equal(adopted.characterDna.Alice.identitySource, record.imageId);
+                    const clothing = record.outfitSnapshot.characters[0];
+                    assert.deepEqual(adopted.characterDefaultOutfits.Alice, { version: 1, outfitName: clothing.name });
+                    const entry = adopted.characterOutfits.Alice[clothing.name];
+                    assert.equal(entry.moods.平和, `igs-gen:${record.imageId}`);
                     if (shared) {
                         assert.deepEqual(adopted.wardrobe, {}, '共享衣柜只读，不复制到当前卡');
-                        assert.deepEqual(adopted.characterOutfits, original.cards['card:current'].characterOutfits);
+                        assert.equal(entry.wardrobe, 'shared');
                         assert.deepEqual(settings.bridge.sceneAssets.wardrobe, original.wardrobe);
                     } else {
-                        assert.deepEqual(adopted.wardrobe, original.cards['card:current'].wardrobe);
-                        assert.deepEqual(adopted.characterOutfits, original.cards['card:current'].characterOutfits);
+                        assert.equal(adopted.wardrobe[entry.wardrobe].prompt, clothing.description);
                     }
-                    assert.equal(adopted.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
+                    assert.equal(adopted.characterDna.Alice.defaultAppearance || '', '');
                     assert.deepEqual(settings.bridge.sceneAssets.characterDna, original.characterDna);
                     if (mode === 'edit') {
                         const active = host.getState().activeSettings;
@@ -934,7 +1083,8 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
                     assert.equal(savedRecord.status, 'review');
                     assert.equal(service.getRecord(record.key).status, 'review');
                     if (mode === 'rollback-failed') {
-                        assert.equal(settings.bridge.sceneAssets.cards['card:current'].characters.Alice.默认,
+                        const pending = settings.bridge.sceneAssets.cards['card:current'];
+                        assert.equal(pending.characterOutfits.Alice[record.outfitSnapshot.characters[0].name].moods.平和,
                             `igs-gen:${record.imageId}`, '恢复保存失败后不虚报持久设置已还原');
                     } else assert.equal(settings.bridge.sceneAssets.cards['card:current'].characters?.Alice?.默认,
                         original.cards['card:current'].characters?.Alice?.默认);
@@ -1071,6 +1221,7 @@ test('gate:simulation:html-card-page-hides-inherited-sprite-and-restores-it-afte
                     enabled: true,
                     scenes: { Room: { url: 'https://example.com/room.png', times: {} } },
                     characters: { Alice: { calm: 'https://example.com/alice.png' } },
+                    ...defaultOutfitFixture({ Alice: { calm: 'https://example.com/alice.png' } }),
                     moodGroups: [],
                 },
             },
@@ -1508,6 +1659,7 @@ test('gate:simulation:nsfw-scene-keeps-sprite-when-hide-toggle-off', async () =>
                 promptRule: '规则',
                 scenes: { Room: { url: 'https://example.com/room.png', times: {} } },
                 characters: { Alice: { calm: 'https://example.com/alice.png' } },
+                ...defaultOutfitFixture({ Alice: { calm: 'https://example.com/alice.png' } }),
                 characterAliases: { Alice: [] },
                 moodGroups: [],
             },
@@ -1563,6 +1715,7 @@ test('gate:simulation:page-turn-skips-unchanged-root-class-and-background-writes
                     enabled: true,
                     scenes: { Room: { url: 'https://example.com/room.png', times: {} } },
                     characters: { Alice: { calm: 'https://example.com/alice.png' } },
+                    ...defaultOutfitFixture({ Alice: { calm: 'https://example.com/alice.png' } }),
                     characterAliases: { Alice: [] },
                     moodGroups: [],
                 },
@@ -1725,12 +1878,13 @@ test('gate:simulation:scene-and-character-aliases-reuse-original-assets-and-layo
                 promptRule: '规则',
                 scenes: { '旧城': { url: 'https://example.com/old-city.png', words: ['古城'], times: {} } },
                 characters: { '爱丽丝': { '平和': 'https://example.com/alice.png' } },
+                ...defaultOutfitFixture({ 爱丽丝: { 平和: 'https://example.com/alice.png' } }),
                 characterAliases: { '爱丽丝': ['爱丽'] },
             },
         }),
     });
     storage.setItem('igs-reader-settings-v9-default', JSON.stringify({
-        spriteLayouts: { 'pc::爱丽丝::平和': { posX: 14, posY: 78, scale: 126 } },
+        spriteLayouts: { 'pc::爱丽丝|常服::平和': { posX: 14, posY: 78, scale: 126 } },
     }));
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const vn = bootstrapIGS({
@@ -1758,7 +1912,7 @@ test('gate:simulation:scene-and-character-aliases-reuse-original-assets-and-layo
     assert.equal(snapshot.content.spriteImage, 'https://example.com/alice.png');
     assert.equal(snapshot.content.speaker, '爱丽');
     assert.equal(snapshot.content.spriteCharacter, '爱丽丝');
-    assert.equal(snapshot.content.spriteMatch.character, '爱丽');
+    assert.equal(snapshot.content.spriteMatch.character, '爱丽丝');
     assert.notEqual(snapshot.content.spriteMatch.source, 'none');
     assert.notEqual(snapshot.content.backgroundMatch.source, 'none');
     const sprite = document.getElementById('igs-overlay').querySelector('#igs-sprite');
@@ -1780,6 +1934,8 @@ test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-n
                     Alice: { calm: 'https://example.com/alice.png' },
                     Bob: { angry: 'https://example.com/bob.png' },
                 },
+                ...defaultOutfitFixture({ Alice: { calm: 'https://example.com/alice.png' },
+                    Bob: { angry: 'https://example.com/bob.png' } }),
             },
         }),
     });
@@ -1852,6 +2008,8 @@ test('gate:simulation:embedded-mobile-narration-keeps-current-sprite-dimmed', as
                     Alice: { calm: 'https://example.com/alice.png' },
                     Bob: { angry: 'https://example.com/bob.png' },
                 },
+                ...defaultOutfitFixture({ Alice: { calm: 'https://example.com/alice.png' },
+                    Bob: { angry: 'https://example.com/bob.png' } }),
             },
         }),
     });
@@ -1920,6 +2078,8 @@ test('gate:simulation:scene-assets-sprite-follows-bubble-speaker-across-mixed-se
                     '小林海斗': { '喜悦': 'https://example.com/joy.png', '默认': 'https://example.com/default.png' },
                     '望月': { '默认': 'https://example.com/mochi.png' },
                 },
+                ...defaultOutfitFixture({ 小林海斗: { 喜悦: 'https://example.com/joy.png', 平和: 'https://example.com/default.png' },
+                    望月: { 平和: 'https://example.com/mochi.png' } }),
             },
         }),
     });
@@ -1970,11 +2130,23 @@ test('gate:simulation:scene-assets-sprite-follows-bubble-speaker-across-mixed-se
     vn.destroy();
 });
 
+// 仅在明确需要人物图的测试中播种命名默认；不改变产品的无默认行为。
+function defaultOutfitFixture(moodsByCharacter) {
+    return {
+        characterOutfits: Object.fromEntries(Object.entries(moodsByCharacter)
+            .map(([name, moods]) => [name, { 常服: { moods: Object.fromEntries(Object.entries(moods)
+                .map(([slot, url]) => [slot === '默认' ? '平和' : slot, url])) } }])),
+        characterDefaultOutfits: Object.fromEntries(Object.keys(moodsByCharacter)
+            .map(name => [name, { version: 1, outfitName: '常服' }])),
+    };
+}
+
 async function openStageCastReader({ mode = 'pc', stageCast = true, characters, lines, readerSettings = {}, spriteEnhance, sceneAssetsEnabled = true }) {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const storage = createMemoryStorage({
         igs_bridge_config: JSON.stringify({
-            sceneAssets: { enabled: sceneAssetsEnabled, promptRule: '规则', scenes: {}, characters, ...(spriteEnhance ? { spriteEnhance } : {}) },
+            sceneAssets: { enabled: sceneAssetsEnabled, promptRule: '规则', scenes: {}, characters,
+                ...defaultOutfitFixture(characters), ...(spriteEnhance ? { spriteEnhance } : {}) },
         }),
     });
     storage.setItem('igs-reader-settings-v9-default', JSON.stringify({ stageCast: { enabled: stageCast }, ...readerSettings }));
@@ -4158,14 +4330,15 @@ test('gate:simulation:sprite-layout-save-survives-mode-mismatch', async () => {
                 characters: {
                     Hero: { calm: 'https://example.com/hero-calm.png' },
                 },
+                ...defaultOutfitFixture({ Hero: { calm: 'https://example.com/hero-calm.png' } }),
             },
         }),
     });
     storage.setItem('igs-reader-settings-v9-default', JSON.stringify({
         _v: '0.5.2',
         spriteLayouts: {
-            'mobile::Hero::calm': { posX: 12, posY: 34, scale: 156 },
-            'pc::Hero::calm': { posX: 78, posY: 90, scale: 111 },
+            'mobile::Hero|常服::calm': { posX: 12, posY: 34, scale: 156 },
+            'pc::Hero|常服::calm': { posX: 78, posY: 90, scale: 111 },
         },
     }));
     const vn = bootstrapIGS({
@@ -4214,6 +4387,7 @@ test('gate:simulation:sprite-height-follows-gender-character-setting-and-manual-
                 promptRule: 'rule',
                 scenes: {},
                 characters: { Alice: { calm: 'https://example.com/alice-calm.png' } },
+                ...defaultOutfitFixture({ Alice: { calm: 'https://example.com/alice-calm.png' } }),
                 characterDna: { Alice: { identity: '1girl, silver hair' } },
             },
         }),
@@ -4245,7 +4419,7 @@ test('gate:simulation:sprite-height-follows-gender-character-setting-and-manual-
 
     // 「调整立绘」存下的位置仍然优先。
     const manual = (await opened.reader.controller.invokeAction('settings')).controller;
-    manual.setValue('readerSettings.spriteLayouts', { 'pc::Alice::calm': { posX: 50, posY: 100, scale: 140 } });
+    manual.setValue('readerSettings.spriteLayouts', { 'pc::Alice|常服::calm': { posX: 50, posY: 100, scale: 140 } });
     manual.close();
     assert.equal(spriteSize(), 'auto 140%');
 
@@ -9209,7 +9383,8 @@ test('gate:simulation:system-role-lines-use-own-style-and-hide-speaker-and-sprit
             typeAndSend: async () => ({ ok: true }),
         },
         config: {
-            sceneAssets: { enabled: true, scenes: {}, characters: { Alice: { 平和: 'https://example.com/alice.png' } }, characterAliases: {}, moodGroups: [] },
+            sceneAssets: { enabled: true, scenes: {}, characters: { Alice: { 平和: 'https://example.com/alice.png' } },
+                ...defaultOutfitFixture({ Alice: { 平和: 'https://example.com/alice.png' } }), characterAliases: {}, moodGroups: [] },
         },
     });
     try {
@@ -9779,10 +9954,12 @@ function outfitBridgeConfig(extra = {}) {
             characterAliases: { 小林海斗: ['小林'] },
             characterOutfits: {
                 小林海斗: {
+                    日常: { moods: { 喜悦: 'https://example.com/daily-joy.png' } },
                     校服: { words: ['制服'], moods: { 喜悦: 'https://example.com/school-joy.png' } },
                     泳装: { words: ['比基尼'], moods: { 喜悦: 'https://example.com/swim-joy.png' } },
                 },
             },
+            characterDefaultOutfits: { 小林海斗: { version: 1, outfitName: '日常' } },
             ...extra,
         },
     });
@@ -9835,7 +10012,7 @@ test('gate:simulation:outfit-paging-inherits-switches-resets-and-isolates-layout
             assert.equal(sprite().style.backgroundPosition, position, c.displayText);
             assert.deepEqual(resolveSpriteHead(heads(), c.spriteCharacter, c.spriteMood, c.spriteOutfit), head, c.displayText);
         };
-        const base = ['https://example.com/base-joy.png', '', '11% 71%', { x: 0.1, top: 0.1, w: 0.2 }];
+        const base = ['https://example.com/daily-joy.png', '日常', '22% 72%', { x: 0.2, top: 0.2, w: 0.2 }];
         // 服装未单独调过位置 / 标定时沿用角色整体值，不借用原有立绘的单表情值。
         const school = ['https://example.com/school-joy.png', '校服', '22% 72%', { x: 0.2, top: 0.2, w: 0.2 }];
         const swim = ['https://example.com/swim-joy.png', '泳装', '33% 73%', { x: 0.3, top: 0.3, w: 0.2 }];
@@ -9859,7 +10036,7 @@ test('gate:simulation:outfit-paging-inherits-switches-resets-and-isolates-layout
         expectPage('dialogue', ...swim);
         await controller.invokeAction('next');
         expectPage('dialogue', ...base);
-        // 未登记的服装栏：丢掉该栏，照常按表情显示原装立绘，并记入待确认服装词。
+        // 未登记要求仍保留在诊断中，显示显式默认衣装，并记入待确认服装词。
         await controller.invokeAction('next');
         expectPage('dialogue', ...base);
         assert.equal(content().displayText, '这句是对白。');
@@ -9896,21 +10073,21 @@ test('gate:simulation:outfit-inherits-across-ai-floors-within-window', async () 
     } finally {
         near.destroy();
     }
-    // 服装栏落在 3 个 AI 楼层窗口之外时不再继承，回到原有立绘。
+    // 服装栏落在 3 个 AI 楼层窗口之外时不再继承，回到显式默认衣装。
     messages.splice(1, 1, { id: 2, text: '平静的一楼。' });
     messages.splice(2, 0, { id: 3.5, text: '又一楼。' });
     messages.unshift({ id: 0, text: '[igs-char:小林海斗|喜悦|泳装|更早。]' });
     const far = bootstrapIGS({ global: { document, localStorage: storage }, autoAttachMagicWand: false, hostAdapter: hostAdapter() });
     try {
         const opened = await far.openLatestAvailable('pc');
-        assert.equal(opened.reader.snapshot.content.spriteOutfit, '');
-        assert.equal(opened.reader.snapshot.content.spriteImage, 'https://example.com/base-joy.png');
+        assert.equal(opened.reader.snapshot.content.spriteOutfit, '日常');
+        assert.equal(opened.reader.snapshot.content.spriteImage, 'https://example.com/daily-joy.png');
     } finally {
         far.destroy();
     }
 });
 
-test('gate:simulation:outfit-falls-back-to-role-table-equipment-and-dna', async () => {
+test('gate:simulation:outfit-uses-role-equipment-then-explicit-default-not-legacy-dna', async () => {
     const run = async (sheets, dna) => {
         const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
         const storage = createMemoryStorage({ igs_bridge_config: outfitBridgeConfig(dna ? { characterDna: { 小林海斗: { defaultAppearance: dna } } } : {}) });
@@ -9934,13 +10111,13 @@ test('gate:simulation:outfit-falls-back-to-role-table-equipment-and-dna', async 
     const worn = (status) => ({ uid: 'sheet_item', name: '装备表', orderNo: 2, content: [['物品名称', '持有者', '状态'], ['比基尼', '小林', status]] });
     assert.deepEqual(await run([role, worn('已穿戴')], '睡衣'), ['校服', 'https://example.com/school-joy.png']);
     assert.deepEqual(await run([worn('已穿戴')], '制服'), ['泳装', 'https://example.com/swim-joy.png']);
-    assert.deepEqual(await run([worn('已收纳')], '制服'), ['校服', 'https://example.com/school-joy.png']);
-    assert.deepEqual(await run(null, '比基尼'), ['泳装', 'https://example.com/swim-joy.png']);
-    assert.deepEqual(await run(null, ''), ['', 'https://example.com/base-joy.png']);
+    assert.deepEqual(await run([worn('已收纳')], '制服'), ['日常', 'https://example.com/daily-joy.png']);
+    assert.deepEqual(await run(null, '比基尼'), ['日常', 'https://example.com/daily-joy.png']);
+    assert.deepEqual(await run(null, ''), ['日常', 'https://example.com/daily-joy.png']);
 });
 
 test('gate:simulation:outfit-settings-add-slot-url-persist-reopen-and-custom-rule-hint', async () => {
-    const storage = createMemoryStorage({ igs_bridge_config: outfitBridgeConfig({ characterOutfits: {} }) });
+    const storage = createMemoryStorage({ igs_bridge_config: outfitBridgeConfig({ characterOutfits: {}, characterDefaultOutfits: {} }) });
     const document = createFakeDocument();
     const answers = [];
     const vn = bootstrapIGS({
@@ -9955,10 +10132,12 @@ test('gate:simulation:outfit-settings-add-slot-url-persist-reopen-and-custom-rul
     const o = encodeURIComponent('泳装');
     try {
         const opened = await vn.openLatestAvailable('pc');
-        // 未登记的服装栏：丢掉该栏，照常显示对白与原有立绘，并记入待确认服装词。
+        // 未登记要求且未选默认时不偷用旧图槽；对白与待确认服装词保持不变。
         assert.equal(opened.reader.snapshot.content.textType, 'dialogue');
         assert.equal(opened.reader.snapshot.content.displayText, '看我的新衣服。');
-        assert.equal(opened.reader.snapshot.content.spriteImage, 'https://example.com/base-joy.png');
+        assert.equal(opened.reader.snapshot.content.spriteImage, null);
+        assert.equal(opened.reader.snapshot.content.spriteMatch.requestedOutfit, '泳装');
+        assert.equal(opened.reader.snapshot.content.spriteMatch.reason, 'default-outfit-unset');
         assert.deepEqual(JSON.parse(storage.getItem('igs:outfit-review:v1')).items, [{ character: '小林海斗', word: '泳装' }]);
         const respond = (kind) => (kind === 'confirm' ? true : answers.shift() || '');
         let settings = withSettingsDialogs(document, opened.reader.controller.openSettings('scene').controller, respond);
@@ -9975,7 +10154,7 @@ test('gate:simulation:outfit-settings-add-slot-url-persist-reopen-and-custom-rul
         assert.match(settings.switchSceneSubTab('review').snapshot.html, /class="igs-review-card is-empty" data-review-card="outfit"/);
         html = settings.switchSceneSubTab('characters').snapshot.html;
         assert.match(html, /data-outfit-panel="泳装"/, 'created outfit opens as the active tab');
-        assert.match(html, /data-outfit-fallback="喜悦">.*?回落原装「默认」/);
+        assert.match(html, /data-outfit-fallback="喜悦">.*?无图可显示/);
         answers.push('比基尼');
 
         await settings.invoke(`scene-add-outfit-word:${c}:${o}`);
@@ -10059,8 +10238,8 @@ test('gate:simulation:outfit-scene-bound-expires-after-scene-change', async () =
         assert.equal(content().spriteImage, 'https://example.com/swim-joy.png');
         await opened.reader.controller.invokeAction('next');
         assert.equal(content().displayText, '回到学校了。');
-        assert.equal(content().spriteOutfit, '');
-        assert.equal(content().spriteImage, 'https://example.com/base-joy.png');
+        assert.equal(content().spriteOutfit, '日常');
+        assert.equal(content().spriteImage, 'https://example.com/daily-joy.png');
     } finally {
         vn.destroy();
     }

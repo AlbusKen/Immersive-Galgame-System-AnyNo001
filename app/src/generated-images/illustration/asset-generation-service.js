@@ -7,7 +7,7 @@ import { requestWithSoftRetry } from './prompt-kit.js';
 import { normalizeAutoIllustrationSettings, isStrictBackgroundMatch, DEFAULT_LLM_PROMPTS } from './auto-illustration-settings.js';
 import { cgSizeForMode } from './auto-illustration-service.js';
 import { supportsNaiTransparentBackground } from '../request-builders/nai-v4-builder.js';
-import { collectAssetNeeds, tempAssetKeyOf, GENERATED_ASSET_URL_PREFIX, generatedAssetIdOf, isGeneratedAssetUrl } from '../../scene/asset-match.js';
+import { collectAssetNeeds, collectGeneratedImageIds, tempAssetKeyOf, GENERATED_ASSET_URL_PREFIX, generatedAssetIdOf, isGeneratedAssetUrl } from '../../scene/asset-match.js';
 import { floorKeyOf } from '../../media/illustration-store.js';
 import { GENERATED_IMAGE_SCHEMA_VERSION, isLegacyGeneratedImage, isQuotaError, normalizeGeneratedImageRecord } from '../../media/generated-asset-store.js';
 import { buildCharacterAvatarDescription, buildCharacterSpriteDescription, buildDbgenAssetDescription, buildDbgenBackgroundBatchDescription, buildDbgenSpriteBatchDescription, buildExpressionDiffDescription, buildWardrobeClothingDescription, nsfwClothingBoostLine, applyLookToCaption, applyMoodToCaption, expressionLookTags, expressionPaintDna, expressionSpritePrompts, splitExpressionWriteBatches, splitWriteBatches, uprightSpriteCaption } from '../dbgen-prompt.js';
@@ -76,6 +76,7 @@ export function createAssetGenerationService(deps) {
     const imageUsedAt = new Map();
     const clock = deps.clock || (() => Date.now());
     const pendingImages = new Set();
+    const imageReadStates = new Map();
     // 设置页缩略图用 blob: 短地址：dataUrl 直接拼进 HTML 时一页几十 MB，重绘、开菜单都卡；
     // 短地址浏览器按地址缓存已解码的图，重绘不重载、不闪。
     const urlApi = deps.urlApi || globalThis.URL;
@@ -157,6 +158,7 @@ export function createAssetGenerationService(deps) {
     }
 
     function rememberImage(id, dataUrl) {
+        imageReadStates.delete(id);
         touchImage(id, dataUrl);
         const cutoff = clock() - IMAGE_IN_USE_MS;
         // Map 按取用先后排序，最旧的都还在用就说明整页都在用，停止淘汰。
@@ -221,16 +223,43 @@ export function createAssetGenerationService(deps) {
             touchImage(id, hit);
             return hit;
         }
-        if (!pendingImages.has(id)) {
+        if (!pendingImages.has(id) && !imageReadStates.has(id)) {
             pendingImages.add(id);
             store.getImage(id).then((record) => {
                 if (record && record.dataUrl) {
                     rememberImage(id, record.dataUrl);
                     emit({ imageId: id, reason: 'image-loaded' });
+                } else {
+                    noteImageReadFailure(id, 'missing');
                 }
-            }).catch(() => {}).finally(() => pendingImages.delete(id));
+            }).catch(() => noteImageReadFailure(id, 'read-error')).finally(() => pendingImages.delete(id));
         }
         return '';
+    }
+
+    function noteImageReadFailure(id, status) {
+        imageReadStates.set(id, status);
+        while (imageReadStates.size > 256) imageReadStates.delete(imageReadStates.keys().next().value);
+        emit({ imageId: id, reason: status === 'missing' ? 'image-missing' : 'image-read-error' });
+    }
+
+    // 同步状态不以缓存未命中冒充图片丢失；显式重试可重新读取失败资源。
+    function imageAvailability(url) {
+        if (!isGeneratedAssetUrl(url)) return { status: 'unverified' };
+        const id = generatedAssetIdOf(url);
+        if (images.has(id)) return { status: 'available' };
+        if (imageReadStates.has(id)) return { status: imageReadStates.get(id) };
+        return { status: pendingImages.has(id) ? 'loading' : 'unverified' };
+    }
+
+    function retryImageRead(url) {
+        imageReadStates.delete(generatedAssetIdOf(url));
+        return resolveUrl(url);
+    }
+
+    // 显式重新加载只释放失败记录，当前页面随后按需读取，不批量预读旧资源。
+    function clearImageReadFailures() {
+        imageReadStates.clear();
     }
 
     function dataUrlToBlob(dataUrl) {
@@ -878,9 +907,9 @@ export function createAssetGenerationService(deps) {
         }
         const next = { ...record, status, updatedAt: now() };
         if (status === 'discarded' && record.imageId) {
-            await store.deleteImage(record.imageId);
-            forgetImage(record.imageId);
-            next.imageId = '';
+            const deleted = await deleteImagesImpl([record.imageId]);
+            if (!deleted.ok) return deleted;
+            if (!deleted.retainedIds?.includes(record.imageId)) next.imageId = '';
         }
         await store.putAsset(next);
         // 存储失败不得把临时素材标为已采用；迟到回执也不能改新会话缓存。
@@ -912,15 +941,47 @@ export function createAssetGenerationService(deps) {
     }
 
     async function deleteImagesImpl(ids) {
+        const wanted = [...new Set(ids || [])].filter(Boolean);
+        if (!wanted.length) return { ok: true };
+        // 整批预检后，每张实际删除前再次读取；文件适配器将复核下沉至异步读图之后。
+        const readHeld = async () => {
+            const held = new Set();
+            if (deps.readProtectedImageIds) {
+                const extra = await deps.readProtectedImageIds();
+                if (!Array.isArray(extra)) throw new Error('image-reference-unavailable');
+                for (const id of extra) held.add(id);
+            }
+            for (const id of collectGeneratedImageIds(readSettings().sceneAssets)) held.add(id);
+            return held;
+        };
+        let held;
+        try { held = await readHeld();
+        } catch { return { ok: false, reason: 'image-reference-unavailable' }; }
         let failed = false;
-        for (const id of ids || []) {
+        const retainedIds = [];
+        for (const id of wanted) {
+            let referenceFailed = false;
+            const beforeDelete = async () => {
+                try { return !(await readHeld()).has(id); }
+                catch { referenceFailed = true; throw new Error('image-reference-unavailable'); }
+            };
             try {
-                await store.deleteImage(id);
+                if (held.has(id) || !(await beforeDelete())) {
+                    retainedIds.push(id);
+                    continue;
+                }
+                const result = await store.deleteImage(id, { beforeDelete });
+                if (result?.retained) { retainedIds.push(id); continue; }
                 forgetImage(id);
+                imageReadStates.delete(id);
                 invalidateThumb(id);
-            } catch (error) { failed = true; }
+            } catch {
+                if (referenceFailed) return { ok: false, reason: 'image-reference-unavailable' };
+                failed = true;
+            }
         }
-        return failed ? { ok: false, reason: 'image-delete-failed' } : { ok: true };
+        return failed ? { ok: false, reason: 'image-delete-failed' }
+            : { ok: true, ...(retainedIds.length && { retainedIds }) };
     }
 
     // 下载用：取 IGS 实际存储的图片 dataUrl（立绘为裁边后的版本），找不到返回空串。
@@ -1281,9 +1342,12 @@ export function createAssetGenerationService(deps) {
     }
 
     // 状态栏头像：Q 版大头，方图、不抠图，直接把图交回去，由设置页缩小后存进头像。
-    async function generateCharacterAvatar({ name, dna, onProgress, signal } = {}) {
+    async function generateCharacterAvatar({ name, dna, onProgress, signal, shouldStart } = {}) {
         const who = String(name || '').trim();
         if (!who) return { ok: false, error: '没有角色' };
+        const stopped = () => Boolean(signal?.aborted) || (typeof shouldStart === 'function' && shouldStart() !== true);
+        const stale = () => ({ ok: false, reason: 'stale-target', stopGeneration: true, error: '角色、衣装或作用域已变化，已停止' });
+        if (stopped()) return stale();
         if (!nai || typeof writePrompt !== 'function' || typeof generateCaption !== 'function') {
             return { ok: false, error: '当前图像来源不能生成头像' };
         }
@@ -1301,8 +1365,9 @@ export function createAssetGenerationService(deps) {
                     description: buildCharacterAvatarDescription(who, dna, { template: true }),
                     userPrompts: { positive: AVATAR_POSITIVE, negative: AVATAR_NEGATIVE },
                     writingRequirements: { size: AVATAR_SIZE, framing: 'portrait' },
-                    ...(signal && { signal }) });
+                    ...(signal && { signal }), ...(shouldStart && { shouldStart }) });
             } catch (error) { return { ok: false, error: error.message || '写提示词失败' }; }
+            if (stopped()) return stale();
             if (!written?.ok) return written || { ok: false, error: '写提示词失败' };
             const entry = written.captions?.find((c) => c.slotId === 1) || (!written.captions && written);
             if (!entry?.promptRecipe) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '头像写词缺少动态模板' };
@@ -1312,8 +1377,9 @@ export function createAssetGenerationService(deps) {
             try {
                 painted = await generateCaption({ ...characterTemplateInput(entry, task.promptTask, task.characterContext),
                     size: AVATAR_SIZE, imageKind: 'sprite', promptKind: 'avatar',
-                    replaceCharacterKeywords: false, ...(signal && { signal }) });
+                    replaceCharacterKeywords: false, ...(signal && { signal }), ...(shouldStart && { shouldStart }) });
             } catch (error) { return { ok: false, error: error.message || '出图失败' }; }
+            if (stopped()) return stale();
             if (!painted?.ok || !painted.dataUrl) return painted || { ok: false, error: '出图失败' };
             return { ok: true, dataUrl: painted.dataUrl,
                 prompt: storedPromptFromResult(painted), ...promptProvenance(painted) };
@@ -1347,9 +1413,12 @@ export function createAssetGenerationService(deps) {
 
     // 设置页主动出一张默认立绘：先让 LLM 写提示词，再出图，不经过楼内补图。
     // 旧图重画仅在可直接组合或逐图手改时复用 caption；需要转译则按当前 DNA 写词。
-    async function generateCharacterSprite({ name, dna, nude = false, note = '', caption, exact = false, onProgress, characterMeta, promptRecipe, history, signal } = {}) {
+    async function generateCharacterSprite({ name, dna, nude = false, note = '', caption, exact = false, onProgress, characterMeta, promptRecipe, history, signal, shouldStart } = {}) {
         const who = String(name || '').trim();
         if (!who) return { ok: false, error: '没有角色' };
+        const stopped = () => Boolean(signal?.aborted) || (typeof shouldStart === 'function' && shouldStart() !== true);
+        const stale = () => ({ ok: false, reason: 'stale-target', stopGeneration: true, error: '角色、衣装或作用域已变化，已停止' });
+        if (stopped()) return stale();
         if (usesCharacterTemplates(nai) && (!caption || promptRecipe || exact)) {
             const context = singleCharacterContext(who, dna, nude ? { nude: true } : undefined, readSettings().sceneAssets);
             const meta = expressionPaintMeta({ template: true });
@@ -1369,8 +1438,9 @@ export function createAssetGenerationService(deps) {
                         description: buildCharacterSpriteDescription(who, dna, { template: true, nude, note }),
                         userPrompts: meta.userPrompts,
                         writingRequirements: { size: meta.size, transparent: meta.transparent, framing: 'half_body' },
-                        ...(signal && { signal }) });
+                        ...(signal && { signal }), ...(shouldStart && { shouldStart }) });
                 } catch (error) { return { ok: false, error: error.message || '写提示词失败' }; }
+                if (stopped()) return stale();
                 if (!written?.ok) return written || { ok: false, error: '写提示词失败' };
                 const entry = written.captions?.find((c) => c.slotId === 1) || (!written.captions && written);
                 if (!entry?.promptRecipe) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '立绘写词缺少动态模板' };
@@ -1379,7 +1449,7 @@ export function createAssetGenerationService(deps) {
             }
             reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '默认' });
             const painted = await paintExpressionCaption(who, '默认', input.caption, dna,
-                { templateInput: input, paintMeta: meta, exact, history, characterMeta, seed: randomSeed(), signal });
+                { templateInput: input, paintMeta: meta, exact, history, characterMeta, seed: randomSeed(), signal, shouldStart });
             return painted;
         }
         const paintDna = nude ? expressionPaintDna(dna, { nude: true }) : dna;
@@ -1548,7 +1618,7 @@ export function createAssetGenerationService(deps) {
     return {
         processMessage, resolveUrl, resolveThumbUrl, thumbSourceId, tempBackground, tempSceneTime, tempSprite, listReview, listTemp, setStatus, deleteImages, getImageDataUrl, getImagePrompt, saveImagePrompt, readStoredImage, writeStoredImage, importAssetImage,
         generateExpressionSet, generateExpressionImage, paintExpressionCaptions, generateSceneVariants, generateCharacterSprite, generateCharacterAvatar, writeWardrobePrompt, paintWardrobeReference,
-        getEditableImage, saveMatteEdit,
+        getEditableImage, saveMatteEdit, imageAvailability, retryImageRead, clearImageReadFailures,
         getRecord: (key) => currentTempRecords().get(key) || null,
         start() {
             if (offRendered) return;

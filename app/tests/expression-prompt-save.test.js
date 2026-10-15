@@ -374,7 +374,7 @@ test('gate:dna-sprite:当前 DNA 重画与手改定稿采用不复用旧候选',
         const assets = { characters: { Alice: { 默认: `igs-gen:${original.id}` } },
             characterDna: {}, characterAliases: {}, characterOutfits: {}, wardrobe: {} };
         const before = structuredClone(assets);
-        const result = await handleSettingsAction('char-generate-sprite:Alice', {
+        const result = await handleSettingsAction('char-redraw-sprite:Alice', {
             state: { activeSettings: { draft: { bridge: { sceneAssets: assets } }, asyncState: {} } },
             options: { global: { alert() {} }, generatedAssets: h.service },
             persistSettingsDraft: () => ({ ok: true }), rerenderSettings: () => ({ ok: true }),
@@ -449,9 +449,12 @@ test('gate:dna-adoption:三个全新角色空衣装库首次采用，状态失�
             } else assert.equal(result.ok, true, result.error);
             const image = await h.open().readStoredImage(record.imageId);
             const clothing = image.outfitSnapshot.characters[0];
-            assert.equal(assets.characterDna[record.name].defaultAppearance, clothing.description, '成功采用才将默认服装写入 DNA');
-            assert.deepEqual(assets.characterOutfits, {}, '默认服装不新建外部服装页签');
-            assert.deepEqual(assets.wardrobe, {}, '默认服装不登记衣柜');
+            assert.equal(assets.characterDna[record.name].defaultAppearance || '', '');
+            assert.deepEqual(assets.characterDefaultOutfits[record.name], { version: 1, outfitName: clothing.name });
+            const entry = assets.characterOutfits[record.name][clothing.name];
+            assert.equal(entry.moods.平和, `igs-gen:${image.id}`);
+            assert.equal(assets.wardrobe[entry.wardrobe].prompt, clothing.description);
+            assert.equal(assets.characters[record.name].默认, undefined, '新采用不写旧图槽');
             assert.deepEqual(assets.characterDna[record.name].views, image.dnaCandidates.characters[0].views);
             assert.equal(assets.characterDna[record.name].identitySource, image.id);
             assert.equal(h.service.getRecord(record.key).status, 'library');
@@ -461,16 +464,16 @@ test('gate:dna-adoption:三个全新角色空衣装库首次采用，状态失�
         }
         assert.equal(h.writes.length, 1); assert.equal(h.paints.length, 3);
         const name = records[0].name, dna = assets.characterDna[name];
+        const selected = assets.characterDefaultOutfits[name].outfitName;
+        const clothing = assets.wardrobe[assets.characterOutfits[name][selected].wardrobe].prompt;
         const repeated = await h.service.generateExpressionSet({ name, dna, moods: ['喜悦'] });
         assert.equal(repeated.ok, true, repeated.error);
         assert.equal(repeated.items[0].ok, true, repeated.items[0].error);
         const stored = await h.open().readStoredImage(repeated.items[0].imageId);
         assert.equal(stored.outfitSnapshot.characters[0].source, 'saved');
-        assert.equal(stored.outfitSnapshot.characters[0].name, '');
-        assert.equal(stored.outfitSnapshot.characters[0].description, dna.defaultAppearance);
-        assert.equal(h.paints.at(-1).caption.v4_prompt.caption.char_captions[0].char_caption,
-            dna.views.half_body.subject + ' ' + dna.defaultAppearance + ' and smiles.');
-        assert.deepEqual(assets.characterOutfits, {}); assert.deepEqual(assets.wardrobe, {});
+        assert.equal(stored.outfitSnapshot.characters[0].name, selected);
+        assert.equal(stored.outfitSnapshot.characters[0].description, clothing);
+        assert.equal(assets.characterDefaultOutfits[name].outfitName, selected);
     } finally { h.pipeline.imageGen.dispose(); }
 });
 test('gate:dna-expression:缺身份景别形态零请求，批次不混用中途修改的 DNA', async () => {
@@ -520,9 +523,11 @@ test('gate:dna-adoption:候选跨连接回读，采用才登记且身份变化�
         assert.equal(adopted.patch.characterDna.Alice.identitySource, record.id);
         assert.equal(adopted.patch.characterDna.Alice.identityInitialized, true);
         assert.equal(adopted.patch.characterDna.Alice.identity, '', '不从动态词猜旧身份');
-        assert.equal(adopted.patch.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
-        assert.equal(adopted.patch.characterOutfits, undefined);
-        assert.equal(adopted.patch.wardrobe, undefined);
+        assert.equal(adopted.patch.characterDna.Alice.defaultAppearance || '', '');
+        const clothing = record.outfitSnapshot.characters[0];
+        assert.deepEqual(adopted.patch.characterDefaultOutfits.Alice, { version: 1, outfitName: clothing.name });
+        const entry = adopted.patch.characterOutfits.Alice[clothing.name];
+        assert.equal(adopted.patch.wardrobe[entry.wardrobe].prompt, clothing.description);
         for (const profile of [{ identity: 'manual', identityInitialized: true },
             { identity: '', identityInitialized: true }, adopted.patch.characterDna.Alice]) {
             assert.equal(prepareSpriteIdentityAdoption({ characterDna: { Alice: profile } }, 'Alice', record.id, record).reason,
@@ -614,8 +619,8 @@ test('gate:dna-compatibility:旧中文 DNA 同次转换，采用回读保留原�
                     'scene: One adult woman in a half-body composition against a transparent background.',
                     'scene_uc: blurry', 'char: 0.5,0.5 | <<dna:r0>> <<outfit:r0>> and smiles.',
                     'char_uc: <<dna_uc:r0>>', 'meta_kind: 0 | named', 'meta_key: 0 | Alice',
-                    'meta_token: 0 | r0', 'meta_frame: 0 | half_body', 'meta_outfit_name: 0 |',
-                    'meta_outfit_description: 0 |',
+                    'meta_token: 0 | r0', 'meta_frame: 0 | half_body', 'meta_outfit_name: 0 | 常服',
+                    'meta_outfit_description: 0 | wears a white dress',
                     ...Object.entries(views).flatMap(([frame, view]) => [
                         `meta_dna_${frame}: 0 | ${view.subject}`, `meta_dna_uc_${frame}: 0 | extra fingers`,
                     ])].join('\n'), json: null });
@@ -636,16 +641,13 @@ test('gate:dna-compatibility:旧中文 DNA 同次转换，采用回读保留原�
         });
         assert.equal(result.ok, true, result.error);
         assert.equal(h.writes.length, 1); assert.equal(h.pipeline.llmCalls.length, 1); assert.equal(h.paints.length, 1);
+        // DBG 交接保持旧协议；内置写词与采用基线分离由内置链路验证。
         assert.deepEqual(h.writes[0].characterContext[0].dna, legacy);
-        const message = h.pipeline.llmCalls[0].messages.at(-1).content;
-        assert.ok(message.includes(legacy.identity)); assert.ok(message.includes(legacy.triggerWords));
-        assert.match(message, /旧身份仅转换格式/);
-        assert.match(message, /高优先级身份锚点/);
-        assert.match(message, /不以当次半身立绘的裁切删掉尾巴或翅膀/);
-        const image = await h.open().readStoredImage(assets.characters.Alice.默认.slice('igs-gen:'.length));
+        assert.equal(assets.characterDna.Alice.defaultAppearance, legacy.defaultAppearance);
+        assert.equal(assets.characters.Alice.默认, 'old.png');
+        assert.equal(assets.characterDefaultOutfits.Alice.outfitName, '常服');
+        const image = await h.open().readStoredImage(assets.characterOutfits.Alice.常服.moods.平和.slice(8));
         assert.equal(image.dnaSnapshot.characters[0].source, 'candidate');
-        assert.equal(image.prompt.caption.v4_prompt.caption.char_captions[0].char_caption,
-            views.half_body.subject + ' ' + legacy.defaultAppearance + ' and smiles.');
         for (const feature of ['two black horns', 'scaled tail', 'silver hair clip', 'pearl earrings']) {
             assert.ok(image.sentPrompt.caption.v4_prompt.caption.char_captions[0].char_caption.includes(feature), feature);
             assert.ok(assets.characterDna.Alice.views.full_body.subject.includes(feature), feature);
@@ -670,7 +672,7 @@ test('gate:dna-compatibility:无模板历史立绘复用旧协议且不伪造来
         characterOutfits: {}, wardrobe: {} };
     const before = structuredClone(assets);
     try {
-        const result = await handleSettingsAction('char-generate-sprite:Alice', {
+        const result = await handleSettingsAction('char-redraw-sprite:Alice', {
             state: { activeSettings: { draft: { bridge: { sceneAssets: assets } }, asyncState: {} } },
             options: { global: { alert() {} }, generatedAssets: h.service },
             persistSettingsDraft: () => ({ ok: true }), rerenderSettings: () => ({ ok: true }),
@@ -760,7 +762,7 @@ test('gate:outfit-adoption:服装 DNA 先保存，图片权威回读与失败恢
             assert.equal(reused.items[0].ok, true, reused.items[0].error);
             assert.equal(reused.items[0].outfitSnapshot.characters[0].source, 'saved');
             assert.equal(reused.items[0].outfitSnapshot.characters[0].description, 'wears a white dress');
-            assert.equal(h.writes.length, 2);
+            assert.equal(h.writes.length, 1, '已保存衣装的预设表情直接使用既有模板，不重新写词');
         } finally { h.pipeline.imageGen.dispose(); }
     }
 });
@@ -973,3 +975,69 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
         } finally { service.dispose(); h.pipeline.imageGen.dispose(); }
     });
 }
+
+
+test('衣装预检：现存图片只读接口不迁移恢复或写入', async () => {
+    const raw = createIndexedDbGeneratedAssetStore({ indexedDB: createTransactionalIdb() });
+    const f = assetFilesHost();
+    const value = { id: 'readonly', type: 'sprite', revision: 1, dataUrl: 'data:image/png;base64,QQ==' };
+    await raw.putImage(value);
+    const calls = [];
+    const fetch = f.host.fetch;
+    f.host.fetch = (...args) => { calls.push(args); return fetch(...args); };
+    const store = withTavernGeneratedAssetFiles(raw, f.host);
+    assert.deepEqual(await store.readImage('readonly'), value);
+    assert.equal(await store.readImage('absent'), null);
+    await flush();
+    assert.deepEqual(calls, []);
+    assert.deepEqual(await raw.getImage('readonly'), value);
+    f.files.set('user/images/igs-assets/readonly.png', 'QQ==');
+    await raw.putImage({ ...value, dataUrl: 'user/images/igs-assets/readonly.png' });
+    assert.equal((await store.readImage('readonly')).dataUrl, value.dataUrl);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][1].method, undefined);
+    assert.equal((await raw.getImage('readonly')).dataUrl, 'user/images/igs-assets/readonly.png');
+});
+
+
+test('衣装预检：当前内容读取区分缺图、故障和同址替换', async () => {
+    const { readReferenceImageUrl} = await import('../src/media/reference-image-reader.js');
+    const f = assetFilesHost(), calls = [];
+    const fetch = f.host.fetch;
+    f.host.fetch = (...args) => { calls.push(args); return fetch(...args); };
+    const url = 'user/images/igs-assets/current.png';
+    assert.equal(await readReferenceImageUrl('data:image/png;base64,QQ==', f.host), 'data:image/png;base64,QQ==');
+    assert.equal(calls.length, 0);
+    f.files.set(url, 'QQ==');
+    assert.equal(await readReferenceImageUrl(url, f.host), 'data:image/png;base64,QQ==');
+    f.files.set(url, 'Qg==');
+    assert.equal(await readReferenceImageUrl(url, f.host), 'data:image/png;base64,Qg==');
+    assert.equal(calls.length, 2);
+    for (const [source, options] of calls) {
+        assert.equal(source, `/${url}`); assert.equal(options.cache, 'no-store');
+        assert.equal(options.signal.aborted, true);
+    }
+    for (const status of [404, 410,403, 500]) {
+        f.host.fetch = async () => ({ ok: false, status });
+        if ([404, 410].includes(status)) assert.equal(await readReferenceImageUrl(url, f.host), null);
+        else await assert.rejects(readReferenceImageUrl(url, f.host), /reference-read-failed/);
+    }
+    f.host.fetch = async () => { throw new Error('network'); };
+    await assert.rejects(readReferenceImageUrl(url, f.host), /reference-read-failed/);
+});
+
+test('衣装预检：读图取消拒收迟到内容', async () => {
+    const { readReferenceImageUrl } = await import('../src/media/reference-image-reader.js');
+    const controller = new AbortController();
+    let resolveFetch, requests = 0, readers = 0;
+    const host = { fetch() { requests++; return new Promise(resolve => { resolveFetch = resolve; }); },
+        FileReader: class { constructor() { readers++; } } };
+    const pending = readReferenceImageUrl('https://fixture.invalid/image.png', host, { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(pending, /cancelled/);
+    resolveFetch({ ok: true, blob: async () => new Blob(['late']) });
+    await flush();
+    assert.equal(requests, 1); assert.equal(readers, 0);
+    await assert.rejects(readReferenceImageUrl('blob:fixture', host, { signal: controller.signal }), /cancelled/);
+    assert.equal(requests, 1);
+});

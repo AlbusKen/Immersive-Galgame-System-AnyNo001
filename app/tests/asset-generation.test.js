@@ -23,6 +23,8 @@ const USER_ASSETS = {
     enabled: true,
     scenes: { 学校天台: { url: 'roof.png', times: {} }, 教室: { url: 'class.png', times: {} }, 默认: { url: 'default.png', times: {} } },
     characters: { 艾莉: { 默认: 'ally.png' }, 空槽角色: { 默认: '' } },
+    characterOutfits: { 艾莉: { 常服: { moods: { 平和: 'ally.png' } } } },
+    characterDefaultOutfits: { 艾莉: { version: 1, outfitName: '常服' } },
     characterAliases: { 艾莉: ['小艾'] },
 };
 
@@ -68,7 +70,10 @@ test('gate:assets:generated-library-is-separate-and-renamable', () => {
     assert.equal(added.library.characters.莉莉.默认, 'igs-gen:img1');
     assert.deepEqual(added.library.characterAliases.莉莉, ['神秘少女']);
     const ctx = { sceneAssets: USER_ASSETS, generatedAssets: added.library };
-    assert.deepEqual([resolveSpriteAsset('神秘少女', '', ctx).url, resolveSpriteAsset('神秘少女', '', ctx).source], ['igs-gen:img1', 'library']);
+    const before = structuredClone(added.library);
+    assert.deepEqual([resolveSpriteAsset('神秘少女', '', ctx).url, resolveSpriteAsset('神秘少女', '', ctx).source], ['', 'none']);
+    assert.equal(Object.hasOwn(added.library, 'characterDefaultOutfits'), false, '旧生成图库不推断新默认');
+    assert.deepEqual(added.library, before, '读取不迁移或清空旧图槽');
     const renamed = renameGeneratedLibraryEntry(added.library, 'sprite', '莉莉', '莉莉安');
     assert.ok(renamed.library.characters.莉莉安 && !renamed.library.characters.莉莉);
     assert.ok(renamed.library.characterAliases.莉莉安.includes('莉莉'));
@@ -80,7 +85,7 @@ test('gate:assets:generated-library-is-separate-and-renamable', () => {
     assert.equal(removed.library.scenes.工厂, undefined);
 });
 
-test('gate:assets:filing-generated-holdings-leaves-one-reference', () => {
+test('gate:assets:filing-backgrounds-preserves-legacy-sprites-without-migration', () => {
     const assets = {
         characters: { 莉莉: { 默认: 'igs-gen:img1' } },
         scenes: {},
@@ -90,15 +95,18 @@ test('gate:assets:filing-generated-holdings-leaves-one-reference', () => {
             expressionNotes: { 莉莉: { 喜悦: { positive: 'smile' } } },
         },
     };
+    const before = structuredClone(assets);
     fileGeneratedHoldings(assets);
-    assert.equal(assets.characters.莉莉.默认, 'igs-gen:img1');
-    assert.equal(assets.characters.新角色.默认, 'igs-gen:img2');
-    assert.equal(assets.characters.新角色.喜悦, 'igs-gen:img3');
+    assert.deepEqual(assets.characters, before.characters);
+    assert.deepEqual(assets.generated.characters, before.generated.characters);
+    assert.equal(Object.hasOwn(assets, 'characterDefaultOutfits'), false);
+    assert.equal(Object.hasOwn(assets, 'characterOutfits'), false);
     assert.equal(assets.scenes.工厂.url, 'igs-gen:bg1');
-    assert.equal(assets.generated.characters.莉莉, undefined);
-    assert.equal(assets.generated.characters.新角色, undefined);
     assert.equal(assets.generated.scenes.工厂, undefined);
     assert.equal(assets.generated.expressionNotes.莉莉.喜悦.positive, 'smile');
+    const filed = structuredClone(assets);
+    fileGeneratedHoldings(assets);
+    assert.deepEqual(assets, filed, '重复保存不迁移立绘或反复归档');
 });
 
 test('gate:assets:generated-library-normalizes-buckets', () => {
@@ -1186,12 +1194,14 @@ test('gate:assets:bind-generated-sprite-to-character-default', () => {
     const hit = resolveSpriteAsset('冬月', '开心', {
         sceneAssets: {
             characters: { 冬月: { 默认: 'igs-gen:def', 喜悦: 'igs-gen:joy' } },
+            characterOutfits: { 冬月: { 常服: { moods: { 平和: 'igs-gen:def', 喜悦: 'igs-gen:joy' } } } },
+            characterDefaultOutfits: { 冬月: { version: 1, outfitName: '常服' } },
             characterAliases: { 冬月: [] },
             moodGroups: [{ label: '喜悦', words: ['开心'] }],
         },
     });
     assert.equal(hit.url, 'igs-gen:joy');
-    assert.equal(hit.source, 'user');
+    assert.equal(hit.source, 'user-default-outfit');
 });
 
 test('gate:assets:expression-set-writes-once-then-paints-eight-in-order', async () => {
@@ -1290,24 +1300,31 @@ test('gate:assets:expression-set-writes-once-then-paints-eight-in-order', async 
     const hit = resolveSpriteAsset('冬月', '开心', {
         sceneAssets: {
             characters: { 冬月: { 默认: 'igs-gen:def', 喜悦: 'igs-gen:joy' } },
+            characterOutfits: { 冬月: { 常服: { moods: { 平和: 'igs-gen:def', 喜悦: 'igs-gen:joy' } } } },
+            characterDefaultOutfits: { 冬月: { version: 1, outfitName: '常服' } },
             characterAliases: {},
             moodGroups,
         },
     });
     assert.equal(hit.url, 'igs-gen:joy');
     assert.equal(hit.slot, '喜悦');
-    assert.equal(hit.source, 'user');
+    assert.equal(hit.source, 'user-default-outfit');
 
-    const html = renderCharacterAssetList({
-        冬月: { 默认: 'igs-gen:def', 喜悦: 'igs-gen:joy', 愤怒: '' },
-    }, {
-        expressionNotes: { 冬月: { 愤怒: { positive: 'angry face', negative: 'lowres', error: '上游拒绝' } } },
+    const uiAssets = {
+        characters: { 冬月: { 默认: 'legacy.png' } },
+        characterOutfits: { 冬月: { 常服: { moods: { 平和: 'igs-gen:def', 喜悦: 'igs-gen:joy', 愤怒: '' } } } },
+        characterDefaultOutfits: { 冬月: { version: 1, outfitName: '常服' } },
+    };
+    const html = renderCharacterAssetList(uiAssets.characters, {
+        characterOutfits: uiAssets.characterOutfits, sceneAssets: uiAssets,
+        expressionNotes: { '冬月\u0001常服': { 愤怒: { positive: 'angry face', negative: 'lowres', error: '上游拒绝' } } },
         isOpen: (key) => key === 'char-open:冬月',
     });
-    assert.ok(html.includes('data-action="char-expression-set:%E5%86%AC%E6%9C%88"'));
-    assert.ok(html.includes('data-action="char-expression-prompt:%E5%86%AC%E6%9C%88:%E5%96%9C%E6%82%A6"'));
-    assert.ok(html.includes('data-action="char-expression-retry:%E5%86%AC%E6%9C%88:%E5%96%9C%E6%82%A6"'));
-    assert.ok(html.includes('char-expression-retry:'));
+    const outfitAction = `%E5%86%AC%E6%9C%88:${encodeURIComponent('常服')}`;
+    assert.ok(html.includes(`data-action="outfit-expression-set:${outfitAction}"`));
+    assert.ok(html.includes(`data-action="outfit-expression-prompt:${outfitAction}:%E5%96%9C%E6%82%A6"`));
+    assert.ok(html.includes(`data-action="outfit-expression-retry:${outfitAction}:%E5%96%9C%E6%82%A6"`));
+    assert.ok(html.includes('outfit-expression-retry:'));
     assert.ok(html.includes('重新生成'));
     const changed = buildExpressionDiffDescription('冬月', { positive: '1girl' }, ['喜悦'], null, { name: '泳装', words: ['泳衣'], ownImage: false });
     assert.match(changed, /服装「泳装」/);
@@ -1779,12 +1796,14 @@ test('gate:assets:stopped-expression-set-keeps-captions-and-resume-paints-withou
 test('gate:assets:resume-button-shows-only-when-captions-wait-for-paint', async () => {
     const { renderCharacterSlotTabs } = await import('../src/visual/igs-ui/settings-outfit-fields.js');
     const caption = { v4_prompt: { caption: { base_caption: 'x', char_captions: [] } } };
-    const base = { charName: '冬月', baseMoods: ['默认'], baseListHtml: '', outfits: {}, activeOutfit: '', icons: {} };
-    const sceneAssets = { characters: { 冬月: { 默认: 'igs-gen:a' } } };
+    const outfits = { 常服: { moods: { 平和: 'igs-gen:a' } } };
+    const base = { charName: '冬月', baseMoods: ['平和'], baseListHtml: '', outfits, activeOutfit: '', icons: {} };
+    const sceneAssets = { characters: { 冬月: { 默认: 'legacy.png' } }, characterOutfits: { 冬月: outfits },
+        characterDefaultOutfits: { 冬月: { version: 1, outfitName: '常服' } } };
     const idle = renderCharacterSlotTabs({ ...base, sceneAssets, expressionNotes: {} });
     assert.equal(idle.includes('expression-resume'), false);
-    const waiting = renderCharacterSlotTabs({ ...base, sceneAssets, expressionNotes: { 冬月: { 愤怒: { error: '已停止', caption } } } });
-    assert.ok(waiting.includes('data-action="char-expression-resume:%E5%86%AC%E6%9C%88"'));
+    const waiting = renderCharacterSlotTabs({ ...base, sceneAssets, expressionNotes: { '冬月\u0001常服': { 愤怒: { error: '已停止', caption } } } });
+    assert.ok(waiting.includes(`data-action="outfit-expression-resume:%E5%86%AC%E6%9C%88:${encodeURIComponent('常服')}"`));
     assert.ok(waiting.includes('继续生图（1）'));
 });
 
@@ -1806,6 +1825,50 @@ test('gate:asset-gen:image-cache-keeps-on-screen-thumbs-beyond-limit', async () 
     for (let i = 0; i < 5; i++) service.resolveUrl(`igs-gen:other${i}`);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(service.resolveUrl('igs-gen:p0'), '', '离开页面后旧图按上限回收');
+
+    let state = 'read-error', reads = 0;
+    const recovery = createAssetGenerationService({
+        messageHost: { getChatId: () => 'chat', readFloor: () => null, readPreviousAiTexts: () => [], on: () => () => {} },
+        llm: {}, nai: {}, store: { getImage: async () => {
+            reads += 1;
+            if (state === 'read-error') throw new Error('idb-unavailable');
+            return state === 'missing' ? null : { dataUrl: 'data:image/png;base64,RECOVERED' };
+        } },
+        getSettings: () => ({ autoIllustration: {}, sceneAssets: {} }),
+    });
+    const ref = 'igs-gen:recover';
+    assert.equal(recovery.imageAvailability(ref).status, 'unverified');
+    assert.equal(recovery.resolveUrl(ref), '');
+    assert.equal(recovery.imageAvailability(ref).status, 'loading');
+    recovery.resolveUrl(ref);
+    assert.equal(reads, 1, '并发渲染共用一次存储读取');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(recovery.imageAvailability(ref).status, 'read-error', '读取失败不是图片丢失');
+    recovery.resolveUrl(ref);
+    assert.equal(reads, 1, '失败不触发无限自动重读');
+    state = 'missing';
+    recovery.retryImageRead(ref);
+    assert.equal(recovery.imageAvailability(ref).status, 'loading');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(recovery.imageAvailability(ref).status, 'missing');
+    state = 'available';
+    recovery.retryImageRead(ref);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(recovery.imageAvailability(ref).status, 'available');
+    assert.equal(recovery.resolveUrl(ref), 'data:image/png;base64,RECOVERED');
+    assert.equal(reads, 3, '显式重试能清除读取失败和缺图状态');
+    state = 'read-error';
+    recovery.resolveUrl('igs-gen:another');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(recovery.imageAvailability('igs-gen:another').status, 'read-error');
+    recovery.clearImageReadFailures();
+    assert.equal(reads, 4, '清理失败状态不批量读取');
+    assert.equal(recovery.imageAvailability('igs-gen:another').status, 'unverified');
+    assert.equal(recovery.imageAvailability(ref).status, 'available', '可用资源缓存保持');
+    recovery.resolveUrl('igs-gen:another');
+    recovery.clearImageReadFailures();
+    assert.equal(recovery.imageAvailability('igs-gen:another').status, 'loading', '保留在途读取');
+
 });
 
 test('gate:asset-gen:settings-thumbs-use-short-blob-urls-and-revoke-on-delete', async () => {
@@ -1839,6 +1902,9 @@ test('gate:assets:dna-composition-reaches-final-dbgen-caption-and-saved-prompt',
     const requests = [], writes = [];
     const dna = { triggerWords: 'alice_tag, 1girl', identity: 'silver hair, blue eyes',
         defaultAppearance: 'red hoodie', negative: 'extra fingers' };
+    const assets = { characterOutfits: { Alice: { 常服: { wardrobe: 'hoodie', moods: {} } } },
+        characterDefaultOutfits: { Alice: { version: 1, outfitName: '常服' } },
+        wardrobe: { hoodie: { prompt: 'wears a red hoodie' } } };
     const backend = createImageBackend({ nai: {}, global: {
         btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
         NaiDbGen: {
@@ -1858,7 +1924,7 @@ test('gate:assets:dna-composition-reaches-final-dbgen-caption-and-saved-prompt',
     const store = createMemoryGeneratedAssetStore();
     const service = createAssetGenerationService({
         messageHost: { getChatId: () => 'fixture', readFloor: () => null, readPreviousAiTexts: () => [], on: () => () => {} },
-        llm: {}, nai: backend, store, getSettings: () => ({ autoIllustration: {}, sceneAssets: {} }),
+        llm: {}, nai: backend, store, getSettings: () => ({ autoIllustration: {}, sceneAssets: assets }),
         newId: () => 'dna-wire', matte: async (src) => src,
     });
     const result = await service.generateCharacterSprite({ name: 'Alice', dna });
@@ -1867,7 +1933,7 @@ test('gate:assets:dna-composition-reaches-final-dbgen-caption-and-saved-prompt',
     const wire = requests[0];
     const role = wire.caption.v4_prompt.caption.char_captions[0];
     assert.equal(writes.length, 1);
-    assert.equal(role.char_caption, 'Alice, alice_tag, 1girl, silver hair, blue eyes, ' + dna.defaultAppearance + ' and smiles.');
+    assert.equal(role.char_caption, 'Alice, alice_tag, 1girl, silver hair, blue eyes, ' + assets.wardrobe.hoodie.prompt + ' and smiles.');
     assert.deepEqual(role.centers, [{ x: 0.5, y: 0.5 }]);
     const positive = JSON.stringify(wire.caption.v4_prompt);
     assert.doesNotMatch(positive, /black hair|brown hair|green eyes|maid outfit/);
@@ -1950,15 +2016,18 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
         }, getBridge: () => ({ imageApi: { mode: 'dbgen' } }) });
         const store = createMemoryGeneratedAssetStore();
         let seq = 0;
+        const assets = { characterOutfits: { Alice: { 常服: { wardrobe: 'dress', moods: {} } } },
+            characterDefaultOutfits: { Alice: { version: 1, outfitName: '常服' } },
+            wardrobe: { dress: { prompt: 'wears a white dress' } } };
         const service = createAssetGenerationService({
             messageHost: { getChatId: () => 'fixture', readFloor: () => null, readPreviousAiTexts: () => [], on: () => () => {} },
-            llm: {}, nai: backend, store, getSettings: () => ({ autoIllustration: {}, sceneAssets: {} }),
+            llm: {}, nai: backend, store, getSettings: () => ({ autoIllustration: {}, sceneAssets: assets }),
             newId: () => `translated-${++seq}`, matte: async (src) => src,
         });
         const before = structuredClone(fixture.dna);
         const old = cap('brown hair, maid outfit, smile');
-        const result = await service.generateExpressionImage({ name: 'Alice', mood: '喜悦', caption: old,
-            basePrompt: { caption: old }, dna: fixture.dna, outfit: fixture.outfit });
+        const result = await service.generateExpressionSet({ name: 'Alice', moods: ['喜悦'],
+            basePrompt: { caption: old }, dna: fixture.dna, outfit: fixture.outfit, note: '本次需重新写词' });
         assert.equal(result.ok, true, result.error);
         assert.equal(result.items[0].ok, true, result.items[0].error);
 
@@ -1972,7 +2041,7 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
         const wire = paints[0];
         const positive = JSON.stringify(wire.caption.v4_prompt);
         assert.match(positive, /silver hair/);
-        const clothing = fixture.outfit ? fixture.outfit.prompt || 'wears a white dress' : fixture.dna.defaultAppearance;
+        const clothing = fixture.outfit ? fixture.outfit.prompt || 'wears a white dress' : assets.wardrobe.dress.prompt;
         assert.ok(positive.includes(clothing));
         assert.doesNotMatch(positive, /brown hair|maid outfit|red hoodie/);
         assert.equal(wire.replaceCharacterKeywords, false);
@@ -2039,6 +2108,9 @@ test('gate:dna-avatar:portrait 实际 Adapter、快照与失败关闭', async ()
     const dna = { version: 2, views: characterViewsFixture(), defaultAppearance: 'red hoodie' };
     dna.views.portrait.subject = 'Alice, an adult woman with silver hair, blue eyes and a silver hair clip,';
     const before = structuredClone(dna);
+    const assets = { characterOutfits: { Alice: { 常服: { wardrobe: 'collar', moods: {} } } },
+        characterDefaultOutfits: { Alice: { version: 1, outfitName: '常服' } },
+        wardrobe: { collar: { prompt: 'wears a red collar' } } };
     let cancelAfterWriting = false;
     const controller = new AbortController();
     const backend = createImageBackend({ global: { NaiDbGen: {
@@ -2053,7 +2125,7 @@ test('gate:dna-avatar:portrait 实际 Adapter、快照与失败关闭', async ()
         async generate(req) { requests.push(req); return pipeline.imageGen.generate(req); },
     } }, getBridge: () => ({ imageApi: { mode: 'dbgen' } }) });
     const service = createAssetGenerationService({ nai: backend, store: createMemoryGeneratedAssetStore(),
-        getSettings: () => ({ autoIllustration: {}, sceneAssets: {} }),
+        getSettings: () => ({ autoIllustration: {}, sceneAssets: assets }),
         messageHost: { getChatId: () => 'fixture' }, llm: {} });
     try {
         const result = await service.generateCharacterAvatar({ name: 'Alice', dna });
@@ -2068,7 +2140,7 @@ test('gate:dna-avatar:portrait 实际 Adapter、快照与失败关闭', async ()
         assert.equal(requests[0].captionMode, 'final');
         assert.equal(requests[0].replaceCharacterKeywords, false);
         assert.equal(requests[0].caption.v4_prompt.caption.char_captions[0].char_caption,
-            dna.views.portrait.subject + ' ' + dna.defaultAppearance + ' and smiles.');
+            dna.views.portrait.subject + ' ' + assets.wardrobe.collar.prompt + ' and smiles.');
         assert.equal(result.dnaSnapshot.characters[0].framing, 'portrait');
         assert.equal(result.dnaSnapshot.characters[0].source, 'saved');
         assert.equal(result.dnaCandidates, undefined);
@@ -2225,9 +2297,46 @@ test('gate:image-preset:指定衣装使用换装模块，默认差分使用表�
     const dna = { version: 2, views: characterViewsFixture() };
     for (const [outfit, expected] of [[undefined, 'expression'],
         [{ name: '外套', prompt: 'wears a blue coat' }, 'outfit'], [{ nude: true }, 'outfit']]) {
-        const result = await service.generateExpressionSet({ name: 'Alice', dna, outfit, moods: ['平和'] });
+        const result = await service.generateExpressionSet({ name: 'Alice', dna, outfit, moods: ['平和'], note: '本次需重新写词' });
         assert.equal(result.ok, false);
         assert.equal(writes.at(-1).imagePromptTask, expected);
         assert.equal(writes.at(-1).promptTask.purpose, 'derived');
     }
+});
+
+for (const indexed of [false, true]) test(`gate:assets:删除边界复核迟到引用-${indexed ? 'IDB' : 'memory'}`, async () => {
+    const { createIndexedDbGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
+    const { withTavernGeneratedAssetFiles } = await import('../src/media/tavern-image-files.js');
+    const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
+    const raw = indexed ? createIndexedDbGeneratedAssetStore({ indexedDB: createTransactionalIdb() }) : createMemoryGeneratedAssetStore();
+    await raw.putImage({ id: 'late', dataUrl: 'data:image/png;base64,QQ==' });
+    let referenced = false;
+    const getImage = raw.getImage;
+    const store = withTavernGeneratedAssetFiles({ ...raw, async getImage(id) {
+        const image = await getImage(id);
+        referenced = true;
+        return image;
+    } }, {});
+    const service = createAssetGenerationService({ store, llm: {}, nai: {},
+        messageHost: { getChatId: () => 'chat' }, getSettings: () => ({ sceneAssets: {} }),
+        readProtectedImageIds: async () => referenced ? ['late'] : [] });
+    assert.deepEqual(await service.deleteImages(['late']), { ok: true, retainedIds: ['late'] });
+    assert.ok(await raw.getImage('late'));
+});
+
+test('gate:assets:丢弃候选保留仍被衣柜引用的图片', async () => {
+    const store = createMemoryGeneratedAssetStore();
+    const record = { key: 'review', chatId: 'chat', floorKey: 'chat|3|0', status: 'temp', imageId: 'held' };
+    await store.putAsset(record);
+    await store.putImage({ id: 'held', dataUrl: 'data:image/png;base64,QQ==' });
+    const service = createAssetGenerationService({ store, llm: {}, nai: {},
+        messageHost: { getChatId: () => 'chat' }, getSettings: () => ({ sceneAssets: {
+            characterOutfits: { Alice: { Coat: { moods: { 平和: 'igs-gen:held' } } } } } }) });
+    service.listReview('chat|3|0');
+    await new Promise(resolve => setImmediate(resolve));
+    const result = await service.setStatus(record.key, 'discarded');
+    assert.equal(result.ok, true);
+    assert.equal(result.record.imageId, 'held');
+    assert.equal(result.record.status, 'discarded');
+    assert.ok(await store.getImage('held'));
 });

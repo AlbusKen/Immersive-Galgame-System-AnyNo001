@@ -5,7 +5,7 @@ import { FICTION_FRAME, SOFT_MODE_NOTE, TAG_WRITING_RULES, requestWithSoftRetry 
 import { DNA_TEMPLATE_WRITER_SYSTEM } from '../prompt-registry.js';
 import { parseTemplateCaptionSlots } from './template-caption-parser.js';
 import { checkPromptTask } from '../../schemas/prompt-recipe.js';
-import { spriteIdentityRequirements } from './character-prompt-task.js';
+import { spriteIdentityRequirements, characterWritingContext } from './character-prompt-task.js';
 import { prepareImageWritingRequest } from '../image-prompt-runtime.js';
 import { imageWritingContext } from '../image-prompt-context.js';
 import { secondaryLlmFailure, secondaryLlmText } from '../../host/secondary-llm-result.js';
@@ -178,7 +178,7 @@ async function writeTemplateCaptions(llm, llmSettings, meta) {
     if (!description) return { ok: false, error: '没有可交给副 LLM 的画面描述' };
     const stale = () => meta.signal?.aborted || (typeof meta.shouldStart === 'function' && !meta.shouldStart());
     if (stale()) return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效' };
-    const input = structuredClone({ promptTask: task.value, characterContext: meta.characterContext,
+    const input = structuredClone({ promptTask: task.value, characterContext: characterWritingContext(meta.characterContext),
         ...(meta.contextMode !== undefined && { contextMode: meta.contextMode }),
         ...(meta.originalPrompt !== undefined && { originalPrompt: meta.originalPrompt }),
         ...(meta.layout !== undefined && { layout: meta.layout }),

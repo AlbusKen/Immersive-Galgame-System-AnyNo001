@@ -90,7 +90,10 @@ export function createMemoryGeneratedAssetStore() {
     return {
         async getImage(id) { return clone(images.get(id)); },
         async putImage(value) { images.set(value.id, clone(value)); },
-        async deleteImage(id) { images.delete(id); },
+        async deleteImage(id, options) {
+            if (options?.beforeDelete && !(await options.beforeDelete())) return { retained: true };
+            images.delete(id);
+        },
         async updateImage(id, expectedRevision, patch, updatedAt) {
             const result = applyGeneratedImageUpdate(images.get(id), expectedRevision, patch, updatedAt);
             if (result.ok) images.set(id, clone(result.record));
@@ -169,7 +172,16 @@ export function createIndexedDbGeneratedAssetStore(globalObject = globalThis) {
     return {
         async getImage(id) { return (await run('images', 'readonly', (s) => s.get(id))) || null; },
         async putImage(value) { await run('images', 'readwrite', (s) => s.put(value)); },
-        async deleteImage(id) { await run('images', 'readwrite', (s) => s.delete(id)); },
+        async deleteImage(id, options) {
+            // open 的异步窗口结束后复核，再启动本库删除事务；不承诺跨库原子性。
+            const db = await open();
+            if (options?.beforeDelete && !(await options.beforeDelete())) return { retained: true };
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction('images', 'readwrite');
+                tx.objectStore('images').delete(id);
+                tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+            });
+        },
         // 读取与写入在同一 readwrite 事务内，避免另一会话在检查与写入之间覆盖。
         async updateImage(id, expectedRevision, patch, updatedAt) {
             const db = await open();

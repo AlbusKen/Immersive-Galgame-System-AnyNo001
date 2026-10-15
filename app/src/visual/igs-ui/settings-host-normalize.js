@@ -12,6 +12,7 @@ import { normalizeSpriteHeads } from './fx-anchor.js';
 import { normalizeGeneratedLibrary } from '../../scene/asset-match.js';
 import { normalizeCharacterDnaMap } from '../../scene/character-dna.js';
 import { normalizeCharacterOutfits, normalizeWardrobe } from '../../scene/character-outfits.js';
+import { normalizeCharacterDefaultOutfits } from '../../scene/character-appearance.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
 import { normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
 import { normalizeSettingsTheme } from './settings-theme.js';
@@ -143,6 +144,9 @@ export function normalizeSceneAssets(value) {
     }
     normalized.characterDna = normalizeCharacterDnaMap(normalized.characterDna);
     normalized.characterOutfits = normalizeCharacterOutfits(normalized.characterOutfits);
+    if (Object.hasOwn(normalized, 'characterDefaultOutfits')) {
+        normalized.characterDefaultOutfits = normalizeCharacterDefaultOutfits(normalized.characterDefaultOutfits);
+    }
     normalized.characterHouses = normalizeCharacterHouses(normalized.characterHouses);
     normalized.characterVoices = normalizeCharacterVoices(normalized.characterVoices);
     normalized.characterSpriteScales = normalizeCharacterSpriteScales(normalized.characterSpriteScales);

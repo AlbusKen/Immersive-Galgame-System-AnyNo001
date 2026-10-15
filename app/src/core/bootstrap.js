@@ -4,6 +4,7 @@ import { sceneAssetsForContext, resolveAssetScope } from '../scene/asset-scope.j
 import { captureOutfitScope, prepareCgOutfitCandidates } from '../scene/outfit-identity.js';
 import { loadStoryOutfitCandidates, saveStoryOutfitCandidates } from '../scene/outfit-review-store.js';
 import { withTavernGeneratedAssetFiles, withTavernIllustrationFiles } from '../media/tavern-image-files.js';
+import { readReferenceImageUrl } from '../media/reference-image-reader.js';
 import { localImageCacheFor } from '../media/tavern-image-cache.js';
 import { createPresetRegistry } from '../presets/preset-registry.js';
 import { createInputChannel } from '../host/input-channel.js';
@@ -56,6 +57,7 @@ import { createAssetThumbnailer, createIndexedDbAssetThumbStore } from '../media
 import { withCgIndexSync } from '../media/cg-library.js';
 import { createAutoIllustrationService, ILLUSTRATION_PROGRESS_EVENT, ILLUSTRATION_UPDATED_EVENT, readCgViewport } from '../generated-images/illustration/auto-illustration-service.js';
 import { createAssetGenerationService, GENERATED_ASSET_UPDATED_EVENT } from '../generated-images/illustration/asset-generation-service.js';
+import { protectedAssetImageIds } from '../generated-images/illustration/asset-image-references.js';
 import { createItemAndCgServices } from './item-cg-services.js';
 import { createIndexedDbGeneratedAssetStore } from '../media/generated-asset-store.js';
 import { createCanvasImageCodec } from '../media/canvas-image-codec.js';
@@ -184,6 +186,26 @@ export function bootstrapIGS(options = {}) {
             return saveStoryOutfitCandidates(storageLike, staged.items.filter(row => !existing.has(row.id)));
         },
         imageCodec: options.imageCodec || createCanvasImageCodec(globalObject),
+        readCgReferenceImage: async (url, options) => {
+            if (!isGeneratedAssetUrl(url)) {
+                const dataUrl = await readReferenceImageUrl(url, globalObject, options);
+                return dataUrl === null ? null : { type: 'sprite', dataUrl };
+            }
+            const id = generatedAssetIdOf(url);
+            if (typeof generatedAssetStore.readImage !== 'function') throw new Error('reference-read-unavailable');
+            const image = await generatedAssetStore.readImage(id, options);
+            if (image && (image.id !== id || image.type !== 'sprite')) throw new Error('reference-type-invalid');
+            return image;
+        },
+        subscribeCgAppearance: handler => {
+            const offs = [events.on('igs:legacy-settings-updated', () => handler({})),
+                events.on(GENERATED_ASSET_UPDATED_EVENT, detail => {
+                    if (!['image-loaded', 'hydrated'].includes(detail?.reason)) handler(detail);
+                })];
+            for (const name of ['CHAT_CHANGED', 'MESSAGE_SWIPED', 'MESSAGE_UPDATED', 'MESSAGE_DELETED'])
+                offs.push(illustrationMessageHost.on(name, () => handler({ targetChanged: true })));
+            return () => offs.forEach(off => off?.());
+        },
         resolveCgReference: async (characterKey, assets) => {
             const url = assets.characters?.[characterKey]?.['默认'] || assets.generated?.characters?.[characterKey]?.['默认'] || '';
             if (!isGeneratedAssetUrl(url)) return url;
@@ -202,6 +224,10 @@ export function bootstrapIGS(options = {}) {
         llm: secondaryLlm,
         nai: imageBackend,
         store: generatedAssetStore,
+        readProtectedImageIds: () => protectedAssetImageIds({
+            readSceneAssets: () => readImageBridge().sceneAssets || {},
+            storage: storageLike, illustrationStore,
+        }),
         matte: options.alphaMatte || createAlphaMatte(globalObject),
         getSettings: () => {
             const bridge = readImageBridge();

@@ -190,7 +190,31 @@ export function promptProvenance(value = {}) {
             if (!checked.promptRecipe || !checked.dnaSnapshot || checked.sentPrompt?.action !== 'infill'
                 || !checked.promptRecipe.bindings.some((b) => b.kind === 'reference'
                     && b.characterKey === round.characterKey)) invalid();
-            return { slotId: round.slotId, characterKey: round.characterKey, ...checked };
+            let appearance;
+            if (round.appearance !== undefined) {
+                const a = round.appearance, r = a?.reference;
+                const text = (v, max) => typeof v === 'string' && v.length <= max;
+                if (a?.version !== 1 || !text(a.requestedOutfit, 128) || !text(a.effectiveOutfit, 128)
+                    || !a.effectiveOutfit.trim() || !text(a.requirementSource, 128)
+                    || !['requested', 'default', 'default-fallback'].includes(a.selectionSource)
+                    || !text(a.fallbackReason, 128) || typeof a.confirmed !== 'boolean'
+                    || (a.selectionSource === 'default-fallback' && a.confirmed !== true)
+                    || !text(r?.slot, 128) || !/^[0-9a-f]{16}$/.test(r?.sourceId)
+                    || (r.url !== undefined && (!text(r.url, 256) || !/^igs-gen:[A-Za-z0-9_-]+$/.test(r.url)))
+                    || (r.revision !== undefined && !(Number.isSafeInteger(r.revision) && r.revision >= 0)
+                        && !text(r.revision, 256))
+                    || ['scopeKey', 'ownerKey'].some(k => a[k] !== undefined && !text(a[k], 512))
+                    || !checked.outfitSnapshot?.characters.some(c => c.characterKey === round.characterKey
+                        && c.name === a.effectiveOutfit)) invalid();
+                appearance = { version: 1, requestedOutfit: a.requestedOutfit, effectiveOutfit: a.effectiveOutfit,
+                    requirementSource: a.requirementSource, selectionSource: a.selectionSource,
+                    fallbackReason: a.fallbackReason, confirmed: a.confirmed,
+                    reference: { slot: r.slot, sourceId: r.sourceId, ...(r.url !== undefined && { url: r.url }),
+                        ...(r.revision !== undefined && { revision: r.revision }) },
+                    ...Object.fromEntries(['scopeKey', 'ownerKey'].filter(k => a[k] !== undefined).map(k => [k, a[k]])) };
+            }
+            return { slotId: round.slotId, characterKey: round.characterKey, ...checked,
+                ...(appearance && { appearance }) };
         }) };
     }
     return out;

@@ -17,17 +17,27 @@ const whereOf = (slotId, captionIndex) => ({ slotId,
     ...(Number.isInteger(captionIndex) && { captionIndex }) });
 
 // 原 CG 提示词随图保留；写词只按裁剪结构筛选局部元素及参考关系。
-export function consistencyPromptTask(record, characters, assets, plans) {
+export function consistencyPromptTask(record, characters, assets, plans, appearances) {
     const recipe = record.promptRecipe;
     if (!checkPromptRecipe(recipe, recipe?.caption).ok || !recipe
         || recipe.bindings.length !== characters.length
         || recipe.bindings.some((b) => b.kind !== 'named')) return fail('cg-binding-incomplete', 'record.promptRecipe');
-    const context = currentCgContext(record, assets);
+    const correcting = appearances !== undefined;
+    if (correcting && (!Array.isArray(appearances) || appearances.length !== characters.length
+        || characters.some(c => appearances.filter(a => a.characterKey === c.characterKey).length !== 1)))
+        return fail('DNA_TEMPLATE_BINDING', 'appearance.characters');
+    const context = currentCgContext(record, assets).map(c => {
+        if (!correcting) return c;
+        const selected = appearances.find(a => a.characterKey === c.characterKey);
+        if (!selected?.outfit?.name || !selected.outfit.description?.trim()) return null;
+        return { ...c, outfit: structuredClone(selected.outfit), outfits: [structuredClone(selected.outfit)] };
+    });
+    if (context.some(c => !c)) return fail('OUTFIT_TEMPLATE_INVALID', 'appearance.outfit');
     const named = characters.map((c) => recipe.bindings.find((b) =>
         b.characterKey === c.characterKey && b.captionIndex === c.captionIndex));
     if (named.some((b) => !b)) return fail('DNA_TEMPLATE_BINDING', 'record.characterMeta');
     const refs = named.map((b, i) => ({ characterKey: b.characterKey, token: `ref${i.toString(36)}`,
-        kind: 'reference', framing: 'portrait' }));
+        kind: 'reference', framing: correcting ? 'full_body' : 'portrait' }));
     if (refs.some((r) => named.some((b) => b.token === r.token))) return fail('DNA_TEMPLATE_BINDING', 'reference.token');
     for (const b of [...named, ...refs]) {
         const view = readCharacterDnaView(context.find((c) => c.characterKey === b.characterKey)?.dna, b.framing);
@@ -37,24 +47,30 @@ export function consistencyPromptTask(record, characters, assets, plans) {
         centers: record.caption.v4_prompt.caption.char_captions[b.captionIndex].centers }));
     const rounds = plans.map((plan, i) => ({ slotId: i + 2, characterKey: characters[i].characterKey,
         layout: { sourceSize: { width: plan.width, height: plan.height },
-            crop: plan.crop, work: plan.work, reference: plan.reference },
+            crop: plan.crop, work: plan.work, reference: plan.reference,
+            ...(plan.referenceContent && { referenceContent: plan.referenceContent }) },
         size: plan.size, rows: named.flatMap((b) => {
             const centers = sourceRows.find((r) => r.token === b.token).centers
                 .map(p => referenceCanvasCenter(plan, p)).filter(Boolean);
             return centers.length ? [{ ...b, centers }] : [];
-        }).concat({ ...refs[i], centers: [{ x: (plan.reference.x + plan.reference.width / 2) / plan.size.width,
-            y: (plan.reference.y + plan.reference.height / 2) / plan.size.height }] }) }));
+        }).concat({ ...refs[i], centers: [{
+            x: ((plan.referenceContent || plan.reference).x + (plan.referenceContent || plan.reference).width / 2) / plan.size.width,
+            y: ((plan.referenceContent || plan.reference).y + (plan.referenceContent || plan.reference).height / 2) / plan.size.height,
+        }] }) }));
 
     const expected = rounds;
     const promptTask = { version: 1, mode: 'dna_template', purpose: 'consistency',
-        ...(recipe.outfitMode && { outfitMode: recipe.outfitMode }),
+        ...((correcting || recipe.outfitMode) && { outfitMode: correcting ? 'template' : recipe.outfitMode }),
         characters: [...named, ...refs].map(({ kind, characterKey, token, framing }) =>
             ({ kind, characterKey, token, framing })),
-        slots: expected.map((s) => ({ slotId: s.slotId, tokens: s.rows.map((r) => r.token) })) };
+        slots: expected.map((s) => ({ slotId: s.slotId, tokens: s.rows.map((r) => r.token),
+            ...(correcting && { identityMode: 'appearance_correction' }) })) };
     const checked = checkPromptTask(promptTask, context);
     if (!checked.ok) return checkedFailure(checked, 'promptTask');
     return { ok: true, promptTask: checked.value, characterContext: context, expected,
-        description: [
+        targetCharacters: characters.map(c => ({ ...structuredClone(c),
+            ...(correcting && { outfit: structuredClone(context.find(a => a.characterKey === c.characterKey).outfit) }) })),
+        description: correcting ? consistencyTargetDescription(record, recipe) : [
             '根据本张 CG 随图保存的原提示词和本次裁剪布局，派生 promptTask.slots 指定的局部模板。只保留裁剪画面中剩下的元素，其他内容尽量逐字复用原提示词，仅补必要的局部描述和参考关系。只输出本轮，不生成全图提示词，不参考剧情正文、聊天历史或世界书，不生成 DNA，不新增人物。',
             '允许修改的唯一范围：该轮 characterKey 对应目标的稳定身份特征，仅对照其已保存 DNA 中明确强调且参照图支持的外貌和标志细节校正；DNA 是身份权威，参照图只辅助匹配。未知、矛盾或画外特征不猜测，不为追求相似度重新设计人物。',
             '身份校正限于有依据的脸型与五官、发色发型、瞳色、肤色、角、尾巴、翅膀、非人耳及标志饰品等；逐项核对保存 DNA 与原图可见依据，不能只顾五官而遗漏关键非人特征或饰品，也不能把它们当衣装随换装删除。不强行补出画外或被遮挡的尾翼、不改变其姿态、位置或接触关系。不把参照图的服装、姿态、表情、视线方向、背景、光照或画风迁移到 CG。只校正不一致之处，已经一致的特征保持。',
@@ -73,6 +89,22 @@ export function consistencyPromptTask(record, characters, assets, plans) {
             '本张 CG 保存的原提示词（筛选局部元素并尽量复用原措辞，身份和衣装使用原 token）：\n'
                 + JSON.stringify(record.promptEdited ? record.prompt?.caption || record.prompt || record.caption : recipe.caption),
         ].join('\n') };
+}
+
+function consistencyTargetDescription(record, recipe) {
+    return [
+        '仅派生本次 outputs 指定的局部一致性模板，不读取剧情正文、历史、世界书，不新增人物或生成永久 DNA。原 CG 提供姿势、表情、视线、位置、尺度、构图、遮挡、互动接触、道具、背景、光影和画风；按裁剪布局保留这些元素并尽量复用其原措辞。',
+        '本轮 characterKey 是校正目标。已选参考立绘的可见身份与本次有效衣装是目标，保存 DNA 仅辅助身份；不是强制复刻原 CG 的错误外貌或旧衣装。目标服装仅取 characterContext.outfit，与选中立绘同源，不叠穿旧服装；Scene 和 Char 中冲突的旧衣装描述须在本次写词时替换，不交给程序清洗。非目标人物保持原动态。',
+        '允许发型、脸型、五官及衣装设计带来的必要局部轮廓改变；保留头部与身体位置、尺度、骨架姿态和手脚接触点，不把参考立绘的姿态、表情、视线、背景、光照或画风迁移到 CG。粗裁剪不是分割，区外旧发尾不能自动删除，不擅自扩区。',
+        '每份使用本次 slot 的 identityMode: appearance_correction，输出 identity_mode: appearance_correction。每个 named/reference 用独立 token，在自身 Char 恰引用 <<dna:token>> 一次，可在自身 UC 引用 <<dna_uc:token>> 一次；各自输出 meta_correction_identity 和可选 meta_correction_uc。',
+        '临时校正主语只提炼保存资料中适用、无矛盾的身份支持，保守表达脸、头发、非人特征及明确标志饰品；不复制完整身体比例或用负面词强制相反身份，不凭空猜参考图片细节，不声称看过图。未知或遮挡不强补；不输出 meta_identity、meta_signature、meta_dna_*，不改永久 DNA。',
+        '每份写 outfit_mode: template。named 的 meta_outfit_name 和 meta_outfit_description 必须逐字照抄本次 outfit；正向 Char 恰写本人的 <<outfit:token>> 一次，不复述衣装清单。原 CG 快照仅作历史依据，不是本次目标。',
+        'reference 展示完整已保存人物立绘画布，包括可见衣装，不是头像限定。用输入景别、独立 token 和自身连续 captionIndex；参考关系写在 reference 的 char 自然语言中，说明与目标同人且同套有效衣装，不复制服装正文或新增第二份衣装候选。reference 的两项 meta_outfit_* 各写一次空值，正负向都不写衣装占位。',
+        '全部 meta_* 使用本图从0连续的 captionIndex | 值，每项恰好一次，角色键、token、景别照抄 outputs.rows，不以 slotid 或原图索引替代。只输出本轮 slot；不输出 reference:、reference_uc: 或独立 reference inset 行。',
+        'Scene 只写原图裁剪内共同画面，不写技术分区；排除额外相框、描边、分栏、拼贴和重复剧情人物等伪影，不误删原图真实物件。画师由发送层处理，其余质量、动态及 UC 在本次写词完成。',
+        '原 CG 提示词（仅复用仍适用的动态与场景，目标身份及衣装按本次资料）：\n'
+            + JSON.stringify(record.promptEdited ? record.prompt?.caption || record.prompt || record.caption : recipe.caption),
+    ].join('\n');
 }
 
 // 返回顺序不代表轮次；按 slotId/token 对账后仅装配几何字段。
@@ -112,7 +144,7 @@ export function checkConsistencyCaptions(written, bundle, characters) {
         for (const binding of recipe.bindings) {
             const row = expected.rows.find((r) => r.token === binding.token);
             const where = whereOf(expected.slotId, binding.captionIndex);
-            const original = characters.find((c) => c.characterKey === binding.characterKey);
+            const original = (bundle.targetCharacters || characters).find((c) => c.characterKey === binding.characterKey);
             if (binding.kind === 'named') {
                 const returned = meta.value.characters.find((c) => c.captionIndex === binding.captionIndex);
                 if (!original || !returned) return fail('DNA_TEMPLATE_BINDING', 'characterMeta.binding', where);

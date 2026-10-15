@@ -493,7 +493,7 @@ export function renderCharacterAssetList(characters, options = {}) {
             const m = encSeg(mood);
             const acts = slotActions([
                 mood !== '默认' && (!rawUrl || imageId || (note && note.error)) ? [`char-expression-retry:${c}:${m}`, rawUrl ? '重新生成' : '生成立绘', 'retry'] : null,
-                mood === '默认' && rawUrl ? [`char-generate-sprite:${c}`, '重新生成', 'retry'] : null,
+                mood === '默认' && rawUrl ? [`char-redraw-sprite:${c}`, '重新生成', 'retry'] : null,
             ]);
             const slotMenu = renderRowMenu([
                 canPrompt ? menuItem(`char-expression-prompt:${c}:${m}`, '提示词') : '',
@@ -638,7 +638,6 @@ function renderCharacterSpriteHeightRow(charName, { sceneAssets, reader }) {
 }
 
 const CHARACTER_DNA_FIELD_LABELS = [
-    ['defaultAppearance', '默认外观服装', '默认服装的颜色、款式、材质与配饰；剧情明确换装时必须覆盖此默认值'],
     ['triggerWords', '触发词', '模型token / LoRA触发词等纯文本'],
     ...[['full_body', '全身'], ['half_body', '半身'], ['portrait', '头像']].flatMap(([view, label]) => [
         [`views.${view}.subject`, `${label}身份（含年龄感）`, '英文身份主语片段；核对有依据的年龄感、角、尾巴、非人耳及标志饰品。全身保留已知身体特征，头像保留头颈锚点；三景别同一身份，不含普通服装、动作或临时表情'],
@@ -681,14 +680,14 @@ export function renderCharacterDnaEditor(charName, dna) {
     return `<details class="igs-dna-editor"><summary class="igs-dna-summary">角色DNA${characterDnaFilled(dna) ? '' : '（未填写）'}</summary>${renderCharacterDnaFields(charName, dna)}</details>`;
 }
 
-// 审核卡带来的 DNA 候选：只展示，用户点「采用」才写入 defaultAppearance（不覆盖已填内容）。
+// 历史审核候选可能混合人物、衣装和动作，只供查看，不写入人物或服装 DNA。
 export function renderDnaCandidateBar(candidate) {
     const name = candidate && typeof candidate.name === 'string' ? candidate.name.trim() : '';
     if (!name) return '';
     const tags = String(candidate.tags || '').trim();
     return `<div class="igs-dna-candidate" data-dna-candidate="${esc(name)}"><div class="igs-settings-subhead">「${esc(name)}」的DNA候选</div>`
         + `<div class="igs-source-filter-note">${tags ? `生成时使用的 tag：${esc(tags)}` : '生成记录中没有可用的 tag，可在下方手动填写。'}</div>`
-        + `<div class="igs-settings-row"><button type="button" class="igs-settings-action" data-action="scene-accept-dna-candidate">采用为默认外观</button>`
+        + `<div class="igs-source-filter-note">请在命名衣装中单独保存服装 DNA；此记录不自动设为默认。</div><div class="igs-settings-row">`
         + `<button type="button" class="igs-settings-action" data-action="scene-dismiss-dna-candidate">忽略</button></div></div>`;
 }
 

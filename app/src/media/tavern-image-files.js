@@ -5,6 +5,7 @@
 // 文件名带「编号@类型@字段@哈希」：清掉浏览器缓存后按编号从文件夹找回；早期只有哈希的文件靠比对哈希认领。
 import { getSillyTavernContext } from '../host/tavern-helper-adapter.js';
 import { localImageCacheFor } from './tavern-image-cache.js';
+import { readReferenceImageUrl } from './reference-image-reader.js';
 
 const DATA_RE = /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i;
 const FETCH_TIMEOUT_MS = 30000;
@@ -174,6 +175,12 @@ function createTavernImageFiles(globalObject, dir) {
             await Promise.all(Object.entries(rec).filter(([, v]) => isPath(v)).map(async ([field, v]) => { next[field] = await read(v); }));
             return next;
         },
+        async readCurrentImage(rec, options) {
+            if (!rec || !rec.dataUrl || isData(rec.dataUrl)) return rec;
+            const dataUrl = await readReferenceImageUrl(rec.dataUrl, globalObject, options);
+            // 只核对当前显示图；不读取无关的原图、蒙版，也不写回记录。
+            return dataUrl === null ? null : { ...rec, dataUrl };
+        },
         // 删掉 old 引用而 next 不再引用的文件；失败忽略（旧版酒馆无删除接口时只留孤儿文件，不影响使用）。
         dropUnused(old, next) {
             const keep = pathsOf(next);
@@ -228,6 +235,11 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
     };
     return {
         ...store,
+        // 预检只读现存记录，不恢复、迁移、上传或删除历史文件。
+        async readImage(id, options) {
+            const raw = await store.getImage(id);
+            return files.readCurrentImage(raw, options);
+        },
         async getImage(id) {
             const raw = await store.getImage(id);
             if (!raw && id) {
@@ -243,10 +255,13 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
             await store.putImage(next);
             files.dropUnused(old, next);
         },
-        async deleteImage(id) {
+        async deleteImage(id, options) {
             const old = await store.getImage(id);
-            await store.deleteImage(id);
+            if (options?.beforeDelete && !(await options.beforeDelete())) return { retained: true };
+            const result = await store.deleteImage(id, options);
+            if (result?.retained) return result;
             files.dropUnused(old, null);
+            return result;
         },
         async updateImagePrompt(id, expectedRevision, prompt, updatedAt) {
             if (typeof store.updateImagePrompt !== 'function') return { ok: false, reason: 'update-unavailable' };
@@ -326,6 +341,7 @@ export function withTavernIllustrationFiles(store, globalObject = globalThis) {
         queue();
     }
     let restoring = null;
+    let referencesComplete = false;
     const restore = () => restoring || (restoring = (async () => {
         if (!files.headers() || typeof store.listSlotKeys !== 'function' || typeof globalObject.fetch !== 'function') return;
         let saved = null;
@@ -333,14 +349,18 @@ export function withTavernIllustrationFiles(store, globalObject = globalThis) {
             const res = await globalObject.fetch(`/user/files/${CG_RECORDS_FILE}?t=${Date.now()}`, { cache: 'no-store' });
             if (res.ok) {
                 const file = await res.json();
-                saved = file && file.slots && typeof file.slots === 'object' ? file.slots : {};
+                if (file?.version === 1 && file.slots && typeof file.slots === 'object'
+                    && !Array.isArray(file.slots)) saved = file.slots;
             } else if (res.status === 404) saved = {};
         } catch { saved = null; }
         if (!saved) return;
         const have = new Set(await store.listSlotKeys());
+        let complete = true;
         for (const [key, rec] of Object.entries(saved)) {
             const cut = key.lastIndexOf('|');
-            if (!rec || typeof rec !== 'object' || cut <= 0) continue;
+            if (!rec || typeof rec !== 'object' || Array.isArray(rec) || cut <= 0) { complete = false; continue; }
+            if (!Number.isSafeInteger(rec.slot) || rec.slot < 1
+                || key !== `${rec.floorKey || key.slice(0, cut)}|${rec.slot}`) complete = false;
             backup.set(key, rec);
             if (!have.has(key)) await store.putSlot(String(rec.floorKey || key.slice(0, cut)), rec);
         }
@@ -355,6 +375,7 @@ export function withTavernIllustrationFiles(store, globalObject = globalThis) {
             });
         }
         canUpload = true;
+        referencesComplete = complete;
         if (added) queue();
     })().catch(() => {}).finally(() => { restoreDone = true; }));
     let restoreDone = false;
@@ -459,7 +480,12 @@ export function withTavernIllustrationFiles(store, globalObject = globalThis) {
                 return result;
             });
         },
-        ...(typeof store.listSlotKeys === 'function' ? { async listSlotKeys() { await restored(); return store.listSlotKeys(); } } : {}),
+        ...(typeof store.listSlotKeys === 'function' ? { async listSlotKeys(options) {
+            await restored();
+            // 阅读可用不代表备份引用已读全；超时、坏备份和网络失败不得授权清理。
+            if (options?.requireComplete && !referencesComplete) throw new Error('image-reference-unavailable');
+            return store.listSlotKeys();
+        } } : {}),
         ...(typeof store.getSlotRecord === 'function' ? { async getSlotRecord(key) { await restored(); return store.getSlotRecord(key); } } : {}),
         ...(typeof store.getSlotRecords === 'function' ? { async getSlotRecords(keys) { await restored(); return store.getSlotRecords(keys); } } : {}),
         hydrateSlot(rec) { return files.hydrate(rec); },

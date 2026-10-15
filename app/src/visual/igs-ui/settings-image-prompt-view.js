@@ -27,7 +27,7 @@ export function renderImagePromptPanel(editor, advancedOpen = {}) {
     if (!view?.ok) return `<div class="igs-source-filter" data-image-prompt-panel>${note('写词预设读取不可用，未初始化或重置存量数据。')}${action('reload', '重新读取')}</div>`;
     const { state, items, current, saved, activation } = view;
     let html = `<div class="igs-source-filter igs-settings-full" data-image-prompt-panel><div class="igs-source-filter-title">生图提示块与任务模块</div>`;
-    html += note('共享框架在声明的中间槽替换任务与资料。草稿不参与运行；预览仅使用下方本地资料，不联网。');
+    html += note('共享框架在声明的中间槽替换任务与资料。草稿不参与运行；预览仅使用下方本地资料，不联网。默认框架 v10 支持本次有效衣装与临时身份校正；自定义正文不会自动覆盖，可能仍有旧衣装规则。内置预设可逐块“恢复默认正文”，其他自定义预设请自行同步后保存。');
     html += note(`当前生效：${current?.name || '未选择'}${current ? ` · r${current.data.revision}` : ''}`);
 
     html += `<label class="igs-settings-field"><span>编辑预设</span><select data-image-prompt-select aria-label="编辑预设"><option value="">请选择</option>${choices(items.map(p => [p.id, `${p.name || p.id}${p.draftOnly ? ' · 仅草稿' : ''}`]), state.preset?.id)}</select></label>`;

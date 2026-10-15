@@ -2,6 +2,7 @@ import { lookupSceneBackground, lookupSceneAssetUrls, resolveCharacterKey, looku
 import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit, outfitsOfCharacter } from './character-outfits.js';
 import { promptProvenance } from '../generated-images/generation-prompt.js';
 import { characterPromptRecovery } from '../generated-images/illustration/character-prompt-task.js';
+import { appearanceCharacterKey, resolveCharacterAppearance } from './character-appearance.js';
 
 export const GENERATED_ASSET_URL_PREFIX = 'igs-gen:';
 
@@ -215,20 +216,6 @@ export function fileGeneratedHoldings(sceneAssets) {
     return sceneAssets;
 }
 
-function placeSpriteUrl(bucket, name, mood, url) {
-    if (!name || !isGeneratedAssetUrl(url)) return false;
-    const characters = { ...plainObject(bucket.characters) };
-    const current = { ...plainObject(characters[name]) };
-    const existing = String(current[mood] || '').trim();
-    if (existing && existing !== url) return existing === url;
-    if (!existing) current[mood] = url;
-    characters[name] = current;
-    bucket.characters = characters;
-    const aliases = { ...plainObject(bucket.characterAliases) };
-    if (!Array.isArray(aliases[name])) aliases[name] = [];
-    bucket.characterAliases = aliases;
-    return true;
-}
 
 function placeBackgroundUrls(bucket, name, entry) {
     const scene = plainObject(entry);
@@ -248,23 +235,7 @@ function placeBackgroundUrls(bucket, name, entry) {
 function fileGeneratedBucket(bucket) {
     if (!bucket || typeof bucket !== 'object' || !bucket.generated) return;
     const generated = normalizeGeneratedLibrary(bucket.generated);
-    for (const [name, entry] of Object.entries({ ...generated.characters })) {
-        const moods = plainObject(entry);
-        let blocked = false;
-        for (const [mood, url] of Object.entries(moods)) {
-            if (!isGeneratedAssetUrl(url)) continue;
-            const characters = plainObject(bucket.characters);
-            const existing = String(plainObject(characters[name])[mood] || '').trim();
-            if (existing && existing !== url) { blocked = true; continue; }
-            placeSpriteUrl(bucket, name, mood, url);
-        }
-        const placed = new Set(collectGeneratedImageIds((bucket.characters || {})[name]));
-        const held = collectGeneratedImageIds(moods);
-        if (!blocked && held.every((id) => placed.has(id))) {
-            delete generated.characters[name];
-            delete generated.characterAliases[name];
-        }
-    }
+    // 旧立绘槽仅保留存量；命名衣装由显式入库操作写入，普通保存不搬图或推断默认。
     for (const [name, entry] of Object.entries({ ...generated.scenes })) {
         placeBackgroundUrls(bucket, name, entry);
         const placed = new Set(collectGeneratedImageIds((bucket.scenes || {})[name]));
@@ -351,43 +322,24 @@ export function resolveBackgroundAsset(sceneState, ctx = {}) {
 export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
     const name = String(character || '').trim();
     if (!name) return { url: '', slot: '', character: '', source: 'none', needsGeneration: false };
-    const userAssets = ctx.sceneAssets || {};
-    const outfitName = String(outfit || '').trim();
-    // 服装内按当条表情找（精确 → 情绪组 → 模糊 → 同方向另一档）→ 裸体底图 → 这一套的「平和」→ 这一套任意一张；
-    // 整套一张图都没有才退回原装——换了衣服却闪回原装的衣服比表情不准更违和。
-    if (outfitName && outfitName !== OUTFIT_RESET) {
-        const found = outfitsOfCharacter(userAssets.characterOutfits, userAssets.characterAliases, name);
-        const entry = found.outfits[outfitName];
-        if (entry && entry.moods) {
-            const hit = lookupAssetValue(entry.moods, mood, userAssets.moodGroups, userAssets.moodFuzzyMatch === true, false);
-            const nudeBase = isBuiltinNudeOutfit(entry.wardrobe) ? String(entry.base || '').trim() : '';
-            const calm = hit.url || nudeBase ? {} : lookupAssetValue(entry.moods, '平和', userAssets.moodGroups, false, false);
-            const anySlot = hit.url || nudeBase || calm.url ? '' : Object.keys(entry.moods).find((slot) => String(entry.moods[slot] || '').trim());
-            const own = hit.url ? hit
-                : nudeBase ? { url: nudeBase, slot: BUILTIN_NUDE_OUTFIT, quality: 'exact' }
-                : calm.url ? calm
-                : anySlot ? { url: entry.moods[anySlot], slot: anySlot, quality: 'group' } : {};
-            const picked = own.url ? own : lookupAssetValue((userAssets.characters || {})[found.key || name], '默认', userAssets.moodGroups, false, false);
-            if (picked.url && !lostImage(picked.url, ctx)) return { url: picked.url, slot: picked.slot, outfit: outfitName, character: found.key || name, source: 'user-outfit', quality: hit.url ? hit.quality : (nudeBase && picked.url === nudeBase ? 'exact' : 'group'), needsGeneration: false };
-        }
-    }
-    const user = lookupSceneAssetUrls({ character: name, mood }, userAssets);
-    if (lostImage(user.spriteUrl, ctx)) return { url: '', slot: '', character: name, source: 'none', needsGeneration: true };
-    if (user.spriteUrl) {
-        return { url: user.spriteUrl, slot: user.spriteSlot, character: user.spriteCharacter || name, source: 'user', quality: user.spriteQuality, needsGeneration: false };
-    }
-    // 用户已登记该角色（哪怕槽位空着）就不是「无名角色」，不替用户生成。
-    if (resolveCharacterKey(userAssets.characters, userAssets.characterAliases, name)) {
-        return { url: '', slot: '', character: name, source: 'none', quality: user.spriteQuality, needsGeneration: false };
-    }
-    const library = normalizeGeneratedLibrary(ctx.generatedAssets);
-    const generated = lookupSceneAssetUrls({ character: name, mood }, { characters: library.characters, characterAliases: library.characterAliases, moodGroups: userAssets.moodGroups, moodFuzzyMatch: userAssets.moodFuzzyMatch });
-    if (generated.spriteUrl && !lostImage(generated.spriteUrl, ctx)) {
-        return { url: generated.spriteUrl, slot: generated.spriteSlot, character: generated.spriteCharacter || name, source: 'library', quality: generated.spriteQuality, needsGeneration: false };
-    }
-    const temp = typeof ctx.tempSprite === 'function' ? ctx.tempSprite(name) : '';
-    if (temp && !lostImage(temp, ctx)) return { url: temp, slot: '默认', character: name, source: 'temp', needsGeneration: false };
-    return { url: '', slot: '', character: name, source: 'none', needsGeneration: !isNonSpriteSpeaker(name) && !isKnownCharacterName(name, userAssets) };
+    const assets = ctx.sceneAssets || {};
+    const key = appearanceCharacterKey(assets, name);
+    const availability = url => {
+        if (lostImage(url, ctx)) return { status: 'missing' };
+        return typeof ctx.imageAvailability === 'function' ? ctx.imageAvailability(url)
+            : ctx.imageAvailability?.[url];
+    };
+    const result = resolveCharacterAppearance({ characterKey: key || name, requestedOutfit: outfit,
+        mood, sceneAssets: assets, ownerScope: ctx.ownerScope || '', imageAvailability: availability });
+    if (!result.ok) return { url: '', slot: '', character: key || name, source: 'none', quality: 'none',
+        outfit: result.effectiveOutfit || '', requestedOutfit: String(outfit || '').trim(),
+        reason: result.reason, fallbackReason: result.fallbackReason || '',
+        needsGeneration: !key && !isNonSpriteSpeaker(name) && !isKnownCharacterName(name, assets) };
+    return { url: result.spriteImage.url, slot: result.spriteImage.slot, character: result.characterKey,
+        outfit: result.effectiveOutfit, requestedOutfit: result.requestedOutfit,
+        source: result.selectionSource === 'requested' ? 'user-outfit' : 'user-default-outfit',
+        selectionSource: result.selectionSource, quality: result.spriteImage.quality,
+        fallbackReason: result.fallbackReason, reason: '', needsGeneration: false };
 }
 
 // NSFW 挂 CG 时的对话框头像：只在衣柜引用「裸体」的那几套里找（当条表情 → 裸体底图 → 这一套的「平和」），

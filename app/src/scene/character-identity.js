@@ -2,7 +2,7 @@ import { normalizeCharacterDna } from './character-dna.js';
 import { checkPromptTask, checkPromptOutput, promptTaskForSlot } from '../schemas/prompt-recipe.js';
 import { checkCharacterMeta } from '../schemas/character-meta.js';
 import { resolveCharacterKey } from './scene-directives.js';
-import { isValidOutfitName, isBuiltinNudeOutfit, resolveSpriteOutfit, resolveWardrobePrompt } from './character-outfits.js';
+import { resolveSpriteOutfit, resolveWardrobePrompt } from './character-outfits.js';
 import { savedCharacterOutfits, prepareOutfitAdoption } from './outfit-identity.js';
 
 // 沿用既有别名解析；请求内去重，不从 caption 顺序猜身份。
@@ -15,12 +15,10 @@ export function buildCharacterContext(names, assets = {}, options) {
         seen.add(characterKey);
         const dna = normalizeCharacterDna(assets.characterDna?.[characterKey]);
         const outfits = savedCharacterOutfits(assets, characterKey);
-        const original = dna.defaultAppearance ? { name: '', description: dna.defaultAppearance }
-            : outfits.find(o => o.default === true);
+        const original = outfits.find(o => o.default === true);
         let outfit = original ? { name: original.name, description: original.description } : { name: '', description: '' };
         if (options) {
-            const resolved = resolveSpriteOutfit({ ...options, character: characterKey, sceneAssets: assets,
-                resolveDna: (key) => normalizeCharacterDna(assets.characterDna?.[key]) });
+            const resolved = resolveSpriteOutfit({ ...options, character: characterKey, sceneAssets: assets });
             const entry = assets.characterOutfits?.[characterKey]?.[resolved.outfit];
             if (resolved.outfit) outfit = { name: resolved.outfit,
                 description: resolveWardrobePrompt(assets.wardrobe, entry, resolved.outfit)?.prompt || '' };
@@ -32,7 +30,7 @@ export function buildCharacterContext(names, assets = {}, options) {
 // 新候选采用与旧完整词采用分开：成功图片的旁路是证据，不从图片或正文猜身份。
 export function prepareSpriteIdentityAdoption(assets, name, imageId, record = {},
     { sourceName = name, hadDefault = false, readWardrobe = assets.wardrobe,
-        diagnosticAssets, diagnosticOwner } = {}) {
+        diagnosticAssets, diagnosticOwner, spriteSlot = '平和' } = {}) {
     const fail = (reason, error = '立绘身份资料已变化或无法核验，请重新生成；原资料保持不变') => ({ ok: false, reason, error });
     if (record.promptEdited === true || record.edited === true) {
         if (record.dnaCandidates !== undefined) return fail('DNA_ADOPTION_INVALID');
@@ -40,7 +38,7 @@ export function prepareSpriteIdentityAdoption(assets, name, imageId, record = {}
             characterDna: assets.characterDna || {}, characterOutfits: assets.characterOutfits || {}, wardrobe: assets.wardrobe || {},
         } };
     }
-    const clothes = prepareOutfitAdoption(assets, name, imageId, record, { sourceName, defaultOutfit: true, readWardrobe,
+    const clothes = prepareOutfitAdoption(assets, name, imageId, record, { sourceName, defaultOutfit: true, readWardrobe, spriteSlot,
         ...(diagnosticAssets !== undefined && { diagnosticAssets }),
         ...(diagnosticOwner !== undefined && { diagnosticOwner }) });
     if (!clothes.ok) return clothes;
@@ -54,7 +52,8 @@ export function prepareSpriteIdentityAdoption(assets, name, imageId, record = {}
         const patch = record.promptRecipe ? {
             characterDna: assets.characterDna || {}, characterOutfits: assets.characterOutfits || {}, wardrobe: assets.wardrobe || {},
         } : adoptSpriteIdentity(assets, name, imageId, record.characterMeta, { hadDefault });
-        return { ok: true, patch: { ...patch, ...clothes.patch } };
+        return { ok: true, ...(clothes.outfitName && { outfitName: clothes.outfitName }),
+            patch: { ...patch, ...clothes.patch } };
     }
     if (!imageId || record.promptEdited === true || record.edited === true || !record.sentPrompt
         || !record.promptRecipe || !Array.isArray(record.identityContext)) return fail('DNA_ADOPTION_INVALID');
@@ -78,9 +77,9 @@ export function prepareSpriteIdentityAdoption(assets, name, imageId, record = {}
         || JSON.stringify(normalizeCharacterDna(snapshot[0].profile).views) !== JSON.stringify(candidate.views)) return fail('DNA_ADOPTION_INVALID');
     // 显式立绘转换可补齐旧身份的景别，但旧字段及已存在景别必须原样保留。
     const nextDna = { ...dna, version: 2, views: structuredClone({ ...dna.views, ...candidate.views }),
-        ...(clothes.patch.characterDna?.[name] && { defaultAppearance: clothes.patch.characterDna[name].defaultAppearance }),
         identityInitialized: true, identitySource: dna.identitySource || imageId };
-    return { ok: true, patch: { ...clothes.patch, characterDna: { ...assets.characterDna, [name]: nextDna } } };
+    return { ok: true, ...(clothes.outfitName && { outfitName: clothes.outfitName }),
+        patch: { ...clothes.patch, characterDna: { ...assets.characterDna, [name]: nextDna } } };
 }
 
 // 图片及临时记录使用同一份采用证据；只保存本次角色资料，不含凭据或请求全量。
@@ -103,9 +102,6 @@ export function adoptSpriteIdentity(assets, name, imageId, meta, { hadDefault = 
         return { characterDna: assets.characterDna || {}, characterOutfits: assets.characterOutfits || {}, wardrobe: assets.wardrobe || {} };
     const identity = [binding.identityAnchor, binding.signatureDetails].filter(Boolean).join(' ');
     const nextDna = { ...dna, identity: dna.identity || identity, identityInitialized: true, identitySource: imageId };
-    const outfit = binding.outfit;
-    if (!dna.defaultAppearance && isValidOutfitName(outfit?.name) && !isBuiltinNudeOutfit(outfit.name)
-        && typeof outfit.description === 'string') nextDna.defaultAppearance = outfit.description.trim();
     return { characterDna: { ...(assets.characterDna || {}), [name]: nextDna },
         characterOutfits: assets.characterOutfits || {}, wardrobe: assets.wardrobe || {} };
 }

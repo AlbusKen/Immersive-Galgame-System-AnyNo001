@@ -6,7 +6,7 @@ const validSize = (w, h) => [w, h].every((n) => Number.isSafeInteger(n) && n > 0
 const MASK_GRID = 8;
 
 // 规划坐标不是检测结果；默认中心、同位中心与多中心均不能自动分辨人物。
-export function planReferenceCanvas(width, height, meta, characterKey) {
+export function planReferenceCanvas(width, height, meta, characterKey, referenceImage, { legacyPortrait = false } = {}) {
     if (!validSize(width, height)) return fail('cg-size-invalid');
     const characters = meta?.characters;
     if (!Array.isArray(characters) || !characters.length || new Set(characters.map((c) => c.characterKey)).size !== characters.length) return fail('cg-binding-invalid');
@@ -27,7 +27,10 @@ export function planReferenceCanvas(width, height, meta, characterKey) {
     }
     if (![region.x, region.y, region.width, region.height].every(Number.isFinite) || region.x < 0 || region.y < 0 || region.width <= 0 || region.height <= 0 || region.x + region.width > 1 || region.y + region.height > 1) return fail('cg-region-invalid');
     const rect = { x: Math.floor(region.x * width), y: Math.floor(region.y * height), right: Math.ceil((region.x + region.width) * width), bottom: Math.ceil((region.y + region.height) * height) };
-    return finishPlan(width, height, rect);
+    const plan = finishPlan(width, height, rect);
+    if (!plan.ok || referenceImage === undefined) return plan;
+    try { return Object.freeze({ ...plan, referenceContent: referencePlacement(referenceImage, plan.reference, legacyPortrait) }); }
+    catch { return fail('cg-reference-pixels-invalid'); }
 }
 
 function finishPlan(width, height, rect) {
@@ -107,19 +110,37 @@ export function buildReferencePixels(source, referenceImage, plan) {
         const weight = inRect(plan.uploadMask, x, y) ? 255 : 0;
         mask.set([weight, weight, weight, 255], to);
     }
-    drawIdentityReference(data, size.width, referenceImage, reference);
+    drawIdentityReference(data, size.width, referenceImage, plan.referenceContent || referencePlacement(referenceImage, reference));
     return { image: { ...size, data }, mask: { ...size, data: mask } };
 }
 
-// 无人工头部标定时仅取立绘上部作几何参考，不识别人脸或服装。
-function drawIdentityReference(data, width, image, box) {
-    const head = image.referenceCrop || { x: 0, y: 0, width: image.width, height: Math.max(1, Math.ceil(image.height * 0.4)) };
-    if (![head.x, head.y, head.width, head.height].every(Number.isFinite) || head.x < 0 || head.y < 0 || head.width <= 0 || head.height <= 0 || head.x + head.width > image.width || head.y + head.height > image.height) throw new Error('cg-reference-crop-invalid');
-    const scale = Math.min(box.width / head.width, box.height / head.height);
-    const w = Math.max(1, Math.floor(head.width * scale)), h = Math.max(1, Math.floor(head.height * scale));
-    const left = box.x + Math.floor((box.width - w) / 2), top = box.y + Math.floor((box.height - h) / 2);
+// 仅去除完全透明的外沿，保留所有非零 alpha 像素；旧头像标定不用于完整衣装参考。
+function referencePlacement(image, box, legacyPortrait = false) {
+    if (!validPixels(image)) throw new Error('cg-reference-pixels-invalid');
+    let crop;
+    if (legacyPortrait) crop = image.referenceCrop || { x: 0, y: 0, width: image.width, height: Math.max(1, Math.ceil(image.height * 0.4)) };
+    else {
+        let left = image.width, top = image.height, right = 0, bottom = 0;
+        for (let y = 0; y < image.height; y++) for (let x = 0; x < image.width; x++) {
+            if (!image.data[(y * image.width + x) * 4 + 3]) continue;
+            left = Math.min(left, x); top = Math.min(top, y);
+            right = Math.max(right, x + 1); bottom = Math.max(bottom, y + 1);
+        }
+        crop = { x: left, y: top, width: right - left, height: bottom - top };
+    }
+    if (![crop.x, crop.y, crop.width, crop.height].every(Number.isFinite) || crop.x < 0 || crop.y < 0 || crop.width <= 0 || crop.height <= 0 || crop.x + crop.width > image.width || crop.y + crop.height > image.height) throw new Error('cg-reference-crop-invalid');
+    const scale = Math.min(box.width / crop.width, box.height / crop.height);
+    const width = Math.max(1, Math.floor(crop.width * scale)), height = Math.max(1, Math.floor(crop.height * scale));
+    return Object.freeze({ crop: Object.freeze({ ...crop }), scale,
+        x: box.x + Math.floor((box.width - width) / 2), y: box.y + Math.floor((box.height - height) / 2), width, height,
+        sourceWidth: image.width, sourceHeight: image.height });
+}
+
+function drawIdentityReference(data, width, image, placement) {
+    if (image.width !== placement.sourceWidth || image.height !== placement.sourceHeight) throw new Error('cg-reference-size-mismatch');
+    const { crop, x: left, y: top, width: w, height: h } = placement;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        const sx = Math.floor(head.x + x * head.width / w), sy = Math.floor(head.y + y * head.height / h);
+        const sx = Math.floor(crop.x + (x + 0.5) * crop.width / w), sy = Math.floor(crop.y + (y + 0.5) * crop.height / h);
         const from = (sy * image.width + sx) * 4, to = ((top + y) * width + left + x) * 4;
         const a = image.data[from + 3] / 255;
         for (let k = 0; k < 3; k++) data[to + k] = Math.round(image.data[from + k] * a + data[to + k] * (1 - a));

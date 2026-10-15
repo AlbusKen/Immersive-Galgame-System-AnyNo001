@@ -12,7 +12,7 @@ import { floorKeyOf } from '../../media/illustration-store.js';
 import { resolveCharacterKey, stripIllustrationMarker, stripIllustrationMarkers } from '../../scene/scene-directives.js';
 import { buildCharacterDnaPromptParts, isCharacterDnaEmpty, mergePromptTags, resolveCharacterDna } from '../../scene/character-dna.js';
 import { CG_PIXEL_CAP, clampToPixelCap, fitCgSize, parseCgSize } from './cg-pixel-cap.js';
-import { cgCharacterState, bindCgCaption, cgPromptTask, preflightCgCaption, cgPaintRequests, cgFinalRequest } from './cg-character-bindings.js';
+import { cgCharacterState, bindCgCaption, cgPromptTask, preflightCgCaption, cgPaintRequests, cgFinalRequest, completedCgOutfitAnchor } from './cg-character-bindings.js';
 import { createCgConsistencyService } from './cg-consistency-service.js';
 import { promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
 import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
@@ -421,6 +421,9 @@ export function createAutoIllustrationService(deps) {
         consistencyStrength: () => settings().consistencyStrength,
         consistencyModel: () => settings().consistencyModel,
         resolveReference: deps.resolveCgReference, targetStillLive, now, report,
+        readReferenceImage: deps.readCgReferenceImage,
+        captureAppearanceScope: deps.captureCgOutfitScope,
+        subscribeAppearance: deps.subscribeCgAppearance,
         writingRequirements: () => {
             const snapshot = settings();
             return cgWritingRequirements(snapshot, cgSize(snapshot), 'cg');
@@ -433,12 +436,12 @@ export function createAutoIllustrationService(deps) {
         },
     });
 
-    function redrawConsistency(query = {}, options = {}) {
+    function consistencyOperation(operation, query = {}, options = {}) {
         const identity = identityOf(query, query.slot);
         if (!identity || identity.slot == null) return Promise.resolve({ ok: false, reason: 'invalid-identity' });
         const key = floorKeyOf(identity.floor);
         if (locks.has(key)) return Promise.resolve({ ok: false, reason: 'consistency-busy', error: '当前楼层正在生成或清理 CG' });
-        return consistency.run({ ...identity, key }, { ...options,
+        return consistency[operation]({ ...identity, key }, { ...options,
             onProgress(detail) {
                 progress(identity.floor, { ...detail, slot: identity.slot });
                 options.onProgress?.(detail);
@@ -446,6 +449,8 @@ export function createAutoIllustrationService(deps) {
         });
     }
 
+    const preflightConsistency = (query, options) => consistencyOperation('preflight', query, options);
+    const redrawConsistency = (query, options) => consistencyOperation('run', query, options);
     const acceptConsistency = (candidateId) => consistency.accept(candidateId);
     const cancelConsistency = (candidateId) => consistency.cancel(candidateId);
     const describeConsistency = () => consistency.capability();
@@ -472,6 +477,7 @@ export function createAutoIllustrationService(deps) {
                 caption: result.caption || request.caption,
                 ...promptProvenance(result),
                 ...outfitAdoptionEvidence(request, result),
+                ...completedCgOutfitAnchor(request, result),
                 ...(prompt && { prompt }),
                 ...(result.characterMeta && { characterMeta: result.characterMeta }) }
             : { ...(attempt.dataUrl ? attempt : request), status: attempt.dataUrl ? 'done' : 'failed',
@@ -692,6 +698,8 @@ export function createAutoIllustrationService(deps) {
                         const checked = preflightCgCaption(entry, task.promptTask, context);
                         slots.push({ ...entry, slot: entry.slotId, promptTask: task.promptTask,
                             ...(outfitScope && { outfitScope }),
+                            outfitAnchor: characterState.anchorAt(offset, (entry.characterMeta?.characters || [])
+                                .filter(character => character.kind === 'named' || character.characterKey).map(character => character.characterKey)),
                             characterContext: context, originalSize: parseCgSize(cgSize(s)),
                             ...(!checked.ok && { preflightFailure: { reason: checked.reason, error: checked.error } }) });
                     }
@@ -1026,7 +1034,7 @@ export function createAutoIllustrationService(deps) {
 
     return {
         processMessage, getIllustrationUrl, clearIllustration, clearFloorIllustrations, rerollSlot, rerollFloor,
-        redrawConsistency, acceptConsistency, cancelConsistency, describeConsistency,
+        preflightConsistency, redrawConsistency, acceptConsistency, cancelConsistency, describeConsistency,
         start() {
             if (offRendered) return;
             messageHost.attachPromptStrip();

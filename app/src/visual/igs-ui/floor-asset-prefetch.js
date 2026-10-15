@@ -1,7 +1,6 @@
 import { extractSceneDirectives, classifySceneKey } from '../../scene/scene-directives.js';
 import { resolveBackgroundAsset, resolveNudeSpriteAsset, resolveSpriteAsset, isNonSpriteSpeaker } from '../../scene/asset-match.js';
 import { createOutfitResolver, resolveSpriteOutfit } from '../../scene/character-outfits.js';
-import { resolveCharacterDna } from '../../scene/character-dna.js';
 import { isSystemRole } from './system-role.js';
 
 function pushUrl(urls, seen, url) {
@@ -43,10 +42,7 @@ export function collectFloorAssetUrls({
     const ctx = assetMatchCtx || { sceneAssets };
     const outfitResolver = createOutfitResolver(sceneAssets);
     const directives = extractSceneDirectives(String(source || ''), { outfitResolver }).directives;
-    const outfitMap = sceneAssets.characterOutfits;
-    const hasOutfits = Boolean(outfitMap && Object.keys(outfitMap).length);
     const outfitFor = (character, offset) => {
-        if (!hasOutfits) return '';
         const place = sceneBefore(directives, offset, inheritedScene);
         const sceneRaw = place.scene;
         return resolveSpriteOutfit({
@@ -57,10 +53,6 @@ export function collectFloorAssetUrls({
             sceneAssets,
             scene: [classifySceneKey(sceneAssets.scenes, sceneRaw).key || '', sceneRaw],
             readClues: typeof readClues === 'function' ? readClues : () => null,
-            resolveDna: (name) => {
-                const hit = resolveCharacterDna(sceneAssets.characterDna, name);
-                return hit ? hit.dna : null;
-            },
         }).outfit;
     };
     if (inheritedScene && inheritedScene.scene) {

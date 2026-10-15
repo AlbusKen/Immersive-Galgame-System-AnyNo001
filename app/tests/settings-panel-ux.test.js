@@ -465,7 +465,8 @@ test('gate:character-sprite:generates-default-from-the-character-page', async ()
     draft.bridge.sceneAssets.characters['冬月']['默认'] = 'https://kept.example/a.png';
     const replaced = await handleSettingsAction('char-generate-sprite:%E5%86%AC%E6%9C%88', ctx);
     assert.equal(replaced.ok, true);
-    assert.match(asks[1], /当前这张将被替换/);
+    assert.match(asks[1], /生成「冬月」的默认立绘/);
+    assert.doesNotMatch(asks[1], /当前这张将被替换/);
     assert.equal(draft.bridge.sceneAssets.characters['冬月']['默认'], 'igs-gen:made-1');
 
     const dnaOnly = await handleSettingsAction('char-generate-sprite:%E8%B7%AF%E4%BA%BA%E7%94%B2', ctx);
@@ -480,6 +481,8 @@ test('gate:asset-upload:binds-scene-variants-and-sprite-and-restores-on-save-fai
     const draft = { bridge: { sceneAssets: {
         scenes: { 庭院: { url: 'old-bg', times: { 夜: { url: 'old-time', weathers: { 雨: { url: 'old-weather' } } } } } },
         characters: { 冬月: { 默认: 'old-sprite' } },
+        characterOutfits: { 冬月: { 校服: { words: [], moods: { 平和: 'old-outfit' }, wardrobe: '校服' } } },
+        characterDefaultOutfits: { 冬月: { version: 1, outfitName: '校服' } },
     } }, readerSettings: {} };
     const doc = makeDoc();
     doc.createElement = (tag) => {
@@ -494,11 +497,20 @@ test('gate:asset-upload:binds-scene-variants-and-sprite-and-restores-on-save-fai
     const stored = new Map();
     let next = 0;
     let fail = false;
+    let readable = true;
+    class Image {
+        naturalWidth = 100; naturalHeight = 200;
+        set src(value) { if (value) queueMicrotask(() => this.onload()); }
+    }
     const ctx = {
         state: { activeSettings: { draft, asyncState: {} } },
-        options: { global: { document: doc, FileReader: Reader }, generatedAssets: {
+        options: { global: { document: doc, FileReader: Reader, Image }, generatedAssets: {
             async importAssetImage(data, type) { const id = `uploaded-${++next}`; stored.set(id, { data, type }); return { ok: true, imageId: id }; },
             async deleteImages(ids) { ids.forEach((id) => stored.delete(id)); return { ok: true }; },
+            async readStoredImage(id) {
+                const record = stored.get(id);
+                return readable && record ? { id, type: record.type, dataUrl: record.data } : null;
+            },
         } },
         persistSettingsDraft: () => fail ? { ok: false, reason: 'save-failed' } : { ok: true },
         rerenderSettings: () => ({ ok: true }),
@@ -509,6 +521,7 @@ test('gate:asset-upload:binds-scene-variants-and-sprite-and-restores-on-save-fai
         ['scene-pick-time:%E5%BA%AD%E9%99%A2:%E5%A4%9C', () => draft.bridge.sceneAssets.scenes.庭院.times.夜.url, 'background'],
         ['scene-pick-weather:%E5%BA%AD%E9%99%A2:%E5%A4%9C:%E9%9B%A8', () => draft.bridge.sceneAssets.scenes.庭院.times.夜.weathers.雨.url, 'background'],
         ['scene-pick-mood:%E5%86%AC%E6%9C%88:%E9%BB%98%E8%AE%A4', () => draft.bridge.sceneAssets.characters.冬月.默认, 'sprite'],
+        ['scene-pick-outfit-mood:冬月:校服:平和', () => draft.bridge.sceneAssets.characterOutfits.冬月.校服.moods.平和, 'sprite'],
     ];
     for (const [action, getUrl, type] of cases) {
         assert.equal((await handleSettingsAction(action, ctx)).ok, true);
@@ -523,7 +536,17 @@ test('gate:asset-upload:binds-scene-variants-and-sprite-and-restores-on-save-fai
     const failed = await handleSettingsAction(cases[0][0], ctx);
     assert.equal(failed.ok, false);
     assert.equal(JSON.stringify(draft.bridge.sceneAssets), before);
-    assert.equal(stored.size, 4);
+    assert.equal(stored.size, 5);
+    const outfitFailed = await handleSettingsAction(cases[4][0], ctx);
+    assert.equal(outfitFailed.reason, 'save-failed');
+    assert.equal(JSON.stringify(draft.bridge.sceneAssets), before);
+    assert.equal(stored.size, 5);
+    fail = false;
+    readable = false;
+    const unreadable = await handleSettingsAction(cases[4][0], ctx);
+    assert.equal(unreadable.reason, 'default-outfit-protected');
+    assert.equal(JSON.stringify(draft.bridge.sceneAssets), before);
+    assert.equal(stored.size, 5);
     assert.equal((await handleSettingsAction('scene-pick-time:%E4%B8%8D%E5%AD%98%E5%9C%A8:%E5%A4%9C', ctx)).reason, 'invalid-asset-slot');
 });
 
@@ -680,6 +703,32 @@ test('gate:page-modal:一致性完成后双图审核且不弹生成确认或进�
         assert.equal(modal.isOpen(), false);
     }
 });
+
+for (const confirm of [false, true]) test(`衣装预检：UI集中确认与释放-${confirm}`, async () => {
+    const { runCgConsistencyAction } = await import('../src/visual/igs-ui/cg-consistency-action.js');
+    const calls = [], confirms = [];
+    const service = {
+        describeConsistency: () => ({ ok: true }),
+        async preflightConsistency() { return { ok: true, reason: 'needs-confirmation', preflightToken: 'preflight',
+            confirmations: ['A', 'B'].map(characterKey => ({ characterKey, requestedOutfit: '冬装', effectiveOutfit: '夏装' })) }; },
+        async redrawConsistency(_query, options) { calls.push(options); return { ok: true, candidateId: 'candidate',
+            dataUrl: 'candidate-image', originalDataUrl: 'original-image' }; },
+        async acceptConsistency() { throw new Error('候选未接受'); },
+        cancelConsistency(id) { calls.push(id); },
+    };
+    const modal = { async confirm(message) { confirms.push(message); return confirm; },
+        async confirmImage() { return false; }, cancel() {} };
+    const result = await runCgConsistencyAction({ service, query: {}, modal,
+        signal: new AbortController().signal, stillCurrent: () => true });
+    assert.equal(result.reason, 'cancelled');
+    assert.equal(confirms.length, 1);
+    assert.ok(confirms[0].includes('A') && confirms[0].includes('B'));
+    if (confirm) {
+        assert.equal(calls[0].preflightToken, 'preflight'); assert.equal(calls[0].confirmed, true);
+        assert.equal(calls[1], 'candidate');
+    } else assert.deepEqual(calls, ['preflight']);
+});
+
 
 
 test('gate:settings-focus:restores-focused-field-and-caret-after-innerhtml-rebuild', () => {
@@ -1032,7 +1081,7 @@ test('gate:settings-dialog:choose-picks-a-button-and-highlights-current', async 
     assert.equal(await cancelled, null);
 });
 
-test('gate:status-avatar:generates-a-chibi-avatar-and-default-slot-can-regenerate', async () => {
+test('gate:status-avatar:generates-a-chibi-avatar-without-inferring-a-default-outfit', async () => {
     const { renderCharacterAssetList } = await import('../src/visual/igs-ui/settings-fields.js');
     const asks = [];
     const seen = [];
@@ -1062,7 +1111,9 @@ test('gate:status-avatar:generates-a-chibi-avatar-and-default-slot-can-regenerat
     const html = renderCharacterAssetList({ 冬月: { 默认: 'igs-gen:def', 喜悦: '' } }, { isOpen: () => true, statusAvatars: draft.bridge.sceneAssets.statusAvatars });
     assert.ok(html.includes('data-action="status-avatar-generate:%E5%86%AC%E6%9C%88"'));
     assert.ok(html.includes('重画Q版'));
-    assert.match(html, /data-action="char-generate-sprite:%E5%86%AC%E6%9C%88"[^>]*>重新生成</);
+    assert.match(html, /data-action="char-generate-sprite:%E5%86%AC%E6%9C%88"[^>]*>生成立绘</);
+    assert.ok(html.includes('尚未指定默认服装'));
+    assert.equal(draft.bridge.sceneAssets.characterDefaultOutfits, undefined);
 });
 
 test('gate:row-menu:flips-up-or-clamps-near-the-bottom-of-the-scroll-area', async () => {
@@ -1313,10 +1364,13 @@ test('gate:dna-adoption-ui:默认采用回读候选后保存 DNA，保存失败�
             assert.deepEqual(events, ['generate', 'read', 'save']);
             assert.deepEqual(saves[0].characterDna.Alice.views, record.dnaCandidates.characters[0].views);
             assert.equal(assets.characterDna.Alice.identitySource, record.imageId);
-            assert.equal(assets.characters.Alice.默认, `igs-gen:${record.imageId}`);
-            assert.equal(assets.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
-            assert.deepEqual(assets.characterOutfits, {});
-            assert.deepEqual(assets.wardrobe, {});
+            assert.equal(assets.characters.Alice.默认, 'old.png');
+            assert.equal(assets.characterDna.Alice.defaultAppearance || '', '');
+            const clothing = record.outfitSnapshot.characters[0];
+            assert.deepEqual(assets.characterDefaultOutfits.Alice, { version: 1, outfitName: clothing.name });
+            const entry = assets.characterOutfits.Alice[clothing.name];
+            assert.equal(entry.moods.平和, `igs-gen:${record.imageId}`);
+            assert.equal(assets.wardrobe[entry.wardrobe].prompt, clothing.description);
         } else {
             assert.equal(result.ok, false, mode);
             assert.deepEqual(assets, original, mode);

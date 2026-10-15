@@ -161,3 +161,63 @@ test('角色首次采用标记随卡保存、借用和移动，主动清空后�
     const adopted = adoptSpriteIdentity(assets, 'Alice', 'sprite-new', { characters: [{ characterKey: 'Alice', identityAnchor: 'New identity.' }] });
     assert.deepEqual(adopted.characterDna.Alice, dna);
 });
+
+
+test('新默认映射随所属角色库保存和移动，同名旧角色不借用其他库默认', () => {
+    const root = { characters: { Alice: {} }, characterDefaultOutfits: { Alice: { version: 1, outfitName: '制服' } },
+        characterOutfits: { Alice: { 制服: { moods: { 平和: 'uniform.png' } } } },
+        cards: { 'card:local': { characters: { Alice: { 默认: 'old.png' } } } } };
+    const before = structuredClone(root);
+    assert.equal(effectiveSceneAssets(root, 'card:local').characterDefaultOutfits.Alice, undefined);
+    assert.deepEqual(effectiveSceneAssets(root, 'card:other').characterDefaultOutfits.Alice, root.characterDefaultOutfits.Alice);
+    assert.deepEqual(root, before);
+    normalizeAssetCards(root);
+    assert.equal(Object.hasOwn(root.cards['card:local'], 'characterDefaultOutfits'), false);
+    assert.equal(moveLibraryEntry(root, '', 'card:new', 'characters', 'Alice').ok, true);
+    assert.equal(root.characterDefaultOutfits.Alice, undefined);
+    assert.equal(root.cards['card:new'].characterDefaultOutfits.Alice.outfitName, '制服');
+});
+
+test('新默认映射经过设置存储与预设往返保留，旧档不自动补字段', async () => {
+    const { normalizeSceneAssets } = await import('../src/visual/igs-ui/settings-host-normalize.js');
+    const { presetFromAssets, legacyPresetToPack } = await import('../src/scene/legacy-preset.js');
+    const { writeLegacyIgsSettings, readLegacyIgsSettings } = await import('../src/storage/legacy-igs.js');
+    const { buildSettingsExport, parseSettingsImport } = await import('../src/visual/igs-ui/settings-sections.js');
+    const old = { characters: { Alice: { 默认: 'old.png' } }, characterDna: { Alice: {
+        identity: '', defaultAppearance: 'legacy coat', negative: '', triggerWords: '', identityInitialized: true,
+    } }, characterOutfits: { Alice: { 制服: { words: [], moods: { 平和: 'uniform.png' }, default: true } } } };
+    const normalized = normalizeSceneAssets(old);
+    assert.equal(Object.hasOwn(normalized, 'characterDefaultOutfits'), false);
+    assert.equal(normalized.characterDna.Alice.defaultAppearance, 'legacy coat');
+    const current = { ...normalized, characterDefaultOutfits: { Alice: { version: 1, outfitName: '制服' },
+        Future: { version: 9, outfitName: '保留' } } };
+    const roundtrip = legacyPresetToPack(presetFromAssets(current)).library;
+    assert.deepEqual(roundtrip.characterDefaultOutfits, current.characterDefaultOutfits);
+    assert.equal(Object.hasOwn(legacyPresetToPack(presetFromAssets(normalized)).library, 'characterDefaultOutfits'), false);
+    const values = new Map();
+    const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
+    const bridge = { sceneAssets: { ...current, generated: { expressionNotes: { note: 'discardable' } } } };
+    assert.equal(writeLegacyIgsSettings(storage, { bridge }).ok, true);
+    const restored = readLegacyIgsSettings(storage).bridge.sceneAssets;
+    assert.deepEqual(restored.characterDefaultOutfits, current.characterDefaultOutfits);
+    assert.equal(restored.characterDna.Alice.defaultAppearance, 'legacy coat');
+    const exported = buildSettingsExport({ bridge });
+    assert.equal(Object.hasOwn(exported.bridge.sceneAssets, 'characterDefaultOutfits'), false);
+    assert.deepEqual(parseSettingsImport(exported, { bridge }).bridge.sceneAssets.characterDefaultOutfits, current.characterDefaultOutfits);
+});
+
+test('移动或复制角色带走衣装续画键且不改历史生成证据', () => {
+    for (const copy of [false, true]) {
+        const note = { 喜悦: { positive: 'pending', outfitContext: [{ characterKey: 'Alice' }] } };
+        const root = { characters: { Alice: {} }, characterDefaultOutfits: { Alice: { version: 1, outfitName: '制服' } },
+            characterOutfits: { Alice: { 制服: { moods: { 平和: 'sprite' } } } },
+            generated: { expressionNotes: { 'Alice\u0001制服': note, 'Alice2\u0001制服': { 喜悦: { positive: 'other' } } } } };
+        assert.equal(moveLibraryEntry(root, '', 'card:A', 'characters', 'Alice', { copy }).ok, true);
+        const card = root.cards['card:A'];
+        assert.deepEqual(card.generated.expressionNotes['Alice\u0001制服'], note);
+        assert.equal(Boolean(root.generated.expressionNotes['Alice\u0001制服']), copy);
+        assert.equal(root.generated.expressionNotes['Alice2\u0001制服'].喜悦.positive, 'other');
+        assert.equal(card.characterDefaultOutfits.Alice.outfitName, '制服');
+        if (copy) assert.notEqual(card.generated.expressionNotes['Alice\u0001制服'], note);
+    }
+});

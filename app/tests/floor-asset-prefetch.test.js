@@ -11,7 +11,13 @@ const sceneAssets = {
         小林: { 默认: 'lin.png', 平和: 'lin-calm.png' },
     },
     characterAliases: {},
-    characterOutfits: {},
+    characterOutfits: {
+        冬月: { 常服: { moods: { 平和: 'igs-gen:base', 喜悦: 'igs-gen:joy' } } },
+        小林: { 常服: { moods: { 平和: 'lin-calm.png' } } },
+    },
+    characterDefaultOutfits: {
+        冬月: { version: 1, outfitName: '常服' }, 小林: { version: 1, outfitName: '常服' },
+    },
 };
 
 test('gate:floor-assets:collects-every-sprite-and-background-in-the-floor', () => {

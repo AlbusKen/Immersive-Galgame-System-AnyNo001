@@ -1,6 +1,8 @@
 import { prepareCharacterCaption } from '../../src/generated-images/character-caption.js';
 import { promptFromCaption, storedPromptFromResult } from '../../src/generated-images/generation-prompt.js';
 import { promptSnapshotFromBody, prefixFinalArtist } from '../../src/generated-images/final-caption.js';
+import { resolveCharacterAppearance } from '../../src/scene/character-appearance.js';
+import { consistencyAppearanceAudit } from '../../src/generated-images/illustration/cg-consistency-appearance.js';
 
 // 通过真实准备入口产生资料，测试不手工伪造内部快照结构。
 export function provenanceFixture() {
@@ -100,11 +102,14 @@ export async function spriteAdoptionFixture(name = 'Alice', dna = {}, characterC
 }
 
 // 正式场景与工作轮次分别经过唯一准备入口，避免手工伪造 reference 来源。
-export function consistencyProvenanceFixture({ appearanceCorrection = false } = {}) {
+export function consistencyProvenanceFixture({ appearanceCorrection = false, appearance = false } = {}) {
     const scene = provenanceFixture();
     const named = scene.promptRecipe.bindings[0];
     const reference = { ...named, kind: 'reference', token: 'ref0', captionIndex: 1, framing: 'portrait' };
     const identity = appearanceCorrection ? { identityMode: 'appearance_correction' } : {};
+    const outfitMode = appearance ? { outfitMode: 'template' } : {};
+    const outfit = { name: 'Coat', description: 'wears a blue coat' };
+    const metadata = structuredClone(scene.characterMeta);
     const bindings = [named, reference].map(b => ({ ...b,
         ...(appearanceCorrection && { correction: { subject: 'Alice with 1.2::silver hair:: and a $5 star hair clip,',
             negative: 'wrong hair color' } }) }));
@@ -113,13 +118,32 @@ export function consistencyProvenanceFixture({ appearanceCorrection = false } = 
     caption.v4_prompt.caption.char_captions.push({ char_caption: '<<dna:ref0>> is an identity reference portrait.',
         centers: [{ x: 0.9, y: 0.5 }] });
     caption.v4_negative_prompt.caption.char_captions.push({ char_caption: '<<dna_uc:ref0>>' });
-    const characterContext = [{ characterKey: named.characterKey, dna: scene.dnaSnapshot.characters[0].profile }];
-    const round = prepareCharacterCaption({ caption, characterMeta: scene.characterMeta, characterContext,
-        promptRecipe: { version: 1, mode: 'dna_template', caption, bindings, ...identity },
-        promptTask: { version: 1, mode: 'dna_template', purpose: 'consistency', characters: [named, reference], ...identity } });
+    if (appearance) {
+        caption.v4_prompt.caption.char_captions[0].char_caption = `<<dna:${named.token}>> <<outfit:${named.token}>> stands.`;
+        metadata.characters[0].outfit = outfit;
+    }
+    const characterContext = [{ characterKey: named.characterKey, dna: scene.dnaSnapshot.characters[0].profile,
+        ...(appearance && { outfit }) }];
+    const round = prepareCharacterCaption({ caption, characterMeta: metadata, characterContext,
+        promptRecipe: { version: 1, mode: 'dna_template', caption, bindings, ...identity, ...outfitMode },
+        promptTask: { version: 1, mode: 'dna_template', purpose: 'consistency', characters: [named, reference], ...identity, ...outfitMode } });
     if (!round.ok) throw new Error(round.reason);
     const sentPrompt = promptSnapshotFromBody({ model: 'nai-diffusion-5-full', action: 'infill',
         parameters: prefixFinalArtist(round.caption, scene.sentPrompt.artist) }, scene.sentPrompt.artist);
+    let audit;
+    if (appearance) {
+        const url = 'igs-gen:wardrobe-source';
+        const selected = resolveCharacterAppearance({ characterKey: named.characterKey, requestedOutfit: outfit.name,
+            purpose: 'consistency', sceneAssets: {
+                characterOutfits: { [named.characterKey]: { Coat: { wardrobe: 'coat', moods: { 平和: url } } } },
+                wardrobe: { coat: { prompt: outfit.description } },
+            }, imageAvailability: { [url]: { status: 'available', revision: 3 } } });
+        if (!selected.ok) throw new Error(selected.reason);
+        audit = consistencyAppearanceAudit({ selections: [{ ...selected, requirementSource: 'historical-snapshot',
+            reference: selected.referenceImage }], confirmations: [], scope: { scopeKey: 'card:A',
+            owners: [{ characterKey: named.characterKey, ownerKey: 'card:A' }] } }, named.characterKey, false);
+    }
     return { version: 1, rounds: [{ slotId: 2, characterKey: named.characterKey,
-        promptRecipe: round.promptRecipe, dnaSnapshot: round.dnaSnapshot, sentPrompt }] };
+        promptRecipe: round.promptRecipe, dnaSnapshot: round.dnaSnapshot, sentPrompt,
+        ...(appearance && { outfitSnapshot: round.outfitSnapshot, appearance: audit }) }] };
 }

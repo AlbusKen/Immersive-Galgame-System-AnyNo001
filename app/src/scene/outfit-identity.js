@@ -5,17 +5,18 @@ import { promptTaskForSlot } from '../schemas/prompt-recipe.js';
 import { assetOwnerKey, effectiveSceneAssets, ensureCardLibrary } from './asset-scope.js';
 import { prefixFinalArtist } from '../generated-images/final-caption.js';
 import { promptFromCaption } from '../generated-images/generation-prompt.js';
-import { normalizeCharacterDna } from './character-dna.js';
 import { storyOutfitId, storyOutfitSourceHash } from './outfit-review-store.js';
+import { readDefaultOutfit } from './character-appearance.js';
 
 const outfitRows = rows => (rows || []).map(o => [o.name, o.description, o.default === true])
     .sort((a, b) => a[0].localeCompare(b[0]));
 
 export function savedCharacterOutfits(assets = {}, name) {
+    const selected = readDefaultOutfit(assets, name);
     return Object.entries(assets.characterOutfits?.[name] || {}).flatMap(([key, entry]) => {
         if (!isValidOutfitName(key) || isBuiltinNudeOutfit(key)) return [];
         const description = resolveWardrobePrompt(assets.wardrobe, entry, key)?.prompt || '';
-        return description ? [{ name: key, description, ...(entry.default === true && { default: true }) }] : [];
+        return description ? [{ name: key, description, ...(selected.ok && selected.outfitName === key && { default: true }) }] : [];
     });
 }
 
@@ -65,7 +66,7 @@ function outfitBaselineMessage(summary) {
 
 export function prepareOutfitAdoption(assets, name, imageId, record = {},
     { sourceName = name, defaultOutfit = false, readWardrobe = assets.wardrobe,
-        diagnosticAssets, diagnosticOwner } = {}) {
+        diagnosticAssets, diagnosticOwner, spriteSlot = '平和' } = {}) {
     const fail = (issue, message, cause, baseline) => {
         const code = typeof cause === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(cause) ? cause : '';
         return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT',
@@ -115,15 +116,33 @@ export function prepareOutfitAdoption(assets, name, imageId, record = {},
                 return fail('wire-centers', '图片实际发送的角色坐标与生成资料不一致');
         }
     }
-    // 默认立绘的衣装归入 DNA；此分支仍在完整快照及 wire 核验之后。
+    // 默认采用与身份是否初始化无关；图、服装说明和选择在同一设置补丁提交。
     if (defaultOutfit) {
+        if (typeof spriteSlot !== 'string' || !spriteSlot.trim() || ['__proto__', 'constructor', 'prototype'].includes(spriteSlot))
+            return fail('sprite-slot-invalid', '立绘图槽无效');
         const clothing = prepared.outfitSnapshot.characters.filter(c => c.characterKey === sourceName);
         if (clothing.length !== 1) return fail('candidate-binding', '默认服装无法唯一绑定目标角色');
-        const dna = normalizeCharacterDna(assets.characterDna?.[name]);
-        if (dna.defaultAppearance || dna.identityInitialized === true || isBuiltinNudeOutfit(clothing[0].name))
-            return { ok: true, patch: {} };
-        return { ok: true, patch: { characterDna: { ...(assets.characterDna || {}),
-            [name]: { ...dna, defaultAppearance: clothing[0].description } } } };
+        const candidate = clothing[0];
+        if (!isValidOutfitName(candidate.name) || isBuiltinNudeOutfit(candidate.name))
+            return fail('candidate-name', '默认立绘需要可保存的命名衣装');
+        const selected = readDefaultOutfit(assets, name);
+        if (!selected.ok && selected.reason !== 'default-outfit-unset')
+            return fail('default-outfit-invalid', '默认衣装记录失效，请先重新指定');
+        if (selected.ok && (candidate.name !== selected.outfitName
+            || candidate.description !== resolveWardrobePrompt(readWardrobe, selected.entry, selected.outfitName)?.prompt))
+            return fail('default-outfit-changed', '默认立绘必须复用已指定衣装及其保存说明');
+        const saved = prepareOutfitDnaSave(assets, name, candidate.name, candidate.description, { readWardrobe });
+        if (!saved.ok) return saved;
+        const all = saved.patch.characterOutfits || assets.characterOutfits || {};
+        const entry = all[name]?.[candidate.name];
+        return { ok: true, outfitName: candidate.name, patch: {
+            ...saved.patch,
+            characterOutfits: { ...all, [name]: { ...all[name], [candidate.name]: {
+                ...entry, moods: { ...entry?.moods, [spriteSlot]: `igs-gen:${imageId}` },
+            } } },
+            characterDefaultOutfits: { ...assets.characterDefaultOutfits,
+                [name]: { version: 1, outfitName: candidate.name } },
+        } };
     }
 
     const candidates = prepared.outfitSnapshot.characters.filter(c => c.characterKey === sourceName && c.source === 'candidate');

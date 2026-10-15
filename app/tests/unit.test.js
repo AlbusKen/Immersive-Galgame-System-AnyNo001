@@ -2166,12 +2166,15 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
         if (['card', 'global'].includes(mode)) {
             assert.equal(result.ok, true, mode);
             const library = mode === 'global' ? root : root.cards['card:current'];
-            assert.equal(library.characters.Alice.默认, `igs-gen:${record.imageId}`);
+            assert.equal(library.characters.Alice.默认, 'old.png');
             assert.deepEqual(library.characterDna.Alice.views, record.dnaCandidates.characters[0].views);
             assert.equal(library.characterDna.Alice.identitySource, record.imageId);
-            assert.equal(library.characterDna.Alice.defaultAppearance, record.outfitSnapshot.characters[0].description);
-            assert.deepEqual(library.wardrobe, {});
-            assert.deepEqual(library.characterOutfits, {});
+            assert.equal(library.characterDna.Alice.defaultAppearance || '', '');
+            const clothing = record.outfitSnapshot.characters[0];
+            assert.deepEqual(library.characterDefaultOutfits.Alice, { version: 1, outfitName: clothing.name });
+            const entry = library.characterOutfits.Alice[clothing.name];
+            assert.equal(entry.moods.平和, `igs-gen:${record.imageId}`);
+            assert.equal(library.wardrobe[entry.wardrobe].prompt, clothing.description);
             assert.equal(library.characters['小爱'], undefined);
             assert.deepEqual(events, ['read', 'save', 'status']);
             if (mode === 'card') for (const field of Object.keys(makeLibrary())) assert.deepEqual(root[field], original[field]);
@@ -2210,6 +2213,7 @@ test('gate:outfit-adoption-ui:立绘采用读取共享衣柜但只写角色所�
                 cards: { 'card:current': { characters: { Alice: { 默认: 'old.png' } },
                     characterAliases: {}, characterDna: {},
                     characterOutfits: { Alice: { 日常: { words: [], moods: {}, default: true, wardrobe: 'shared' } } },
+                    characterDefaultOutfits: { Alice: { version: 1, outfitName: '日常' } },
                     wardrobe: {} } } };
             const before = structuredClone(root), saves = [], alerts = [];
             const state = { draft: { bridge: { sceneAssets: root } }, asyncState: {} };
@@ -2245,10 +2249,13 @@ test('gate:outfit-adoption-ui:立绘采用读取共享衣柜但只写角色所�
             } else {
                 assert.equal(result.ok, true, `${action}: ${alerts.join('; ')}`);
                 assert.equal(saves.length, 1);
-                assert.equal(root.cards['card:current'].characters.Alice.默认, `igs-gen:${record.imageId}`);
+                assert.equal(root.cards['card:current'].characters.Alice.默认, 'old.png');
                 assert.deepEqual(root.wardrobe, before.wardrobe, '全局共享衣柜保持原样');
                 assert.deepEqual(root.cards['card:current'].wardrobe, {}, '不把共享衣柜复制到角色卡');
-                assert.deepEqual(root.cards['card:current'].characterOutfits, before.cards['card:current'].characterOutfits);
+                const entry = root.cards['card:current'].characterOutfits.Alice.日常;
+                assert.equal(entry.wardrobe, 'shared');
+                assert.equal(entry.moods.平和, `igs-gen:${record.imageId}`);
+                assert.deepEqual(root.cards['card:current'].characterDefaultOutfits.Alice, { version: 1, outfitName: '日常' });
             }
         }
     }
@@ -2264,7 +2271,9 @@ test('gate:outfit-adoption-diagnostic:空基线、真实差异与有效视图只
     const saved = await spriteAdoptionFixture('Alice', {}, context([row]));
     const assetsOf = rows => ({ characterOutfits: { Alice: Object.fromEntries(rows.map(o =>
         [o.name, { wardrobe: o.name, ...(o.default === true && { default: true }) }])) },
-        wardrobe: Object.fromEntries(rows.map(o => [o.name, { prompt: o.description }])) });
+        wardrobe: Object.fromEntries(rows.map(o => [o.name, { prompt: o.description }])),
+        characterDefaultOutfits: Object.fromEntries(rows.filter(o => o.default === true)
+            .map(o => ['Alice', { version: 1, outfitName: o.name }])) });
     assert.equal(prepareOutfitAdoption({}, 'Alice', empty.id, empty).ok, true);
     assert.deepEqual(prepareOutfitAdoption({}, 'Alice', empty.id, empty,
         { diagnosticAssets: assetsOf([row]), diagnosticOwner: 'current-card' }),
@@ -2665,6 +2674,8 @@ test('gate:igs-ui:scene-assets-keeps-sprite-with-existing-background', () => {
                             calm: 'https://example.com/kaito.png',
                         },
                     },
+                    characterOutfits: { Kaito: { 常服: { moods: { calm: 'https://example.com/kaito.png' } } } },
+                    characterDefaultOutfits: { Kaito: { version: 1, outfitName: '常服' } },
                 },
             },
             readerMode: 'pc',
@@ -2714,6 +2725,8 @@ test('gate:igs-ui:settings-repaints-thumbs-when-generated-images-arrive', () => 
                     enabled: true,
                     scenes: {},
                     characters: { Kaito: { 默认: 'igs-gen:abc' } },
+                    characterOutfits: { Kaito: { 常服: { moods: { 平和: 'igs-gen:abc' } } } },
+                    characterDefaultOutfits: { Kaito: { version: 1, outfitName: '常服' } },
                 },
             },
             readerMode: 'pc',
@@ -2734,7 +2747,7 @@ test('gate:igs-ui:settings-repaints-thumbs-when-generated-images-arrive', () => 
     host.destroy();
 });
 
-test('gate:igs-ui:sprite-slot-expand-shows-thumbnail-and-words', async () => {
+test('gate:igs-ui:default-outfit-shows-owned-thumbnail-and-slot-controls', async () => {
     const host = createIgsReaderHost({
         global: {},
         getUnifiedSettings: () => ({
@@ -2746,6 +2759,8 @@ test('gate:igs-ui:sprite-slot-expand-shows-thumbnail-and-words', async () => {
                     scenes: {},
                     characters: { Kaito: { 喜悦: 'https://example.com/k.png' } },
                     characterAliases: { Kaito: ['海斗'] },
+                    characterOutfits: { Kaito: { 常服: { moods: { 喜悦: 'https://example.com/k.png' } } } },
+                    characterDefaultOutfits: { Kaito: { version: 1, outfitName: '常服' } },
                     moodGroups: [{ label: '喜悦', words: ['开心', '欣喜'] }],
                 },
             },
@@ -2762,18 +2777,15 @@ test('gate:igs-ui:sprite-slot-expand-shows-thumbnail-and-words', async () => {
     // 角色平时只有一行，先展开 Kaito 才看得到情绪槽。
     await controller.invoke(`ui-toggle-open:${encodeURIComponent('char-open:Kaito')}`);
 
-    // 折叠态：不含缩略图
+    // 原装映射命名衣装，图槽直接展示，不依赖旧角色槽的展开动作。
     const snap = controller.getSnapshot();
-    // 收起时每格只有小缩略图（igs-outfit-thumb），没有展开后的大图。
     assert.equal(/class="igs-sprite-thumb[ "]/.test(snap.html), false);
     assert.doesNotMatch(snap.html, />角色别名<\/div>/);
     assert.match(snap.html, /海斗/);
-
-    // 展开后：含缩略图和该情绪组的词
-    const after = await controller.invoke(`scene-toggle-mood:${encodeURIComponent('Kaito')}:${encodeURIComponent('喜悦')}`);
-    assert.match(after.snapshot.html, /class="igs-sprite-thumb[ "]/);
-    assert.match(after.snapshot.html, /开心/);
-    assert.doesNotMatch(after.snapshot.html, /建为情绪组|无对应情绪组/);
+    assert.match(snap.html, /data-outfit-panel="常服"/);
+    assert.match(snap.html, /data-outfit-slot="喜悦"/);
+    assert.match(snap.html, /src="https:\/\/example.com\/k.png"/);
+    assert.match(snap.html, /data-scene-outfit="常服" data-scene-outfit-mood="喜悦"/);
 
     host.destroy();
 });
@@ -4715,7 +4727,7 @@ test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async (
     const empty = renderCharacterDnaEditor('白墨', null);
     assert.ok(empty.includes('角色DNA（未填写）'));
     assert.deepEqual([...empty.matchAll(/data-dna-field="([^"]+)"/g)].map((match) => match[1]), [
-        'defaultAppearance', 'triggerWords',
+        'triggerWords',
         ...['full_body', 'half_body', 'portrait']
             .flatMap((view) => [`views.${view}.subject`, `views.${view}.negative`]),
     ]);
@@ -4735,7 +4747,7 @@ test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async (
     assert.ok(!html.includes('data-dna-field="identity"'));
     assert.ok(!html.includes('data-dna-field="negative"'));
     assert.ok(!html.includes('data-dna-field="views.partial.'));
-    assert.ok(html.includes('data-dna-field="defaultAppearance"'));
+    assert.ok(!html.includes('data-dna-field="defaultAppearance"'));
     assert.ok(html.includes('身份（含年龄感）'));
     assert.ok(html.includes('>alice_v2</textarea>'));
     assert.ok(!html.includes('角色 DNA（未填写）'));
@@ -4947,14 +4959,14 @@ test('gate:generated-images:cg-planner-binds-character-dna-safely', async () => 
     assert.ok(!plain.includes('【角色 DNA】'));
 });
 
-test('gate:scene:dna-candidate-accept-does-not-overwrite-and-dismiss-clears', async () => {
+test('gate:scene:dna-candidate-is-read-only-and-dismiss-clears', async () => {
     const { renderDnaCandidateBar } = await import('../src/visual/igs-ui/settings-fields.js');
     assert.equal(renderDnaCandidateBar(null), '');
     assert.equal(renderDnaCandidateBar({ name: '  ' }), '');
     const bar = renderDnaCandidateBar({ name: 'A<b>', tags: '1girl, <x>' });
     assert.ok(bar.includes('data-dna-candidate="A&lt;b&gt;"'));
     assert.ok(bar.includes('1girl, &lt;x&gt;'));
-    assert.ok(bar.includes('data-action="scene-accept-dna-candidate"'));
+    assert.ok(!bar.includes('data-action="scene-accept-dna-candidate"'));
     assert.ok(bar.includes('data-action="scene-dismiss-dna-candidate"'));
 
     const draft = {
@@ -4973,31 +4985,30 @@ test('gate:scene:dna-candidate-accept-does-not-overwrite-and-dismiss-clears', as
     };
     const sa = () => draft.bridge.sceneAssets;
 
-    // 已填写的默认外观不被候选覆盖。
-    await handleSettingsAction('scene-accept-dna-candidate', ctx);
+    // 历史字段原样保留；旧按钮也不再采用混合 tag。
+    assert.equal((await handleSettingsAction('scene-accept-dna-candidate', ctx)).reason, 'legacy-dna-candidate-read-only');
     assert.equal(sa().characterDna['爱丽丝'].defaultAppearance, 'user uniform');
-    assert.equal(asyncState.dnaCandidate, null);
-    assert.equal(persistCount, 1);
+    assert.equal(asyncState.dnaCandidate.name, '爱丽丝');
+    assert.equal(persistCount, 0);
 
-    // 新角色：采用时才建 DNA 并写入候选 tag。
+    // 未登记角色也不能由旧候选隐式创建 DNA 或默认衣装。
     asyncState.dnaCandidate = { name: '路人甲', tags: '1boy, black coat' };
     assert.equal(Object.prototype.hasOwnProperty.call(sa().characterDna, '路人甲'), false);
     await handleSettingsAction('scene-accept-dna-candidate', ctx);
-    assert.equal(sa().characterDna['路人甲'].defaultAppearance, '1boy, black coat');
-    assert.equal(sa().characterDna['路人甲'].identity, '');
+    assert.equal(Object.prototype.hasOwnProperty.call(sa().characterDna, '路人甲'), false);
+    assert.equal(sa().characterDefaultOutfits, undefined);
 
     // 忽略：不写 DNA、不落盘。
     asyncState.dnaCandidate = { name: '白墨', tags: 'x' };
     await handleSettingsAction('scene-dismiss-dna-candidate', ctx);
     assert.equal(asyncState.dnaCandidate, null);
     assert.equal(Object.prototype.hasOwnProperty.call(sa().characterDna, '白墨'), false);
-    assert.equal(persistCount, 2);
+    assert.equal(persistCount, 0);
 
-    // 原型污染名被丢弃。
+    // 非法名称同样不参与写入。
     asyncState.dnaCandidate = { name: '__proto__', tags: 'x' };
-    await handleSettingsAction('scene-accept-dna-candidate', ctx);
-    assert.equal(asyncState.dnaCandidate, null);
-    assert.equal(persistCount, 2);
+    assert.equal((await handleSettingsAction('scene-accept-dna-candidate', ctx)).ok, false);
+    assert.equal(persistCount, 0);
 });
 
 
@@ -6104,7 +6115,8 @@ test('gate:presets:image-default-v1-to-latest-upgrades-protocol-and-keeps-custom
     const { createDefaultImagePromptPreset } = await import('../src/generated-images/image-prompt-defaults.js');
     const { promptDefaultState } = await import('../src/presets/prompt-default-operations.js');
     const latest = createDefaultImagePromptPreset();
-    assert.equal(latest.data.defaultVersion, 8);
+    assert.equal(latest.data.defaultVersion, latest.version);
+    assert.ok(latest.data.defaultVersion > 2);
     const old = structuredClone(latest);
     old.version = 1; old.data.defaultVersion = 1;
     delete old.data.defaultState;
@@ -6126,7 +6138,7 @@ test('gate:presets:image-default-v1-to-latest-upgrades-protocol-and-keeps-custom
     const before = registry.getCurrent('prompt-preset');
     assert.equal(registry.ensureImagePromptDefault(latest).changed, true);
     const current = registry.getCurrent('prompt-preset');
-    assert.equal(current.data.defaultVersion, 8);
+    assert.equal(current.data.defaultVersion, latest.data.defaultVersion);
     assert.equal(current.data.revision, 3);
     for (const [group, id] of [['modules', 'igs-task-sprite'], ['prompts', 'igs-image-protocol']]) {
         assert.equal(current.data[group].find(b => b.identifier === id).content,
@@ -6172,7 +6184,7 @@ test('gate:presets:image-default-v2-to-latest-separates-layers-and-preserves-cus
         const before = registry.getCurrent('prompt-preset');
         assert.equal(registry.ensureImagePromptDefault(latest).changed, true);
         const current = registry.getCurrent('prompt-preset');
-        assert.equal(current.data.defaultVersion, 8);
+        assert.equal(current.data.defaultVersion, latest.data.defaultVersion);
         for (const [group, id] of targets) assert.equal(current.data[group].find(b => b.identifier === id).content,
             id === customId ? '用户自定义正文，不自动覆盖' : latest.data[group].find(b => b.identifier === id).content);
         assert.deepEqual(current.data.prompt_order, before.data.prompt_order);

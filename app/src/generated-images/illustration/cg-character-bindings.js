@@ -1,6 +1,6 @@
 import { buildCharacterContext } from '../../scene/character-identity.js';
 import { buildCharacterDnaPromptParts, mergePromptTags } from '../../scene/character-dna.js';
-import { createOutfitResolver, collectLatestOutfits, resolveTagOutfitAt, isValidOutfitName } from '../../scene/character-outfits.js';
+import { createOutfitResolver, collectLatestOutfits, resolveTagOutfitAt, resolveSpriteOutfit, isValidOutfitName } from '../../scene/character-outfits.js';
 import { extractSceneDirectives, resolveCharacterKey } from '../../scene/scene-directives.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { readCaptionIdentity } from '../character-caption.js';
@@ -102,7 +102,11 @@ export function currentCgContext(record, assets) {
         const outfit = snapshot ? { name: snapshot.name, description: snapshot.description }
             : record.characterMeta?.characters?.find((m) => m.characterKey === c.characterKey)?.outfit
                 || { name: '', description: '' };
-        return { ...c, outfit: structuredClone(outfit) };
+        // 原图衣装快照是本次重画的服装来源，不与后来编辑的同名衣柜混用。
+        const outfits = snapshot
+            ? c.outfits.filter(saved => saved.name !== snapshot.name)
+                .concat({ name: snapshot.name, description: snapshot.description }) : c.outfits;
+        return { ...c, outfits, outfit: structuredClone(outfit) };
     });
 }
 
@@ -137,7 +141,35 @@ export function cgCharacterState(text, names, assets, previousTexts = [], readCl
         characterKey: canonical(d.character), offset: d.offset,
         outfit: at(d.offset).find((c) => c.characterKey === canonical(d.character))?.outfit,
     }));
-    return { context, at, timeline };
+    const anchorAt = (offset, keys) => {
+        const scene = directives.filter(d => d.type === 'scene' && d.offset <= offset).at(-1);
+        const context = at(offset);
+        const characters = [...new Set(keys.map(canonical))].map(characterKey => {
+            const requestedOutfit = resolveTagOutfitAt(directives, characterKey, offset, inheritedOutfits, canonical);
+            const trace = resolveSpriteOutfit({ directives, character: characterKey, offset,
+                inheritedOutfits, sceneAssets: assets, readClues, scene: scene?.scene ? [scene.scene] : [] });
+            const effectiveOutfit = context.find(c => c.characterKey === characterKey)?.outfit.name || '';
+            const local = directives.some(d => (d.type === 'char' || d.type === 'thought')
+                && canonical(d.character) === characterKey && d.offset <= offset && (d.unknownOutfit || d.outfit));
+            return { characterKey, requestedOutfit, effectiveOutfit,
+                requirementSource: requestedOutfit ? local ? 'tag' : 'inherited' : 'none',
+                source: trace.source || (effectiveOutfit ? 'default' : 'none'), reason: trace.reason || '',
+                ...(['profile', 'equipment'].includes(trace.source) && { inferredOutfit: trace.outfit }) };
+        });
+        return { version: 1, offset, characters };
+    };
+    return { context, at, timeline, anchorAt };
+}
+
+// 只完善本次新 CG 已有的锚点；历史记录与手改 final 不回填、不重新解释正文。
+export function completedCgOutfitAnchor(request, result) {
+    if (!result?.ok || request.promptEdited === true || request.edited === true
+        || request.outfitAnchor?.version !== 1 || !Array.isArray(request.outfitAnchor.characters)
+        || result.outfitSnapshot?.version !== 1 || !Array.isArray(result.outfitSnapshot.characters)) return {};
+    return { outfitAnchor: { ...structuredClone(request.outfitAnchor), characters: request.outfitAnchor.characters.map(c => {
+        const matches = result.outfitSnapshot.characters.filter(saved => saved.characterKey === c.characterKey);
+        return matches.length === 1 ? { ...c, effectiveOutfit: matches[0].name, effectiveSource: 'snapshot' } : { ...c };
+    }) } };
 }
 
 // captionIndex 只定位本次 caption，身份始终由已核验的规范键确定。

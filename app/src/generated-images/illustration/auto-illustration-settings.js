@@ -122,8 +122,9 @@ export function normalizeAutoIllustrationSettings(value) {
             negativePrompt: str(nai.negativePrompt),
             artistByKind: normalizeArtistByKind(nai.artistByKind),
             artistLibrary: normalizeArtistLibrary(nai.artistLibrary),
-            ...(nai.artistLibraryArchived === true && { artistLibraryArchived: true }),
             timeoutMs: clampInt(nai.timeoutMs, 10000, 300000, NAI_DEFAULT_SETTINGS.timeoutMs),
+            // 草稿首次归档会追加此标记；归一化保持相同顺序，避免无修改关闭重写存储。
+            ...(nai.artistLibraryArchived === true && { artistLibraryArchived: true }),
         },
     };
 }

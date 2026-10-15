@@ -41,6 +41,7 @@ export function createImageResourceCache(globalObject = globalThis, options = {}
 
         const entry = {
             ready: false,
+            status: 'loading',
             resolvedUrl: '',
             objectUrl: '',
             disposed: false,
@@ -48,6 +49,7 @@ export function createImageResourceCache(globalObject = globalThis, options = {}
         };
         if (!fetcher && !ImageCtor) {
             entry.ready = true;
+            entry.status = 'unverified';
             entry.resolvedUrl = source;
             entry.promise = Promise.resolve(source);
             entries.set(source, entry);
@@ -56,10 +58,11 @@ export function createImageResourceCache(globalObject = globalThis, options = {}
         }
         entry.promise = resolveSource(source).then((resolved) => {
             if (entry.disposed) {
-                revokeObjectUrl(resolved);
+                revokeObjectUrl(resolved.url);
                 return source;
             }
-            entry.resolvedUrl = resolved || source;
+            entry.resolvedUrl = resolved.url || source;
+            entry.status = resolved.status;
             if (entry.resolvedUrl !== source) entry.objectUrl = entry.resolvedUrl;
             entry.ready = true;
             trim(source);
@@ -75,33 +78,40 @@ export function createImageResourceCache(globalObject = globalThis, options = {}
                 const response = await fetcher(source, { cache: 'force-cache', mode: 'cors' });
                 if (!response || response.ok === false || typeof response.blob !== 'function') throw new Error('image-fetch-failed');
                 const blob = await response.blob();
-                return urlApi.createObjectURL(blob);
+                const url = urlApi.createObjectURL(blob);
+                const decoded = await preloadSource(url);
+                if (decoded.status === 'decode-error') {
+                    revokeObjectUrl(url);
+                    return { url: source, status: 'decode-error' };
+                }
+                return decoded;
             } catch (error) {
-                return preloadSource(source);
+                const fallback = await preloadSource(source);
+                return fallback.status === 'available' ? fallback : { url: source, status: 'read-error' };
             }
         }
         return preloadSource(source);
     }
 
     function preloadSource(source) {
-        if (!ImageCtor) return Promise.resolve(source);
+        if (!ImageCtor) return Promise.resolve({ url: source, status: 'unverified' });
         return new Promise((resolve) => {
             try {
                 const image = new ImageCtor();
                 let settled = false;
-                const finish = () => {
+                const finish = (status) => {
                     if (settled) return;
                     settled = true;
                     image.onload = null;
                     image.onerror = null;
-                    resolve(source);
+                    resolve({ url: source, status });
                 };
-                image.onload = finish;
-                image.onerror = finish;
+                image.onload = () => finish('available');
+                image.onerror = () => finish('decode-error');
                 image.src = source;
-                if (image.complete) finish();
+                if (image.complete) finish(image.naturalWidth > 0 ? 'available' : 'decode-error');
             } catch (error) {
-                resolve(source);
+                resolve({ url: source, status: 'decode-error' });
             }
         });
     }
@@ -148,5 +158,18 @@ export function createImageResourceCache(globalObject = globalThis, options = {}
         entries.clear();
     }
 
-    return { load, get, clear, size: () => entries.size };
+    // 仅显式刷新释放失败项；已就绪和在途任务继续复用，不主动发起读取。
+    function clearFailures() {
+        for (const [source, entry] of entries) {
+            if (!['read-error', 'decode-error'].includes(entry.status)) continue;
+            entries.delete(source);
+            disposeEntry(entry);
+        }
+    }
+
+    function inspect(url) {
+        return { status: entries.get(String(url || '').trim())?.status || 'unverified' };
+    }
+
+    return { load, get, inspect, clear, clearFailures, size: () => entries.size };
 }

@@ -7,6 +7,16 @@ import { inheritImageTaskLease } from '../image-task-runtime.js';
 
 export const usesCharacterTemplates = (backend) => ['nai', 'dbgen'].includes(backend?.describe?.().mode);
 
+// 写词输入与采用基线分离：旧服装仅留在本地原始快照，不交给模型选衣。
+export function characterWritingContext(context) {
+    if (!Array.isArray(context)) return context;
+    return context.map(character => {
+        const copy = structuredClone(character);
+        if (copy?.dna && typeof copy.dna === 'object') delete copy.dna.defaultAppearance;
+        return copy;
+    });
+}
+
 export function characterPromptTask(context, purpose, framing, slotKeys) {
     const characterContext = structuredClone(context);
     const characters = characterContext.map((c, index) => ({ characterKey: c.characterKey,
@@ -38,13 +48,12 @@ export function spriteIdentityRequirements(task, context) {
 export function singleCharacterContext(name, dna, outfit, assets = {}) {
     const profile = normalizeCharacterDna(dna);
     const outfits = savedCharacterOutfits(assets, name);
-    // DNA 默认服装优先；旧服装库默认标记只作兼容读取，不搬移存量。
-    const original = profile.defaultAppearance ? { name: '', description: profile.defaultAppearance }
-        : outfits.find(o => o.default === true);
+    // 默认仅来自显式映射；旧 DNA 服装字段保留但不参与新任务选衣。
+    const original = outfits.find(o => o.default === true);
     return [{ characterKey: name, dna: profile, outfits, outfit: {
         name: String(outfit?.name || (outfit?.nude ? '裸体' : original?.name) || ''),
         description: outfit?.nude ? 'No clothing; retain the fixed identifying features.'
-            : String(outfit?.prompt || (outfit?.name ? '' : original?.description || profile.defaultAppearance) || ''),
+            : String(outfit?.prompt || (outfit?.name ? '' : original?.description) || ''),
         ...(Array.isArray(outfit?.words) && { words: [...outfit.words] }),
         ...(outfit?.nsfwBoost === true && { nsfwBoost: true }),
     } }];

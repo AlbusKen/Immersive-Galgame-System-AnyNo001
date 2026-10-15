@@ -179,12 +179,13 @@ test('gate:cg-backup:三阶段资料经 IDB 写口、文件备份和清缓存恢
     assert.equal((await restored.getSlots('fixture|3|0'))[0].dataUrl, 'data:image/png;base64,TkVX');
 });
 
-for (const appearanceCorrection of [false, true]) test(`gate:cg-consistency:文件 offload 清除整图 wire 并保真恢复轮次与基线-${appearanceCorrection ? '校正' : '旧记录'}`, async () => {
+for (const variant of ['旧记录', '校正', '衣装来源']) test(`gate:cg-consistency:文件 offload 清除整图 wire 并保真恢复轮次与基线-${variant}`, async () => {
+    const appearanceCorrection = variant !== '旧记录', appearance = variant === '衣装来源';
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
     const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
     const { provenanceFixture, consistencyProvenanceFixture } = await import('./helpers/prompt-provenance.js');
     const { promptProvenance, storedPromptFromResult } = await import('../src/generated-images/generation-prompt.js');
-    const fixture = provenanceFixture(), consistencyPrompt = consistencyProvenanceFixture({ appearanceCorrection });
+    const fixture = provenanceFixture(), consistencyPrompt = consistencyProvenanceFixture({ appearanceCorrection, appearance });
     assert.deepEqual(promptProvenance({ consistencyPrompt }).consistencyPrompt, consistencyPrompt);
     const f = candidateFilesFixture(), indexedDB = createTransactionalIdb();
     const rawStore = createIndexedDbIllustrationStore({ indexedDB });
@@ -217,6 +218,15 @@ for (const appearanceCorrection of [false, true]) test(`gate:cg-consistency:文�
     assert.equal(Object.hasOwn(copy.promptRecipe, 'identityMode'), false, '正式场景不成为工作模板');
     const round = copy.consistencyPrompt.rounds[0];
     assert.equal(round.promptRecipe.identityMode, appearanceCorrection ? 'appearance_correction' : undefined);
+    if (appearance) {
+        assert.equal(round.appearance.requestedOutfit, 'Coat');
+        assert.equal(round.appearance.effectiveOutfit, 'Coat');
+        assert.equal(round.appearance.reference.url, 'igs-gen:wardrobe-source');
+        assert.match(round.appearance.reference.sourceId, /^[0-9a-f]{16}$/);
+        assert.equal(round.appearance.reference.revision, 3);
+        assert.equal(round.appearance.ownerKey, 'card:A');
+        assert.equal(JSON.stringify(round.appearance).includes('sourceToken'), false);
+    } else assert.equal(Object.hasOwn(round, 'appearance'), false, '旧记录不补来源');
     for (const c of round.dnaSnapshot.characters) {
         assert.equal(c.application, appearanceCorrection ? 'appearance_correction' : undefined);
         assert.deepEqual(c.profile, fixture.dnaSnapshot.characters[0].profile);
@@ -275,4 +285,53 @@ for (const phase of ['upload', 'preflight', 'transaction', 'accepted']) test(`ga
         assert.deepEqual(saved, before, '拒绝后正文、来源与原图逐字段保真');
         assert.deepEqual(f.deleted, f.uploaded, '只清理本次新上传文件');
     }
+});
+
+
+for (const fault of ['network', 'schema', 'record', 'pending']) test(`gate:cg-backup:引用未读全拒绝清理-${fault}`, async () => {
+    const f = fakeTavern({ backup: fault === 'schema' ? { slots: {} }
+        : { version: 1, slots: { 'chat|1|0|1': null } } });
+    let finish;
+    if (fault === 'network') f.globalObject.fetch = async () => { throw new Error('fixture-network'); };
+    if (fault === 'pending') f.globalObject.fetch = () => new Promise(resolve => { finish = resolve; });
+    const raw = createMemoryIllustrationStore();
+    const wrapped = withTavernIllustrationFiles(raw, f.globalObject);
+    await assert.rejects(wrapped.listSlotKeys({ requireComplete: true }), /image-reference-unavailable/);
+    assert.deepEqual(await raw.listSlotKeys(), []);
+    assert.deepEqual(f.state.uploads, []);
+    if (finish) {
+        finish({ ok: false, status: 404 });
+        await wait(20);
+        assert.deepEqual(await wrapped.listSlotKeys({ requireComplete: true }), []);
+    }
+});
+
+test('gate:cg-consistency:衣装来源严格拒收并剔除私有租约', async () => {
+    const { consistencyProvenanceFixture } = await import('./helpers/prompt-provenance.js');
+    const { promptProvenance } = await import('../src/generated-images/generation-prompt.js');
+    const valid = consistencyProvenanceFixture({ appearanceCorrection: true, appearance: true });
+    assert.deepEqual(promptProvenance({ consistencyPrompt: valid }).consistencyPrompt, valid);
+    const changes = [
+        a => { a.version = 2; },
+        a => { a.effectiveOutfit = 'Other'; },
+        a => { a.selectionSource = 'legacy-default'; },
+        a => { a.selectionSource = 'default-fallback'; a.confirmed = false; },
+        a => { a.reference.sourceId = 'invalid'; },
+        a => { a.reference.url = 'https://fixture.invalid/image?token=private'; },
+        a => { a.reference.url = 'data:image/png;base64,QQ=='; },
+        a => { a.reference.revision = {}; },
+    ];
+    for (const change of changes) {
+        const consistencyPrompt = structuredClone(valid);
+        change(consistencyPrompt.rounds[0].appearance);
+        assert.throws(() => promptProvenance({ consistencyPrompt }));
+    }
+    const privateFields = structuredClone(valid);
+    privateFields.rounds[0].appearance.sourceToken = 'memory-only';
+    privateFields.rounds[0].appearance.reference.dataUrl = 'private-pixels';
+    assert.deepEqual(promptProvenance({ consistencyPrompt: privateFields }).consistencyPrompt, valid);
+    const fallback = structuredClone(valid);
+    Object.assign(fallback.rounds[0].appearance, { requestedOutfit: 'Dress', selectionSource: 'default-fallback',
+        fallbackReason: 'outfit-image-missing', confirmed: true });
+    assert.deepEqual(promptProvenance({ consistencyPrompt: fallback }).consistencyPrompt, fallback);
 });

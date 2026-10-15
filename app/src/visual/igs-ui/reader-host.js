@@ -839,6 +839,26 @@ export function createIgsReaderHost(options = {}) {
             : '';
     }
 
+    // 选图只使用已知资源状态；缓存未命中先加载，不伪装成图片丢失或换衣许可。
+    function readerSpriteAvailability(url) {
+        const current = state.activeReader;
+        const service = options.generatedAssets;
+        const stored = isGeneratedAssetUrl(url) ? service?.imageAvailability?.(url) : null;
+        if (stored && ['missing', 'read-error'].includes(stored.status)) return stored;
+        const concrete = concreteReaderAssetUrl(url);
+        if (!concrete) return { status: stored?.status === 'unverified' ? 'loading' : stored?.status || 'unverified' };
+        const status = imageResourceCache.inspect(concrete);
+        if (status.status !== 'unverified' || imageResourceCache.get(concrete)) return status;
+        if (current && !current.assetLoadRequests.has(concrete)) {
+            current.assetLoadRequests.add(concrete);
+            imageResourceCache.load(concrete).then(() => {
+                current.assetLoadRequests.delete(concrete);
+                if (state.activeReader === current) scheduleImageRefresh({ reader: true });
+            });
+        }
+        return imageResourceCache.inspect(concrete);
+    }
+
     // 状态栏头像存在图库（igs-gen:）时换成已读回的图；还没读回先空着，读回后 image-loaded 会重绘。
     function withConcreteAvatar(model) {
         if (model && isGeneratedAssetUrl(model.avatar)) model.avatar = concreteReaderAssetUrl(model.avatar);
@@ -871,6 +891,7 @@ export function createIgsReaderHost(options = {}) {
                     assetMatchCtx: {
                         sceneAssets,
                         generatedAssets: sceneAssets && sceneAssets.generated,
+                        imageAvailability: readerSpriteAvailability,
                         strict: readerSettings._strictBackgroundMatch === true,
                         tempBackground: generatedAssets ? generatedAssets.tempBackground : null,
                         tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
@@ -2610,6 +2631,10 @@ export function createIgsReaderHost(options = {}) {
     async function reloadActiveReader() {
         const current = state.activeReader;
         if (!current) return { ok: false, reason: 'reader-not-open' };
+        // 只在用户显式刷新时重试失败资源；普通翻页/重绘不清失败状态。
+        imageResourceCache.clearFailures();
+        options.generatedAssets?.clearImageReadFailures?.();
+        floorAssetPlan = { key: '', urls: [] };
         if (typeof options.openViewerFromMessage !== 'function') return rescanCurrentImages();
         const messageId = isEmbeddedReaderMode(current.mode)
             ? current.mountMessageId
@@ -3087,6 +3112,7 @@ export function createIgsReaderHost(options = {}) {
         const assetMatchCtx = {
             sceneAssets,
             generatedAssets: sceneAssets && sceneAssets.generated,
+            imageAvailability: readerSpriteAvailability,
             strict: readerSettings._strictBackgroundMatch === true,
             tempBackground: generatedAssets ? generatedAssets.tempBackground : null,
             tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
@@ -3473,8 +3499,7 @@ export function createIgsReaderHost(options = {}) {
                 const sceneRaw = String((sceneStateForBg && sceneStateForBg.scene) || '').trim();
                 setActiveFormGenders([]);
                 let outfitTrace = null;
-                const outfitFor = (character) => withFormGender(character, outfitMap && Object.keys(outfitMap).length
-                    ? (outfitTrace = resolveSpriteOutfit({
+                const outfitFor = (character) => (outfitTrace = resolveSpriteOutfit({
                         directives: outfitDirectives,
                         character,
                         offset: outfitOffset,
@@ -3482,9 +3507,7 @@ export function createIgsReaderHost(options = {}) {
                         sceneAssets,
                         scene: [classifySceneKey(sceneAssets.scenes, sceneRaw).key || '', sceneRaw],
                         readClues: (names) => collectOutfitClues(readStatusHudTables(), names),
-                        resolveDna: (name) => { const hit = resolveCharacterDna(sceneAssets.characterDna, name); return hit ? hit.dna : null; },
-                    })).outfit
-                    : '');
+                    })).outfit;
                 // 变身形态：记下这一页在场角色的形态性别，供高度 / 语气音 / 朗读读取。
                 const withFormGender = (character, outfit) => {
                     const name = canonicalName(sceneAssets, character);
@@ -3496,12 +3519,16 @@ export function createIgsReaderHost(options = {}) {
                 const wantedOutfit = outfitFor(spriteChar);
                 const outfitWhy = { outfitSource: (outfitTrace && outfitTrace.source) || '', outfitReason: (outfitTrace && outfitTrace.reason) || '', outfitOffset };
                 const spriteHit = resolveSpriteAsset(spriteChar, spriteMood, assetMatchCtx, wantedOutfit);
-                spriteMatch = { character: spriteChar, mood: spriteMood || '', outfit: wantedOutfit || '', source: spriteHit.source, quality: spriteHit.quality || '', slot: spriteHit.slot || '', ...outfitWhy };
+                spriteMatch = { character: spriteHit.character || spriteChar, mood: spriteMood || '',
+                    requestedOutfit: wantedOutfit || '', outfit: spriteHit.outfit || '',
+                    source: spriteHit.source, selectionSource: spriteHit.selectionSource || '',
+                    reason: spriteHit.reason || '', fallbackReason: spriteHit.fallbackReason || '',
+                    quality: spriteHit.quality || '', slot: spriteHit.slot || '', ...outfitWhy };
                 noteUnlistedMood(spriteHit, spriteMood, sceneAssets);
                 spriteImage = resolveGenerated(spriteHit.url) || null;
                 if (spriteImage) {
                     spriteCharacter = spriteHit.character || spriteChar;
-                    spriteOutfit = spriteHit.outfit || '';
+                    spriteOutfit = withFormGender(spriteCharacter, spriteHit.outfit || '');
                     // Position keys follow the resolved image slot (exact mood / group /
                     // 默认), not the raw mood word, so every mood that maps to the same
                     // sprite image shares one position across pages.
@@ -3530,7 +3557,8 @@ export function createIgsReaderHost(options = {}) {
                         resolve: (m) => {
                             const hit = resolveSpriteAsset(m.character, m.mood, assetMatchCtx, outfitFor(m.character));
                             const image = resolveGenerated(hit.url);
-                            return image ? { character: hit.character || m.character, mood: hit.slot || m.mood, outfit: hit.outfit || '', image } : null;
+                            const character = hit.character || m.character;
+                            return image ? { character, mood: hit.slot || m.mood, outfit: withFormGender(character, hit.outfit || ''), image } : null;
                         },
                     });
                     if (spriteImage && picked.speakerOrder != null) speakerCastOrder = picked.speakerOrder;

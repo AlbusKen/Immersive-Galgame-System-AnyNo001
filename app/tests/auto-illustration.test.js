@@ -97,14 +97,15 @@ test('gate:illustration:payload-keeps-raw-marker-but-hides-from-segments', () =>
 });
 
 test('gate:illustration:nai-v4-request-shape', async () => {
-    const { buildNaiV4Request, NAI_DEFAULT_NEGATIVE } = await import('../src/generated-images/request-builders/nai-v4-builder.js');
+    const { buildNaiV4Request } = await import('../src/generated-images/request-builders/nai-v4-builder.js');
     const p = buildNaiV4Request({ scene: 'indoors, night', sceneUc: 'text', chars: [{ x: 0.33, y: 0.5, tags: '1girl, long hair', uc: 'bad hands' }] }, {}, () => 0).parameters;
     assert.equal(p.v4_prompt.use_coords, true);
     assert.equal(p.v4_prompt.use_order, true);
     assert.equal(p.v4_negative_prompt.legacy_uc, false);
     assert.deepEqual(p.v4_prompt.caption.char_captions[0].centers[0], { x: 0.3, y: 0.5 });
-    assert.ok(p.negative_prompt.startsWith(NAI_DEFAULT_NEGATIVE));
-    assert.ok(p.negative_prompt.includes('text'));
+    assert.equal(p.negative_prompt, 'text', '请求构建器保留调用方 UC，不追加旧通用负面词');
+    assert.equal(p.v4_negative_prompt.caption.base_caption, p.negative_prompt);
+    assert.equal(p.v4_negative_prompt.caption.char_captions[0].char_caption, 'bad hands');
     assert.equal(p.seed, 0);
     assert.equal(p.width, 832);
 });
@@ -423,8 +424,19 @@ test('gate:illustration:secondary-llm-prefers-tavernhelper', async () => {
 
 test('gate:illustration:secondary-llm-timeout', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
-    const llm = createSecondaryLlm({ TavernHelper: { generateRaw: () => new Promise(() => {}) } });
-    await assert.rejects(llm.request({ system: 'sys', user: 'usr' }, { timeoutMs: 20 }), /超时/);
+    const { isBackgroundGenerationActive } = await import('../src/host/background-generation.js');
+    let finish;
+    const upstream = new Promise(resolve => { finish = resolve; });
+    const llm = createSecondaryLlm({ TavernHelper: { generateRaw: () => upstream } });
+    try {
+        await assert.rejects(llm.request({ system: 'sys', user: 'usr' }, { timeoutMs: 20 }), { reason: 'request-timeout' });
+        assert.equal(isBackgroundGenerationActive(), true, '超时不等于宿主任务已经结束');
+    } finally {
+        // 结束本用例的宿主任务，避免后台守卫污染后续事件测试。
+        finish('late result');
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(isBackgroundGenerationActive(), false, '宿主结束后释放后台守卫');
 });
 test('gate:illustration:secondary-llm-ordered-messages-wire', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
@@ -1379,6 +1391,7 @@ test('gate:cg-bindings:outfit-snapshot-follows-anchor-and-nearest-floor', async 
         ['[igs-char:A|smile|Coat|Old]', '[igs-char:A|smile|Dress|Recent]']);
     assert.equal(inherited.context[0].outfit.description, 'A white dress.');
     f.assets.characterDna.Alice.defaultAppearance = 'A default hoodie.';
+    f.assets.characterDefaultOutfits = { Alice: { version: 1, outfitName: 'Coat' } };
     const changed = cgCharacterState('[igs-char:A|smile|浴衣|Changed]', f.names, f.assets);
     assert.deepEqual(changed.context[0].outfit, { name: '浴衣', description: '' }, '明确新衣装不能回退默认');
     assert.equal(changed.timeline[0].outfit.name, '浴衣');
@@ -1387,8 +1400,36 @@ test('gate:cg-bindings:outfit-snapshot-follows-anchor-and-nearest-floor', async 
     const registered = cgCharacterState('[igs-char:A|smile|Dress|Saved]', f.names, f.assets);
     assert.deepEqual(registered.context[0].outfit, { name: 'Dress', description: 'A white dress.' });
     const reset = cgCharacterState('[igs-char:A|smile|默认|Reset]', f.names, f.assets);
-    assert.deepEqual(reset.context[0].outfit, { name: '', description: 'A default hoodie.' });
-    assert.equal(cgCharacterState('No change.', f.names, f.assets).context[0].outfit.description, 'A default hoodie.');
+    assert.deepEqual(reset.context[0].outfit, { name: 'Coat', description: 'A blue coat.' });
+    assert.equal(cgCharacterState('No change.', f.names, f.assets).context[0].outfit.description, 'A blue coat.');
+    const anchor = (s, offset = 10000) => s.anchorAt(offset, ['A']).characters[0];
+    assert.deepEqual(anchor(registered), { characterKey: 'Alice', requestedOutfit: 'Dress', effectiveOutfit: 'Dress',
+        requirementSource: 'tag', source: 'tag', reason: '' });
+    assert.deepEqual(anchor(continued), { characterKey: 'Alice', requestedOutfit: '浴衣', effectiveOutfit: '浴衣',
+        requirementSource: 'inherited', source: 'tag', reason: 'outfit-unregistered' });
+    assert.deepEqual(anchor(reset), { characterKey: 'Alice', requestedOutfit: '默认', effectiveOutfit: 'Coat',
+        requirementSource: 'tag', source: 'reset', reason: '' });
+    const inferred = cgCharacterState('No outfit tag.', f.names, f.assets, [], () => ({ profile: ['Dress'] }));
+    assert.deepEqual(anchor(inferred), { characterKey: 'Alice', requestedOutfit: '', effectiveOutfit: 'Dress',
+        requirementSource: 'none', source: 'profile', reason: '', inferredOutfit: 'Dress' });
+    assert.deepEqual(anchor(cgCharacterState('No change.', f.names, f.assets)), {
+        characterKey: 'Alice', requestedOutfit: '', effectiveOutfit: 'Coat',
+        requirementSource: 'none', source: 'default', reason: '',
+    });
+    assert.equal(anchor(state, text.indexOf('First moment.') + 13).effectiveOutfit, 'Coat');
+    const { completedCgOutfitAnchor } = await import('../src/generated-images/illustration/cg-character-bindings.js');
+    const request = { outfitAnchor: changed.anchorAt(10000, ['A']) };
+    const before = structuredClone(request);
+    const result = { ok: true, outfitSnapshot: { version: 1, characters: [
+        { characterKey: 'Alice', name: '浴衣', description: 'A festival yukata.' },
+    ] } };
+    const completed = completedCgOutfitAnchor(request, result);
+    assert.deepEqual(completed.outfitAnchor.characters[0], { ...before.outfitAnchor.characters[0],
+        effectiveOutfit: '浴衣', effectiveSource: 'snapshot' });
+    assert.deepEqual(request, before, '完成证据不改写请求锚点');
+    assert.deepEqual(completedCgOutfitAnchor({}, result), {}, '旧CG不自动补锚点');
+    assert.deepEqual(completedCgOutfitAnchor({ ...request, promptEdited: true }, result), {}, '手改final不重解释');
+    assert.deepEqual(completedCgOutfitAnchor(request, { ok: false }), {}, '失败不记录为已采用');
 });
 
 test('gate:cg-bindings:parser-default-center-is-not-explicit-position', async () => {
@@ -1616,6 +1657,7 @@ test('gate:cg-reference:统一采样原图条件网格与细区覆盖', async (t
             source.data.set([x % 251, y % 251, (x + y) % 251, 127 + x % 128], (y * width + x) * 4);
         const before = new Uint8ClampedArray(source.data);
         const ref = { width: 16, height: 32, data: new Uint8ClampedArray(16 * 32 * 4) };
+        for (let i = 3; i < ref.data.length; i += 4) ref.data[i] = 255;
         const built = buildReferencePixels(source, ref, plan);
         let white = 0;
         for (let y = 0; y < size.height; y++) for (let x = 0; x < size.width; x++) {
@@ -2297,15 +2339,17 @@ for (const mode of ['nai', 'dbgen']) {
 
 
 for (const mode of ['nai', 'dbgen']) {
-    test(`gate:cg-template:${mode}:DNA 默认服装保真发送且重画保留原衣装快照`, async () => {
+    test(`gate:cg-template:${mode}:命名默认衣装保真发送且重画保留原衣装快照`, async () => {
         const assets = cgTemplateAssets();
         const description = 'wears a 1.2::blue coat:: with $1 trim';
-        assets.characterDna.Alice.defaultAppearance = description;
+        assets.characterOutfits = { Alice: { 常服: { wardrobe: 'coat', moods: {} } } };
+        assets.characterDefaultOutfits = { Alice: { version: 1, outfitName: '常服' } };
+        assets.wardrobe = { coat: { prompt: description } };
         const before = structuredClone(assets);
         const slot = mode === 'nai' ? 1 : 6;
         const reply = cgTemplateText(slot, mode === 'nai' ? 2 : undefined,
             [{ key: 'Alice', token: 'r0' }])
-            .replace('meta_outfit_name: 0 | Coat', 'meta_outfit_name: 0 |')
+            .replace('meta_outfit_name: 0 | Coat', 'meta_outfit_name: 0 | 常服')
             .replace('meta_outfit_description: 0 | wears a blue coat', 'meta_outfit_description: 0 |');
         const run = await cgTemplateRun(mode, reply, assets, 1);
         try {
@@ -2316,12 +2360,20 @@ for (const mode of ['nai', 'dbgen']) {
             const record = await run.store.getSlotRecord(`c1|5|0|${slot}`);
             assert.equal(record.status, 'done');
             assert.equal(record.outfitSnapshot.characters[0].source, 'saved');
-            assert.equal(record.outfitSnapshot.characters[0].name, '');
+            assert.equal(record.outfitSnapshot.characters[0].name, '常服');
             assert.equal(record.outfitSnapshot.characters[0].description, description);
+            if (mode === 'nai') {
+                assert.equal(record.outfitAnchor.version, 1);
+                assert.ok(Number.isFinite(record.outfitAnchor.offset));
+                assert.deepEqual(record.outfitAnchor.characters, [{ characterKey: 'Alice', requestedOutfit: '',
+                    effectiveOutfit: '常服', requirementSource: 'none', source: 'default', reason: '',
+                    effectiveSource: 'snapshot' }]);
+            } else assert.equal(Object.hasOwn(record, 'outfitAnchor'), false, 'DBG不纳入新锚点链');
             const positive = run.wires[0].parameters.v4_prompt.caption.char_captions[0].char_caption;
             assert.equal(positive, 'Alice, half_body saved identity, ' + description + ' and waves toward Alice.');
             assert.deepEqual(assets, before, 'CG 默认复用不写入角色资料或衣装库');
             assets.characterDna.Alice.defaultAppearance = 'wears a green jacket';
+            assets.wardrobe.coat.prompt = 'wears a green jacket';
             const rerolled = await run.service.rerollSlot({ chatId: 'c1', messageId: 5, swipeId: 0, slot });
             assert.equal(rerolled.ok, true, rerolled.error);
             assert.equal(run.wires.length, 2);
@@ -2353,10 +2405,6 @@ for (const mode of ['nai', 'dbgen']) {
                 assert.equal(run.writes[0].skipRecall, undefined);
                 assert.equal(run.writes[0].promptTask.purpose, 'cg');
                 assert.equal(run.writes[0].promptTask.slots, undefined);
-                assert.equal(run.writes[0].writingRequirements.undesiredContent, 'custom-uc');
-            } else {
-                assert.match(run.llmRequests[0].system, /普通 CG 规划/);
-                assert.match(run.llmRequests[0].user, /custom-uc/);
             }
             const records = await run.store.getSlots('c1|5|0');
             const good = records.find((r) => r.slot === goodId), bad = records.find((r) => r.slot === badId);
@@ -2706,12 +2754,10 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${model}:${selectedModel |
             assert.equal(pipeline.host.resolveWorldInfoCalls.length, 0);
             const content = JSON.stringify(pipeline.llmCalls[0].messages);
             assert.doesNotMatch(content, /Later unrelated scene|测试正文|WORLD_INFO_TEXT/);
-            assert.match(content, /reference inset 由程序.*写词输出不包含该标签/);
             assert.equal(pipeline.naiCalls.length, 0, '写词路径不发送图片请求');
         }
         assert.equal(f.writes[0].imageDataUrl, undefined, '不向写词模型发送图片定位');
         assert.ok(f.writes.every((request) => request.promptTask.slots.length === 1));
-        assert.match(f.pipeline.llmCalls[0].messages.at(-1).content, /High quality illustration/);
         assert.deepEqual(await f.store.getSlotRecord(before.key), before, '候选期间不写正式记录');
         for (const [i, wire] of f.wires.entries()) {
             const prepared = prepareCharacterCaption(f.edits[i]);
@@ -3639,6 +3685,18 @@ async function consistencyBuiltinFixture(count = 2, model = 'nai-diffusion-5-ful
     const indexedDB = createTransactionalIdb();
     const rawStore = createIndexedDbIllustrationStore({ indexedDB });
     const f = await consistencyFixture(count, rawStore);
+    f.assets.characterOutfits = {};
+    f.assets.characterDefaultOutfits = {};
+    f.assets.wardrobe = {};
+    for (const name of f.names) {
+        f.assets.characterOutfits[name] = { 冬装: { wardrobe: name, moods: { 平和: `reference-${name}` } } };
+        f.assets.characterDefaultOutfits[name] = { version: 1, outfitName: '冬装' };
+        f.assets.wardrobe[name] = { prompt: `coat-${name}` };
+    }
+    const appearanceListeners = new Set(), referenceRevisions = new Map();
+    const appearanceScope = { key: 'fixture-scope', owner: 'fixture-owner' };
+    const readReferenceImage = async url => f.pixels.has(url)
+        ? { type: 'sprite', dataUrl: url, revision: referenceRevisions.get(url) || 1 } : null;
     const store = options.wrapStore?.(rawStore) || rawStore;
     const bridge = { imageApi: { mode: 'nai' }, autoIllustration: { consistencyModel: model,
         nai: { apiKey: 'fixture-builtin-key', model: 'nai-diffusion-4-full', artistPrefix: 'artist:fixture' } } };
@@ -3686,7 +3744,7 @@ async function consistencyBuiltinFixture(count = 2, model = 'nai-diffusion-5-ful
                     `meta_correction_uc: ${index} | wrong-${row.characterKey}`] : []),
             ])].join('\n');
         if (options.waitWrite) await new Promise(resolve => gates.push(resolve));
-        return reply;
+        return options.transformReply ? options.transformReply(reply, input) : reply;
     } }, registry, runtime);
     const client = createNaiOfficialClient({ queue: createNaiRequestQueue(), random: () => 0.5,
         fetch: async (_url, init) => {
@@ -3716,12 +3774,18 @@ async function consistencyBuiltinFixture(count = 2, model = 'nai-diffusion-5-ful
     }, getSceneAssets: () => f.assets,
         consistencyModel: () => bridge.autoIllustration.consistencyModel,
         resolveReference: (key, assets) => assets.characters[key].默认,
+        readReferenceImage: options.readReferenceImage || readReferenceImage,
+        captureAppearanceScope: () => structuredClone(appearanceScope),
+        subscribeAppearance(handler) { appearanceListeners.add(handler); return () => appearanceListeners.delete(handler); },
         targetStillLive: () => live,
         writingRequirements: () => ({ transparent: false, quality: 'High quality illustration.',
             undesiredContent: 'blurry' }),
         ...(options.onAccepted && { onAccepted: options.onAccepted }) });
     return { ...f, store, rawStore, service, codec, indexedDB, bridge, registry, runtime,
         writes, wires, edits, gates, forbidden, backend, llm,
+        appearanceScope, referenceRevisions,
+        appearanceChanged(detail = {}) { for (const handler of appearanceListeners) handler(detail); },
+        get appearanceSubscriptions() { return appearanceListeners.size; },
         originalAssets: structuredClone(f.assets),
         target: { key: f.key, floor: f.floor, slot: 7 },
         get maxActive() { return maxActive; }, get active() { return active; },
@@ -3748,6 +3812,11 @@ for (const model of ['nai-diffusion-4-5-full-inpainting', 'nai-diffusion-5-full-
             const data = JSON.parse(request.messages[2].content);
             assert.deepEqual(data.originalPrompt, f.before.promptRecipe.caption);
             assert.ok(data.layout); assert.ok(data.promptTask); assert.ok(data.characterContext.length);
+            const placement = data.layout.referenceContent;
+            assert.ok(placement);
+            const reference = data.outputs.rows.find(row => row.kind === 'reference');
+            assert.equal(reference.centers[0].x, (placement.x + placement.width / 2) / f.edits[0].width);
+            assert.equal(reference.centers[0].y, (placement.y + placement.height / 2) / f.edits[0].height);
             assert.equal(data.outputs.slotIds.length, 1);
             for (const key of f.forbidden) assert.equal(Object.hasOwn(data, key), false, key);
         }
@@ -3771,6 +3840,13 @@ for (const model of ['nai-diffusion-4-5-full-inpainting', 'nai-diffusion-5-full-
         for (const round of saved.consistencyPrompt.rounds) {
             assert.equal(round.sentPrompt.action, 'infill'); assert.equal(round.sentPrompt.model, model);
             assert.ok(round.promptRecipe); assert.ok(round.dnaSnapshot);
+            assert.equal(round.appearance.version, 1);
+            assert.equal(round.appearance.requestedOutfit, '冬装');
+            assert.equal(round.appearance.effectiveOutfit, '冬装');
+            assert.equal(round.appearance.selectionSource, 'requested');
+            assert.equal(round.appearance.confirmed, false);
+            assert.match(round.appearance.reference.sourceId, /^[0-9a-f]{16}$/);
+            assert.equal(round.appearance.reference.url, undefined, '外部路径只保留受控来源标识');
         }
         assert.deepEqual(f.assets, f.originalAssets);
     });
@@ -3911,6 +3987,7 @@ for (const edited of [false, true]) {
             assert.deepEqual(input.originalPrompt, edited ? prompt : recipe.caption);
             assert.equal(input.promptTask.outfitMode, 'template');
             assert.equal(Object.hasOwn(input.promptTask, 'identityMode'), false);
+            assert.equal(input.promptTask.slots[0].identityMode, 'appearance_correction');
         }
         assert.equal((await f.service.accept(candidate.candidateId)).ok, true);
         const saved = await f.rawStore.getSlotRecord(before.key);
@@ -3929,7 +4006,7 @@ for (const edited of [false, true]) {
         assert.deepEqual(saved.consistencyBaselineMeta.sentPrompt, before.sentPrompt);
         for (const round of saved.consistencyPrompt.rounds) {
             assert.equal(round.promptRecipe.outfitMode, 'template');
-            assert.equal(Object.hasOwn(round.promptRecipe, 'identityMode'), false);
+            assert.equal(round.promptRecipe.identityMode, 'appearance_correction');
             assert.equal(round.promptRecipe.bindings.filter(b => b.kind === 'reference').length, 1);
             assert.equal(round.sentPrompt.action, 'infill');
             assert.match(round.sentPrompt.caption.v4_prompt.caption.base_caption, /reference inset, /);
@@ -3942,3 +4019,198 @@ for (const edited of [false, true]) {
         assert.deepEqual(f.assets, f.originalAssets);
     });
 }
+
+
+for (const mode of ['cancel', 'confirm']) test(`衣装预检：多人集中回退-${mode}`, async t => {
+    const f = await consistencyBuiltinFixture(2);
+    t.after(() => f.dispose());
+    for (const name of f.names) {
+        f.assets.characterOutfits[name].夏装 = f.assets.characterOutfits[name].冬装;
+        f.assets.characterDefaultOutfits[name].outfitName = '夏装';
+        f.assets.characterOutfits[name].冬装 = { wardrobe: name, moods: {} };
+    }
+    const ready = await f.service.preflight(f.target);
+    assert.equal(ready.reason, 'needs-confirmation', JSON.stringify(ready));
+    assert.equal(ready.confirmations.length, 2);
+    assert.equal(f.writes.length, 0); assert.equal(f.wires.length, 0);
+    if (mode === 'cancel') {
+        f.service.cancel(ready.preflightToken);
+        assert.equal(f.service.isBusy(), false);
+        assert.equal(f.appearanceSubscriptions, 0);
+        assert.equal(f.writes.length, 0); assert.equal(f.wires.length, 0);
+        const next = await f.service.preflight(f.target);
+        assert.equal(next.ok, true);
+        f.service.cancel(next.preflightToken);
+    } else {
+        assert.equal((await f.service.run(f.target, { preflightToken: ready.preflightToken })).reason, 'confirmation-required');
+        const candidate = await f.service.run(f.target, { preflightToken: ready.preflightToken, confirmed: true });
+        assert.equal(candidate.ok, true, JSON.stringify(candidate));
+        assert.equal(f.writes.length, 2); assert.equal(f.wires.length, 2);
+        f.service.cancel(candidate.candidateId);
+    }
+    assert.deepEqual(await f.rawStore.getSlotRecord(f.before.key), f.before);
+});
+
+for (const change of ['default', 'wardrobe', 'scope', 'image', 'target'])
+test(`衣装预检：来源失效不可复活-${change}`, async t => {
+    const f = await consistencyBuiltinFixture(1);
+    t.after(() => f.dispose());
+    const ready = await f.service.preflight(f.target);
+    assert.equal(ready.reason, 'ready', JSON.stringify(ready));
+    if (change === 'image') f.referenceRevisions.set('reference-A', 2);
+    else if (change === 'target') f.appearanceChanged({ targetChanged: true });
+    else {
+        const object = change === 'default' ? f.assets.characterDefaultOutfits.A
+            : change === 'scope' ? f.appearanceScope : f.assets.wardrobe.A;
+        const field = change === 'default' ? 'outfitName' : change === 'scope' ? 'owner' : 'prompt';
+        const old = object[field]; object[field] = 'changed'; f.appearanceChanged();
+        object[field] = old; f.appearanceChanged();
+    }
+    const rejected = await f.service.run(f.target, { preflightToken: ready.preflightToken });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.stopGeneration, true);
+    assert.equal(f.writes.length, 0); assert.equal(f.wires.length, 0);
+    assert.equal(f.service.isBusy(), false); assert.equal(f.appearanceSubscriptions, 0);
+    assert.deepEqual(await f.rawStore.getSlotRecord(f.before.key), f.before);
+});
+
+
+for (const mode of ['missing', 'read-error', 'decode-error', 'same-outfit', 'no-default'])
+test(`衣装预检：图片状态-${mode}`, async t => {
+    const f = await consistencyBuiltinFixture(1, undefined, mode === 'read-error'
+        ? { readReferenceImage: async () => { throw new Error('read-failed'); } } : {});
+    t.after(() => f.dispose());
+    if (mode === 'missing') f.pixels.delete('reference-A');
+    if (mode === 'decode-error') f.codec.decodeImage = async () => { throw new Error('decode-failed'); };
+    if (mode === 'no-default') {
+        delete f.assets.characterDefaultOutfits.A;
+        f.assets.characterOutfits.A.冬装.moods = {};
+    }
+    if (mode === 'same-outfit') f.assets.characterOutfits.A.冬装.moods.平和 = 'missing-reference';
+    if (mode === 'same-outfit') f.assets.characterOutfits.A.冬装.moods.微笑 = 'reference-A';
+    const ready = await f.service.preflight(f.target);
+    assert.equal(ready.ok, mode === 'same-outfit', JSON.stringify(ready));
+    if (mode === 'same-outfit') {
+        assert.equal(ready.reason, 'ready');
+        assert.deepEqual(ready.confirmations, []);
+        f.service.cancel(ready.preflightToken);
+    } else {
+        assert.equal(ready.reason, { missing: 'outfit-image-missing', 'read-error': 'outfit-image-read-error',
+            'decode-error': 'outfit-image-decode-error', 'no-default': 'default-outfit-unset' }[mode]);
+    }
+    assert.equal(f.writes.length, 0); assert.equal(f.wires.length, 0);
+    assert.equal(f.service.isBusy(), false); assert.equal(f.appearanceSubscriptions, 0);
+    assert.deepEqual(await f.rawStore.getSlotRecord(f.before.key), f.before);
+});
+
+
+for (const change of ['image', 'wardrobe', 'scope']) test(`衣装预检：候选接受前复核-${change}`, async t => {
+    const f = await consistencyBuiltinFixture(1);
+    t.after(() => f.dispose());
+    const candidate = await f.service.run(f.target);
+    assert.equal(candidate.ok, true, JSON.stringify(candidate));
+    if (change === 'image') f.referenceRevisions.set('reference-A', 2);
+    else if (change === 'wardrobe') f.assets.wardrobe.A.prompt = 'changed';
+    else f.appearanceScope.owner = 'other';
+    const result = await f.service.accept(candidate.candidateId);
+    assert.equal(result.reason, 'stale-appearance', JSON.stringify(result));
+    assert.equal(result.stopGeneration, true);
+    assert.equal(f.service.isBusy(), false); assert.equal(f.appearanceSubscriptions, 0);
+    assert.deepEqual(await f.rawStore.getSlotRecord(f.before.key), f.before);
+});
+
+for (const phase of ['waitWrite', 'waitPaint']) test(`衣装预检：在途来源失效立即停止-${phase}`, async t => {
+    const f = await consistencyBuiltinFixture(3, undefined, { [phase]: true });
+    t.after(() => f.dispose());
+    const pending = f.service.run(f.target);
+    await waitBuiltinGate(f, phase === 'waitWrite' ? 3 : 1);
+    const sent = f.wires.length;
+    const old = f.assets.wardrobe.A.prompt;
+    f.assets.wardrobe.A.prompt = 'changed'; f.appearanceChanged();
+    f.assets.wardrobe.A.prompt = old; f.appearanceChanged();
+    const result = await pending;
+    assert.equal(result.reason, 'stale-appearance', JSON.stringify(result));
+    assert.equal(result.stopGeneration, true);
+    f.release();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(f.wires.length, sent);
+    assert.equal(f.service.isBusy(), false); assert.equal(f.appearanceSubscriptions, 0);
+    assert.deepEqual(await f.rawStore.getSlotRecord(f.before.key), f.before);
+});
+
+
+test('目标衣装契约：换衣采用保留原快照和永久身份', async t => {
+    const { normalizeCharacterDna } = await import('../src/scene/character-dna.js');
+    const f = await consistencyBuiltinFixture(1);
+    t.after(() => f.dispose());
+    f.assets.characterOutfits.A.夏装 = { wardrobe: 'summer', moods: { 平和: 'reference-A' } };
+    f.assets.wardrobe.summer = { prompt: 'wears a light summer shirt' };
+    f.assets.characterOutfits.A.冬装.moods = {};
+    f.assets.characterDefaultOutfits.A.outfitName = '夏装';
+    const assetsBefore = structuredClone(f.assets);
+    const ready = await f.service.preflight(f.target);
+    assert.equal(ready.reason, 'needs-confirmation');
+    const candidate = await f.service.run(f.target, { preflightToken: ready.preflightToken, confirmed: true });
+    assert.equal(candidate.ok, true, JSON.stringify(candidate));
+    assert.equal((await f.service.accept(candidate.candidateId)).ok, true);
+    const saved = await f.rawStore.getSlotRecord(f.before.key);
+    assert.deepEqual(saved.characterMeta, f.before.characterMeta);
+    assert.deepEqual(saved.promptRecipe, f.before.promptRecipe);
+    for (const round of saved.consistencyPrompt.rounds) {
+        assert.equal(round.promptRecipe.identityMode, 'appearance_correction');
+        assert.equal(round.outfitSnapshot.characters[0].name, '夏装');
+        assert.equal(round.outfitSnapshot.characters[0].description, f.assets.wardrobe.summer.prompt);
+        for (const identity of round.dnaSnapshot.characters) {
+            assert.equal(identity.application, 'appearance_correction');
+            assert.deepEqual(identity.profile, normalizeCharacterDna(f.assets.characterDna.A));
+        }
+    }
+    assert.deepEqual(f.assets, assetsBefore);
+});
+
+for (const defect of ['outfit', 'token', 'duplicate', 'recursive', 'identity-mode'])
+test(`目标衣装契约：非法回复零绘图-${defect}`, async t => {
+    const f = await consistencyBuiltinFixture(1, undefined, { transformReply(reply) {
+        if (defect === 'outfit') return reply.replace('meta_outfit_name: 0 | 冬装', 'meta_outfit_name: 0 | 错装');
+        if (defect === 'token') return reply.replace('meta_token: 0 | actor0', 'meta_token: 0 | wrong');
+        if (defect === 'duplicate') return reply + '\nmeta_key: 0 | A';
+        if (defect === 'recursive') return reply.replace('meta_correction_identity: 0 | new-A', 'meta_correction_identity: 0 | <<dna:actor0>>');
+        return reply.replace('identity_mode: appearance_correction', 'identity_mode: unknown');
+    } });
+    t.after(() => f.dispose());
+    const result = await f.service.run(f.target);
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(f.wires.length, 0);
+    assert.deepEqual(await f.rawStore.getSlotRecord(f.before.key), f.before);
+});
+
+for (const [rw, rh] of [[16, 48], [48, 16]]) test(`完整参考几何：透明边与上下部-${rw}x${rh}`, async () => {
+    const { planReferenceCanvas, buildReferencePixels } = await import('../src/media/cg-reference-canvas.js');
+    const ref = { width: rw, height: rh, data: new Uint8ClampedArray(rw * rh * 4),
+        referenceCrop: { x: 0, y: 0, width: rw, height: 1 } };
+    for (let y = 2; y < rh - 2; y++) for (let x = 2; x < rw - 2; x++)
+        ref.data.set(y < rh / 2 ? [255, 0, 0, 255] : [0, 0, 255, 255], (y * rw + x) * 4);
+    const meta = { characters: [{ characterKey: 'A', region: { x: 0.1, y: 0.1, width: 0.7, height: 0.8 } }] };
+    const plan = planReferenceCanvas(256, 128, meta, 'A', ref);
+    assert.equal(plan.ok, true);
+    const p = plan.referenceContent;
+    assert.deepEqual(p.crop, { x: 2, y: 2, width: rw - 4, height: rh - 4 });
+    assert.ok(Object.isFrozen(p) && Object.isFrozen(p.crop));
+    assert.ok(Math.abs(p.width - p.crop.width * p.scale) < 1);
+    assert.ok(Math.abs(p.height - p.crop.height * p.scale) < 1);
+    assert.ok(p.x >= plan.reference.x && p.x + p.width <= plan.size.width);
+    assert.ok(p.y >= 0 && p.y + p.height <= plan.size.height);
+    const source = { width: 256, height: 128, data: new Uint8ClampedArray(256 * 128 * 4).fill(255) };
+    const built = buildReferencePixels(source, ref, plan);
+    const x = p.x + Math.floor(p.width / 2);
+    for (const [y, color] of [[p.y, [255, 0, 0, 255]], [p.y + p.height - 1, [0, 0, 255, 255]]]) {
+        const at = (y * plan.size.width + x) * 4;
+        assert.deepEqual([...built.image.data.subarray(at, at + 4)], color);
+    }
+    for (let y = 0; y < plan.size.height; y++) for (let x = plan.reference.x; x < plan.size.width; x++)
+        assert.equal(built.mask.data[(y * plan.size.width + x) * 4], 0);
+    assert.ok(plan.size.width * plan.size.height <= 1024 * 1024);
+    assert.equal(plan.size.width % 64 + plan.size.height % 64, 0);
+    const empty = { ...ref, data: new Uint8ClampedArray(ref.data.length) };
+    assert.equal(planReferenceCanvas(256, 128, meta, 'A', empty).ok, false);
+});
