@@ -2846,6 +2846,7 @@ test('gate:igs-ui:scene-assets-classifies-dialogue-vs-narration-per-segment', ()
 test('gate:igs-ui:scene-assets-keeps-narration-out-of-dialogue-and-thought-pages', async () => {
     const pagesOf = async (body, sentencePaging = false) => {
         const host = createIgsReaderHost({
+            pageRenderGapMs: 0,
             global: {},
             getUnifiedSettings: () => ({
                 version: '0.4.9',

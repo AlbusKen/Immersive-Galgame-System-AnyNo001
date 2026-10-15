@@ -294,6 +294,8 @@ function unavailableImageProbe(generatedAssets) {
 
 export function createIgsReaderHost(options = {}) {
     bindImageCacheDocument(getRootDocument(options.global), options.media?.cache);
+    // 快速连翻的整页渲染最小间隔（见 renderTurnedPage）；放闭包开头，避免提前调用时未初始化。
+    const PAGE_RENDER_GAP_MS = Number.isFinite(options.pageRenderGapMs) ? options.pageRenderGapMs : 200;
     let statusHudClient = null;
     let statusHudCallback = null;
     let statusHudApi = null;
@@ -1010,6 +1012,8 @@ export function createIgsReaderHost(options = {}) {
         if (current.dom && current.dom.overlay) cancelSceneAudio(current.dom.overlay);
         parkAudioBus();
         if (typeof current.stopStagePause === 'function') current.stopStagePause();
+        if (current.pageRenderTimer) clearTimeout(current.pageRenderTimer);
+        current.pageRenderTimer = 0;
         clearReaderModeRuntime(current);
         if (closeOptions.keepFullscreen !== true) {
             exitDocumentFullscreen(getRootDocument(options.global));
@@ -2150,6 +2154,23 @@ export function createIgsReaderHost(options = {}) {
         return { ok: false, reason: 'unknown-reader-action', action: normalizedAction };
     }
 
+    // 快速连翻：距上次整页渲染不到 PAGE_RENDER_GAP_MS 只记页码，到点按最后停的那页渲染一次；中间页不放演出、不起音效。
+    function renderTurnedPage(current) {
+        if (current.pageRenderTimer) return;
+        const wait = PAGE_RENDER_GAP_MS - (Date.now() - (current.pageRenderAt || 0));
+        if (wait <= 0) {
+            current.pageRenderAt = Date.now();
+            rerenderActiveReader();
+            return;
+        }
+        current.pageRenderTimer = setTimeout(() => {
+            current.pageRenderTimer = 0;
+            if (state.activeReader !== current) return;
+            current.pageRenderAt = Date.now();
+            rerenderActiveReader();
+        }, wait);
+    }
+
     function moveReaderSegment(delta) {
         if (!state.activeReader) return { ok: false, reason: 'reader-not-open' };
         const segments = state.activeReader.snapshot && state.activeReader.snapshot.content
@@ -2170,7 +2191,7 @@ export function createIgsReaderHost(options = {}) {
         }
         state.activeReader.index = nextIndex;
         state.activeReader.autoPlayer?.refresh();
-        rerenderActiveReader();
+        renderTurnedPage(state.activeReader);
         playReaderUiSfx('page');
         return {
             ok: true,

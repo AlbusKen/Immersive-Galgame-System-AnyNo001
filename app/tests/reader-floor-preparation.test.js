@@ -26,7 +26,7 @@ function reader(t, { raw, sceneAssets, statusHud, table, generatedAssets } = {})
         unregisterTableUpdateCallback(fn) { callbacks.delete(fn); },
     } };
     const cache = createLocalImageCache(g);
-    const host = createIgsReaderHost({ global: g, media: { cache }, generatedAssets,
+    const host = createIgsReaderHost({ global: g, media: { cache }, generatedAssets, pageRenderGapMs: 0,
         getUnifiedSettings: () => ({ bridge, readerSettings: { titleScreen: false, typewriter: { enabled: false }, statusHud } }),
         getSettingsRevision: () => revision, getCurrentChatId: () => 'floor-preparation-fixture',
         onGeneratedAssetUpdated(fn) { imageEvent = fn; return () => { imageEvent = null; }; },

@@ -184,6 +184,7 @@ test('title-screen:opening-card-reuses-the-scene-title-card-and-can-be-skipped',
 
 test('title-screen:reader-host-holds-floor-zero-behind-the-title-gate', async () => {
     const makeHost = (readerSettings = {}) => createIgsReaderHost({
+        pageRenderGapMs: 0,
         global: {},
         getUnifiedSettings: () => ({
             bridge: { openMode: 'pc', sceneAssets: { enabled: true, scenes: {}, characters: {} } },
