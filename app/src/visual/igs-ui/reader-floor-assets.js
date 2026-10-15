@@ -1,5 +1,5 @@
 import { resolveSpriteAsset, resolveBackgroundAsset, resolveNudeSpriteAsset, isNonSpriteSpeaker, tempAssetKeyOf } from '../../scene/asset-match.js';
-import { resolveSpriteOutfit, outfitsOfCharacter } from '../../scene/character-outfits.js';
+import { resolveSpriteOutfit, outfitsOfCharacter, outfitAllowsScene } from '../../scene/character-outfits.js';
 import { resolveCharacterDna } from '../../scene/character-dna.js';
 import { classifySceneKey } from '../../scene/scene-directives.js';
 import { createCastLeftTracker, otherNamesOf, namesOf, NARRATION_HOLD_PAGES } from '../../scene/narration-sprite.js';
@@ -251,23 +251,39 @@ export function prepareReaderFloorAssets(floor, { payload, readerSettings, asset
         || String(headScene.scene || '').trim() !== String(prevScene.scene || '').trim()
         || String(headScene.time || '').trim() !== String(prevScene.time || '').trim()));
     const headSceneEnd = scenes[1] ? scenes[1].offset : Infinity;
+    const noDefaultSprite = new Map();
+    const defaultEmpty = name => {
+        if (!noDefaultSprite.has(name)) noDefaultSprite.set(name, !lookup.sprite(name).url);
+        return noDefaultSprite.get(name);
+    };
     function outfitFor(index, character) {
         const page = floor.pages[index];
-        const key = outfitsOfCharacter(sceneAssets.characterOutfits, sceneAssets.characterAliases, character).key || character;
+        const { key: found, outfits } = outfitsOfCharacter(sceneAssets.characterOutfits, sceneAssets.characterAliases, character);
+        const key = found || character;
         const tags = floor.stageIndex.outfits.get(key) || [];
         let tag = lastBefore(tags, page.outfitOffset);
         const scene = lastBefore(scenes, page.outfitOffset);
-        const ahead = !tag && headChanged && scene === headScene
-            ? tags.find(d => d.offset >= headScene.offset && d.offset < headSceneEnd) || null : null;
+        // 默认立绘是空的：楼首没换场也往后取同场景第一次写的衣服，免得落到空的原装上。
+        const ahead = !tag && scene === headScene && (headChanged || (found && defaultEmpty(character)))
+            ? tags.find(d => d.offset >= (headScene?.offset ?? 0) && d.offset < headSceneEnd) || null : null;
         if (ahead) tag = ahead;
         const cacheKey = JSON.stringify([key, tag?.offset ?? -1, scene?.offset ?? -1]);
         if (!outfitCache.has(cacheKey)) {
             const rawScene = String(page.sceneStateForBg?.scene || '').trim();
-            outfitCache.set(cacheKey, resolveSpriteOutfit({ directives: [scene, tag].filter(Boolean), character,
+            const sceneNames = [classifySceneKey(sceneAssets.scenes, rawScene).key || '', rawScene];
+            let resolved = resolveSpriteOutfit({ directives: [scene, tag].filter(Boolean), character,
                 offset: ahead ? ahead.offset : page.outfitOffset, inheritedOutfits, sceneAssets,
-                scene: [classifySceneKey(sceneAssets.scenes, rawScene).key || '', rawScene],
+                scene: sceneNames,
                 readClues: tableData.outfitClues,
-                resolveDna: name => resolveCharacterDna(sceneAssets.characterDna, name)?.dna || null }));
+                resolveDna: name => resolveCharacterDna(sceneAssets.characterDna, name)?.dna || null });
+            // 仍落空就从衣柜挑一套适用本场景的，有图的优先，没图的也照选。
+            if (!resolved.outfit && resolved.source !== 'reset' && found && defaultEmpty(character)) {
+                const names = Object.keys(outfits).filter(name => outfitAllowsScene(outfits[name], sceneNames));
+                const hasArt = name => Object.values(outfits[name]?.moods || {}).some(v => String(v || '').trim()) || String(outfits[name]?.base || '').trim();
+                const pick = names.find(hasArt) || names[0];
+                if (pick) resolved = { outfit: pick, source: 'wardrobe', reason: 'no-default-sprite' };
+            }
+            outfitCache.set(cacheKey, resolved);
         }
         return outfitCache.get(cacheKey);
     }
