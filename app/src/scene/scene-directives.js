@@ -228,6 +228,44 @@ export function resolveHeldSourceOffsets(source, segments, locate) {
 
 const PAGE_SPEAKER_RE = /^\s*\*?\s*\[([^\]\n]+)\]\s*[:：]/;
 
+// 整楼一次建立 CG 页计划。标记、场景与出场角色不再在每次翻页时从头扫描。
+export function prepareIllustrationPages({ source, offsets = [], segments = [], holdPages = 4, inheritedNsfw = false, sceneAt } = {}) {
+    const src = String(source || '');
+    const markers = Array.from(src.matchAll(/\[igs-img:\s*(\d+)\s*\]|<IMG>\s*(\d+)\s*<\/IMG>/gi),
+        m => ({ slot: Number(m[1] || m[2]), offset: m.index })).filter(m => m.slot >= 1);
+    if (!markers.length) return offsets.map(() => null);
+    const stateAt = position => {
+        const state = typeof sceneAt === 'function' ? sceneAt(position) : resolveSceneAtSourceOffset(src, position);
+        return state?.scene ? state : { scene: '', time: '', nsfw: inheritedNsfw === true };
+    };
+    const starts = new Map();
+    for (const marker of markers) {
+        let lo = 0, hi = offsets.length;
+        while (lo < hi) { const mid = (lo + hi) >>> 1; if (offsets[mid] < marker.offset) lo = mid + 1; else hi = mid; }
+        let page = lo - 1;
+        // -1 是未定位，不能被当成标记前的正文页。
+        if (page < 0 || offsets[page] < 0) page = offsets.findIndex(at => at > marker.offset);
+        if (page >= 0) starts.set(page, marker);
+    }
+    const hold = Math.max(1, Number(holdPages) || 4);
+    const spoken = new Set();
+    let next = 0, current = null, start = -1, ended = false;
+    return offsets.map((offset, index) => {
+        if (starts.has(index)) { current = starts.get(index); start = index; spoken.clear(); ended = false; }
+        const speaker = String(segments[index] || '').match(PAGE_SPEAKER_RE)?.[1]?.trim() || '';
+        if (speaker && index - start >= hold && !spoken.has(speaker)) ended = true;
+        if (speaker) spoken.add(speaker);
+        if (offset < 0) return null;
+        while (next < markers.length && markers[next].offset < offset) next++;
+        if (stateAt(offset).nsfw) return markers[next] || markers[markers.length - 1];
+        const passed = next ? markers[next - 1] : null;
+        if (passed && stateAt(passed.offset).nsfw) return passed;
+        if (!current || ended || index - start >= hold * 2) return null;
+        const opening = stateAt(offsets[start]), here = stateAt(offset);
+        return here.scene === opening.scene && here.time === opening.time ? current : null;
+    });
+}
+
 /**
  * 当前页该显示哪张 CG。
  * NSFW 页沿用 resolveIllustrationAtSourceOffset：整楼有图就一直挂着，只被下一张替换；翻过的 NSFW 图转到 SFW 场景也不撤。

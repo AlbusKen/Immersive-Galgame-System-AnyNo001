@@ -342,17 +342,10 @@ function liveSlots(record, ctx) {
     return out;
 }
 
-function liveCharacters(characters, ctx) {
-    if (!characters || typeof characters !== 'object' || (typeof ctx.isMissingImage !== 'function' && typeof ctx.isUnavailableImage !== 'function')) return characters;
-    let out = characters;
-    for (const [name, record] of Object.entries(characters)) {
-        const live = liveSlots(record, ctx);
-        if (live !== record) {
-            if (out === characters) out = { ...characters };
-            out[name] = live;
-        }
-    }
-    return out;
+function liveCharacter(characters, aliases, name, ctx) {
+    const key = resolveCharacterKey(characters, aliases, name);
+    // 先定位角色，再检查他的槽位。另一角色读图失败不能让整库逐槽检查。
+    return key ? { [key]: liveSlots(characters[key], ctx) } : {};
 }
 
 function hasLostImage(record, ctx) {
@@ -418,8 +411,8 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
         }
     }
     // 原装查表前先摘掉已丢失的内部图槽：未命中情绪照样落到组/同向档/平和/默认，不被死链截断。
-    const liveChars = liveCharacters(userAssets.characters, ctx);
-    const liveUserAssets = liveChars !== userAssets.characters ? { ...userAssets, characters: liveChars } : userAssets;
+    const liveChars = liveCharacter(userAssets.characters, userAssets.characterAliases, name, ctx);
+    const liveUserAssets = { ...userAssets, characters: liveChars };
     const user = lookupSpriteWithFallback({ character: name, mood }, liveUserAssets);
     if (user.spriteUrl && !unavailableImage(user.spriteUrl, ctx)) {
         // 兜住的图还在，但同一角色名下还有死链槽：照常显示兜底图，同时保留缺图标记让补图链重画那张。
@@ -428,8 +421,11 @@ export function resolveSpriteAsset(character, mood, ctx = {}, outfit = '') {
         return { url: user.spriteUrl, slot: user.spriteSlot, character: user.spriteCharacter || name, source: 'user', quality: user.spriteQuality, needsGeneration: dangling };
     }
     const registeredKey = resolveCharacterKey(userAssets.characters, userAssets.characterAliases, name);
-    const library = normalizeGeneratedLibrary(ctx.generatedAssets);
-    const libraryAssets = { characters: liveCharacters(library.characters, ctx), characterAliases: { ...userAssets.characterAliases, ...library.characterAliases }, moodGroups: userAssets.moodGroups, moodFuzzyMatch: userAssets.moodFuzzyMatch };
+    // 显示匹配只读图片引用，不整理全库的 expressionNotes。
+    const library = plainObject(ctx.generatedAssets);
+    const libraryAliases = { ...userAssets.characterAliases, ...library.characterAliases };
+    const libraryName = resolveCharacterKey(library.characters, libraryAliases, name) ? name : registeredKey || name;
+    const libraryAssets = { characters: liveCharacter(library.characters, libraryAliases, libraryName, ctx), characterAliases: libraryAliases, moodGroups: userAssets.moodGroups, moodFuzzyMatch: userAssets.moodFuzzyMatch };
     let generated = lookupSpriteWithFallback({ character: name, mood }, libraryAssets);
     if (!generated.spriteUrl && registeredKey && registeredKey !== name) generated = lookupSpriteWithFallback({ character: registeredKey, mood }, libraryAssets);
     if (generated.spriteUrl && !unavailableImage(generated.spriteUrl, ctx)) {

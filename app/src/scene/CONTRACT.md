@@ -79,3 +79,9 @@
 - 不直接渲染 DOM。
 - 不直接调用生图 API。
 - 不直接发送用户输入。
+
+## 楼层准备（v0.36.62）
+
+- `prepareIllustrationPages` 与 `prepareEventCgPages` 一次建立整楼 CG 页计划，沿用原有停留、NSFW、场景变更和新说话人退场规则。
+- `createFxPageResolver` 顺序消费新增演出指令、保留区间状态；既有 `resolveFxAtPage` 仍支持独立单页解析，准备后的页不能被后续页回写。`createNarrationSpriteTracker` 与原有离场/回来规则共用状态推导。
+- 立绘可用性先确定当前角色及其别名，再只检查同角色槽位；不因任意一张图片读取失败而遍历其他角色图片。

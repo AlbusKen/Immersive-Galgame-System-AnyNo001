@@ -69,13 +69,13 @@ function eventsOf(sentence, marks, prevMixed) {
 }
 
 // 按页序推导：最后一个事件说了算。gone=true 表示此刻已离场；back 为最近一次「回来」所在页下标（没有为 -1）。
-function presenceOf(pages, names, others) {
+function createPresenceTracker(names, others) {
     const own = names;
     const rest = (Array.isArray(others) ? others : []).map((s) => String(s || '').trim()).filter((s) => s.length >= 2 && !own.includes(s));
     let gone = false;
     let back = -1;
     let prevMixed = false;
-    pages.forEach((text, index) => {
+    return { push(text, index) {
         for (const sentence of String(text || '').split(/[。！？!?\n]/)) {
             if (!sentence) continue;
             const marks = markersOf(sentence, own, rest);
@@ -87,8 +87,29 @@ function presenceOf(pages, names, others) {
                 prevMixed = marks.some((m) => m.kind === 'other');
             }
         }
-    });
-    return { gone, back };
+        return { gone, back };
+    } };
+}
+
+function presenceOf(pages, names, others) {
+    const tracker = createPresenceTracker(names, others);
+    let state = { gone: false, back: -1 };
+    pages.forEach((text, index) => { state = tracker.push(text, index); });
+    return state;
+}
+
+// 整楼顺序准备时只消费新增的一页，和 narrationKeepsSprite 共用同一套离场 / 回来判断。
+export function createNarrationSpriteTracker({ name, aliases = [], others = [], pov = false } = {}) {
+    const names = namesOf(name, aliases);
+    const tracker = createPresenceTracker(names, others);
+    let count = 0;
+    return text => {
+        const { gone, back } = tracker.push(text, count++);
+        if (!names.length || gone) return false;
+        if (count - Math.max(0, back) <= NARRATION_HOLD_PAGES) return true;
+        const current = String(text || '');
+        return names.some(n => current.includes(n)) || (pov && current.includes('你'));
+    };
 }
 
 // pages：说话页之后到本页为止的各页文字（按顺序，最后一项是本页）。others：其他角色的名字 / 别名，用来判断主语和代词指代。
