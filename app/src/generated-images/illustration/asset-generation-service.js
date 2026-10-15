@@ -64,6 +64,7 @@ export function createAssetGenerationService(deps) {
     const dayBasePending = new Map();
     const cache = requireMediaCache(deps.mediaCache, 'asset-generation', deps.thumbStore?.mediaCache);
     const pendingImages = new Set();
+    const imageTickets = new Map();
     const failedImages = cache.auxiliary.createMap('asset-image-failures');
     const thumbStore = deps.thumbStore || null;
     const makeThumb = typeof deps.makeThumb === 'function' ? deps.makeThumb : null;
@@ -101,8 +102,10 @@ export function createAssetGenerationService(deps) {
         await ready().catch(error => { if (stopped || typeof store.getImageRecord !== 'function') throw error; });
         return typeof store.getImageRecord === 'function' ? store.getImageRecord(id) : null;
     }
-    async function displayImage(id, record) {
-        return store.hydrateImage && record ? store.hydrateImage(record, { fields: ['dataUrl'], strictRead: true }) : store.getImage(id, { fields: ['dataUrl'], strictRead: true });
+    // extra.display：只要显示地址（blob:）不转 base64；extra.ticket：下载优先级，可事后提升。
+    async function displayImage(id, record, extra = {}) {
+        const options = { fields: ['dataUrl'], strictRead: true, ...extra };
+        return store.hydrateImage && record ? store.hydrateImage(record, options) : store.getImage(id, options);
     }
 
     const readSettings = () => {
@@ -214,13 +217,18 @@ export function createAssetGenerationService(deps) {
         return out;
     }
 
-    function resolveUrl(url) {
+    // options.priority === 'low'：整楼预热，排在当前页要显示的图之后；同一张图后来被当前页要，会提升。
+    function resolveUrl(url, options) {
         if (!isGeneratedAssetUrl(url)) return String(url || '');
         if (stopped) return '';
         const id = generatedAssetIdOf(url), key = imageKey(id), hit = cache.peek(key);
         if (hit) { failedImages.delete(id); return hit; }
+        const low = options?.priority === 'low';
+        if (pendingImages.has(id) && !low) { const waiting = imageTickets.get(id); if (waiting && !waiting.high) { waiting.high = true; waiting.boost?.(); } }
         if (!pendingImages.has(id) && !imageFailure(url)) {
             pendingImages.add(id);
+            const ticket = { high: !low, boost: null };
+            imageTickets.set(id, ticket);
             const generation = tempCache.epoch();
             let stamp = null, early = false;
             // 恢复记录会失效旧像素引用，必须先完成恢复再取得读图 token；先用本机记录读的，读完若被恢复作废就通知重读一次。
@@ -228,7 +236,9 @@ export function createAssetGenerationService(deps) {
                 if (stopped || tempCache.epoch() !== generation) return;
                 stamp = cache.token(key);
                 const value = await cache.load(key, async () => {
-                    const value = (await displayImage(id, record))?.dataUrl || '';
+                    let value = (await displayImage(id, record, { display: true, ticket }))?.dataUrl || '';
+                    // 显示地址对应的内存条目若已被淘汰，objectURL 已失效，退回完整 dataUrl。
+                    if (/^blob:/i.test(value) && !cache.sourceId(value)) value = (await displayImage(id, record))?.dataUrl || '';
                     if (!value) throw new Error('image-empty');
                     return value;
                 }, { persist: false });
@@ -238,8 +248,10 @@ export function createAssetGenerationService(deps) {
                 if (cache.peek(key)) emit({ imageId: id, reason: 'image-loaded' });
             })
                 .catch(error => {
+                    // 预热（低优先级）一直被当前页插队而排队超时，不算读图失败，翻到那页时再读。
+                    if (!ticket.high && error.message === 'image-load-timeout') return;
                     if (!stopped && tempCache.epoch() === generation && (stamp == null || cache.token(key) === stamp || error.message === 'image-load-timeout')) noteImageFailure(id, error);
-                }).finally(() => { if (tempCache.epoch() === generation) pendingImages.delete(id); });
+                }).finally(() => { if (imageTickets.get(id) === ticket) imageTickets.delete(id); if (tempCache.epoch() === generation) pendingImages.delete(id); });
         }
         return '';
     }

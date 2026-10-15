@@ -37,7 +37,7 @@ export function createImageResourceCache(globalObject = globalThis, { limit = 96
         sources.set(key, true);
         const ready = cache.peek(key);
         if (ready) return Promise.resolve(ready);
-        if (isImagePath(source)) return files.read(source).then(value => value ? cache.peek(key) || value : '');
+        if (isImagePath(source)) return files.read(source, { display: true }).then(value => value ? cache.peek(key) || value : '');
         if (typeof globalObject.Image !== 'function') { cache.remember(key, source); return Promise.resolve(cache.peek(key) || source); }
         return cache.load(key, signal => {
             return new Promise(resolve => {

@@ -74,7 +74,7 @@ export function mapImageRepositoryFor(globalObject = globalThis) {
     }
     const repository = {
         restore,
-        async resolveUrl(path) { const value = await files.read(path); return value ? localImageCacheFor(globalObject).peek(path) || value : ''; },
+        async resolveUrl(path) { const value = await files.read(path, { display: true }); return value ? localImageCacheFor(globalObject).peek(path) || value : ''; },
         set: save,
         async remove(key) {
             const intent = {}; intents.set(key, intent);

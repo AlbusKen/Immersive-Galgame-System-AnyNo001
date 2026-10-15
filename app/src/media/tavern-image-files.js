@@ -32,12 +32,22 @@ export function createTavernImageFiles(globalObject, legacyDir) {
         flights.set(hash, job);
         return job;
     }
-    async function read(path, { strictRead = false } = {}) {
-        const task = cache.load(path, async signal => {
+    // display 为真时只要显示地址（blob: objectURL），不转 base64；否则仍返回 dataUrl。
+    async function read(path, { strictRead = false, display = false, ticket = null } = {}) {
+        let fetched = null;
+        const fetchBlob = async signal => {
             const response = await mediaRequest(globalObject, `/${String(path).replace(/^\//, '')}`, { cache: 'no-store', signal });
             if (!response?.ok) throw Object.assign(new Error(response?.status === 404 || response?.status === 410 ? 'image-file-not-found' : 'image-file-unreadable'), { status: response?.status });
-            return blobDataUrl(await response.blob(), globalObject, { signal });
-        }, { download: true });
+            return fetched = await response.blob();
+        };
+        // 没有 createObjectURL 的环境（测试桩）无法给 Blob 生成地址，退回 dataUrl。
+        const useBlob = typeof globalObject.URL?.createObjectURL === 'function';
+        const loader = useBlob ? fetchBlob : async signal => blobDataUrl(await fetchBlob(signal), globalObject, { signal });
+        const task = cache.load(path, loader, { download: true, blob: useBlob, ticket }).then(async shown => {
+            if (display || (!shown && !fetched)) return shown;
+            // 需要 dataUrl 的调用方：从内存条目转；条目一落地就被淘汰（显示地址为空）也用刚下载的 Blob，再不行重下一次。
+            return (shown && await cache.dataUrl(path)) || await blobDataUrl(fetched || await fetchBlob(), globalObject);
+        });
         if (!strictRead) return task.catch(() => '');
         const value = await task;
         if (!value) throw new Error('image-read-incomplete');

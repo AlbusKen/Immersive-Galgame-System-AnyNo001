@@ -227,3 +227,26 @@ test('楼首页旁白：台上没人时名字不在句首也点出立绘；台�
     check(['夜色深沉。', '窗外风声呜咽。', '你推开门，走进寝殿。'], ['', '', '白墨'], mine);
     check(['夜色深沉。', '窗外风声呜咽。', '你听见她的呼吸声。'], ['', '', '白墨'], mine);
 });
+
+test('场景标签和正文同页：剥掉标签后「你」开头照常给 User 立绘', async () => {
+    const { createNarrationNamer } = await import('../src/scene/narration-focus.js');
+    const namer = createNarrationNamer({ characters: { 哪吒: { 平和: 'u' } }, userKey: '哪吒', youLead: true });
+    assert.equal(namer.read('[igs-scene:莲宸殿东厢寝殿|深夜|晴天]你听着尚仪嬷嬷在帐外请示明日的章程，困得打了个呵欠。'), '哪吒');
+});
+
+test('第二人称：别人看 / 听「你」给对方，省略主语的小句取句首主语；被动句仍给你', async () => {
+    const { createNarrationNamer } = await import('../src/scene/narration-focus.js');
+    const namer = () => createNarrationNamer({ characters: { 哪吒: {}, 尚仪嬷嬷: {}, 小雪: {} }, userKey: '哪吒', youLead: true });
+    assert.equal(namer().read('尚仪嬷嬷立在床幔外，听见你夹着睡意的吩咐。'), '尚仪嬷嬷');
+    assert.equal(namer().read('尚仪嬷嬷立在小雪身旁，听见你的吩咐。'), '尚仪嬷嬷');
+    assert.equal(namer().read('你被小雪看到了。'), '哪吒');
+});
+
+test('段落以场景标签开头、按句分页：同段每页都沿用 User 立绘', () => {
+    const segs = ['夜色深沉。', '[igs-scene:寝殿|深夜|晴]你听着嬷嬷请示章程，打了个呵欠。', '这座寝殿坐东朝西，分作两进。', '你此刻躺卧的内室宽敞幽静。'];
+    const source = segs.join('\n');
+    const readerSettings = { _sceneAssets: { enabled: true, userCharacter: '哪吒', characters: { 哪吒: { 平和: 'u' } } }, stageCast: { enabled: true } };
+    const floor = prepareReaderFloor({ text: source, segments: segs, extracted: { sceneDirectives: extractSceneDirectives(source).directives, markerLayoutSource: source },
+        payload: { raw: source, recentCast: [] }, scene: { speaker: '' }, readerSettings, userName: '林远' });
+    assert.deepEqual(floor.pages.map(p => p.spriteChar), ['', '哪吒', '哪吒', '哪吒']);
+});

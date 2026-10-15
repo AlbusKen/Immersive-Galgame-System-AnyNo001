@@ -138,7 +138,12 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
         }
         trimMemory();
     }
-    async function get(path) {
+    // 显示用地址：优先内存条目的 objectURL，没有再按需转 dataUrl。
+    async function shownOf(key) {
+        const entry = memory.get(aliases.get(key));
+        return entry ? entry.url || await blobDataUrl(entry.data, globalObject, { signal: readController?.signal }).catch(() => '') : '';
+    }
+    async function get(path, { url = false } = {}) {
         if (destroyed) return '';
         const key = normalizeImagePath(path), stamp = token(key);
         const entry = memory.get(aliases.get(key));
@@ -147,15 +152,17 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
             const usedAt = now();
             if (meta?.has(key)) meta.get(key).usedAt = usedAt;
             if (store) void enqueue(() => store.touch(key, usedAt)).catch(() => {});
-            const value = await blobDataUrl(entry.data, globalObject, { signal: readController?.signal }).catch(error => { if (token(key) !== stamp || destroyed) return ''; throw error; });
+            const value = url ? await shownOf(key) : await blobDataUrl(entry.data, globalObject, { signal: readController?.signal }).catch(error => { if (token(key) !== stamp || destroyed) return ''; throw error; });
             return token(key) === stamp && !destroyed ? value : '';
         }
         if (!store) return '';
         const data = await enqueue(() => store.get(key));
         if (!data || token(key) !== stamp) return '';
-        const value = await blobDataUrl(data, globalObject, { signal: readController?.signal }).catch(error => { if (token(key) !== stamp || destroyed) return ''; throw error; });
+        // 显示模式下磁盘里的 Blob 直接进内存，不绕 base64；旧数据（dataUrl 字符串）照旧。
+        const direct = url && typeof data !== 'string';
+        const value = direct ? '' : await blobDataUrl(data, globalObject, { signal: readController?.signal }).catch(error => { if (token(key) !== stamp || destroyed) return ''; throw error; });
         if (token(key) !== stamp) return '';
-        remember(key, value);
+        remember(key, direct ? data : value);
         await enqueue(async () => {
             if (token(key) !== stamp) return;
             const rows = await metadata(true);
@@ -166,7 +173,8 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
             }
             await trimDisk();
         });
-        return token(key) === stamp && !destroyed ? value : '';
+        if (token(key) !== stamp || destroyed) return '';
+        return url ? await shownOf(key) : value;
     }
     async function put(path, value, expectedToken = token(normalizeImagePath(path))) {
         const key = normalizeImagePath(path);
@@ -186,24 +194,32 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
         if (!destroyed) channel?.postMessage({ type: 'drop', key });
         return !destroyed && token(key) === expectedToken;
     }
-    async function load(path, loader, { persist = true, timeoutMs = 30000, download = false } = {}) {
+    // blob 模式：loader 可返回 Blob，结果是显示地址（objectURL）而不是 dataUrl；ticket 为 {high, boost} 的下载优先级。
+    async function load(path, loader, { persist = true, timeoutMs = 30000, download = false, blob = false, ticket = null } = {}) {
         if (destroyed) return '';
         const key = normalizeImagePath(path);
-        if (flights.has(key)) return flights.get(key).promise;
+        if (flights.has(key)) {
+            // 低优先级预热排队中，当前页又要同一张图：提到队首。
+            if (!ticket || ticket.high) flights.get(key).boost?.();
+            return flights.get(key).promise;
+        }
         const stamp = token(key);
         const controller = Abort ? new Abort() : null;
         let timer;
         let cancel;
         const cancelled = new Promise(resolve => { cancel = () => { controller?.abort(); resolve(''); }; });
-        const pending = { controller, cancel, promise: null };
+        const handle = {};
+        const pending = { controller, cancel, promise: null, boost: () => handle.boost?.() };
+        if (ticket) ticket.boost = pending.boost;
         const work = (async () => {
             const present = memory.get(aliases.get(key));
-            const hit = present ? await blobDataUrl(present.data, globalObject, { signal: controller?.signal }) : persist ? await get(key).catch(() => '') : '';
+            const hit = present ? (blob && present.url) || await blobDataUrl(present.data, globalObject, { signal: controller?.signal }) : persist ? await get(key, { url: blob }).catch(() => '') : '';
             if (hit) return token(key) === stamp && !destroyed ? hit : '';
             if (token(key) !== stamp) return '';
-            const value = await (download ? downloads.run(loader, controller?.signal) : loader(controller?.signal));
+            const value = await (download ? downloads.run(loader, controller?.signal, { high: !ticket || ticket.high, handle }) : loader(controller?.signal));
             if (token(key) !== stamp || !value) return '';
             if (persist) await put(key, value, stamp).catch(error => { lastError = error.message || String(error); }); else remember(key, value);
+            if (blob && typeof value !== 'string') return token(key) === stamp && !destroyed ? await shownOf(key) : '';
             return token(key) === stamp && !destroyed ? value : '';
         })();
         pending.promise = Promise.race([work, cancelled, new Promise((_, reject) => {
@@ -239,7 +255,9 @@ export function createLocalImageCache(globalObject = globalThis, options = {}) {
     }
     const api = {
         get destroyed() { return destroyed; },
-        get, put, load, peek, remember, forget, auxiliary, token: path => token(normalizeImagePath(path)),
+        get, put, load, peek,
+        // 内存条目转 dataUrl（缩略图、导出等需要 dataUrl 的调用方按需用）。
+        async dataUrl(path) { const entry = memory.get(aliases.get(normalizeImagePath(path))); return entry ? blobDataUrl(entry.data, globalObject, { signal: readController?.signal }).catch(() => '') : ''; }, remember, forget, auxiliary, token: path => token(normalizeImagePath(path)),
         sourceId: url => { const identity = urlOwners.get(url); const matches = [...aliases].filter(([, id]) => id === identity).map(([key]) => key); return matches.find(key => key.startsWith('thumb:asset:')) || matches.find(key => key.startsWith('asset:')) || matches[0] || ''; },
         async drop(path) { if (destroyed) return; const key = normalizeImagePath(path); forget(key); channel?.postMessage({ type: 'drop', key }); await enqueue(async () => { if (!destroyed) { await store?.delete(key); (await metadata()).delete(key); } }); },
         async dropPrefix(prefix) {

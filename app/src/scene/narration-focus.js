@@ -69,6 +69,13 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         return last;
     }
 
+    // 句首主语：开头三个字内的第一个人。
+    function leadToken(text) {
+        const lead = String(text || '').trimStart();
+        for (let k = 0; k < Math.min(LEAD_REACH, lead.length); k++) { const t = tokenAt(lead, k); if (t) return t; }
+        return null;
+    }
+
     // 一句里第一个有效感知：seen 被感知者，by 感知者，passive 被动句；不在场 / 否定 / 媒介 / 找不到宾语的跳过。
     function perceive(sentence) {
         for (const m of sentence.matchAll(PERCEIVE_RE)) {
@@ -86,7 +93,8 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
             for (let k = 0; k <= Math.min(OBJECT_REACH, after.length - 1) && !seen; k++) seen = tokenAt(after, k);
             if (!seen) continue;
             if (seen.kind === 'name' && MEDIA_AFTER_RE.test(after.slice(seen.end))) continue;
-            return { seen, by: lastToken(clause), passive: false };
+            // 「嬷嬷立在床幔外，听见你……」：这个小句省略了主语，感知者往前取整句的主语。
+            return { seen, by: lastToken(clause) || leadToken(before), passive: false };
         }
         return null;
     }
@@ -108,7 +116,8 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
 
     // loose：舞台上没人可沿用时（楼首页、人都走了），名字不在开头也认，取全页最早出现的那个。
     function read(text, { focus = '', loose = false } = {}) {
-        const body = String(text || '').replace(QUOTE_RE, '');
+        // 场景标签和正文同页（「[igs-scene:…]你听着……」）时先剥掉，否则句首认不出人。
+        const body = String(text || '').replace(/\[igs-[^\]\n]*\]?/g, '').replace(QUOTE_RE, '');
         const sentences = body.split(SENTENCE_RE).filter((s) => s.trim());
         let pick = null;
         // 每句只算一次感知，选人和推进话题共用。
@@ -116,6 +125,8 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         for (const p of perceived) {
             if (!p) continue;
             // 宾语是代词、泛指或反身时不猜，这一页不点名。
+            // 「嬷嬷听见你……」：第二人称里别人看 / 听你，镜头是你的眼睛，给感知者。
+            if (!p.passive && p.seen.kind === 'you' && p.by?.kind === 'name') { pick = p.by.key; break; }
             pick = p.seen.kind === 'name' || p.seen.kind === 'you' ? p.seen.key || '' : '';
             break;
         }

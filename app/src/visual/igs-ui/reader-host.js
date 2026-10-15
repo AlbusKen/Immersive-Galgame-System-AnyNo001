@@ -887,13 +887,13 @@ export function createIgsReaderHost(options = {}) {
         return Boolean(source) && readerPageAssetUrls(content).includes(source);
     }
 
-    function concreteReaderAssetUrl(url) {
+    function concreteReaderAssetUrl(url, priority) {
         const source = String(url || '').trim();
         if (!source) return '';
         if (!isGeneratedAssetUrl(source)) return source;
         const generatedAssets = options.generatedAssets || null;
         return generatedAssets && typeof generatedAssets.resolveUrl === 'function'
-            ? String(generatedAssets.resolveUrl(source) || '')
+            ? String(generatedAssets.resolveUrl(source, priority ? { priority } : undefined) || '')
             : '';
     }
 
@@ -934,8 +934,9 @@ export function createIgsReaderHost(options = {}) {
             if (ready) imageResourceCache.load(ready);
             return;
         }
+        // 整楼预热用低优先级，让当前页要显示的图先下载。
         for (const url of floorAssetPlan.urls) {
-            const concrete = concreteReaderAssetUrl(url);
+            const concrete = concreteReaderAssetUrl(url, 'low');
             if (concrete) imageResourceCache.load(concrete);
         }
     }

@@ -204,7 +204,8 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         allow: key => (!goneKeys.has(key) || wroteBack(key)) && (key === userKey ? hasSprites(key) : Object.hasOwn(castCharacters, key) && (castNearby === null || castNearby.has(key))) });
     // 换场景时谁跟过来（见 carriesAcrossScene）：每个场景标签、每个人只判一次，主立绘与同屏陪衬共用结果。
     const carryMode = ['strict', 'smart', 'loose'].includes(sceneAssets?.sceneCarryMode) ? sceneAssets.sceneCarryMode : 'smart';
-    const sceneOfPage = offsets.map(offset => offset >= 0 ? lastBefore(scenes, offset, false) : null);
+    // 段落以场景标签开头（「[igs-scene:…]你听着……」）时，标签和这一页同处一个偏移，这一页已属新场景。
+    const sceneOfPage = offsets.map(offset => offset >= 0 ? lastBefore(scenes, offset, true) : null);
     const sceneFirstPage = new Map();
     sceneOfPage.forEach((d, i) => { if (d && !sceneFirstPage.has(d)) sceneFirstPage.set(d, i); });
     const sceneLeads = new Map();
