@@ -39,7 +39,7 @@ import { cancelDailyFx } from './fx-daily.js';
 import { cancelSceneAudio, skipBgmTrack } from './scene-audio.js';
 import { applyBgmNoteToDom, toggleBgmNote } from './bgm-note.js';
 import { parkAudioBus, unparkAudioBus } from './audio-bus.js';
-import { isStagePaused, watchStagePause } from './stage-pause.js';
+import { isStagePaused, markStageActive, watchStagePause } from './stage-pause.js';
 import { scheduleFontGuard } from './font-guard.js';
 import { createReaderAutoPlay } from './reader-auto-play.js';
 import { isTtsSpeaking, replayTts, setTtsErrorHandler, stopTts } from './tts.js';
@@ -4280,6 +4280,7 @@ export function createIgsReaderHost(options = {}) {
     function updateMountedReader(snapshot) {
         const current = state.activeReader;
         if (!current) return;
+        markStageActive(current.dom?.overlay);
         const leases = current.assetLeases ||= options.media?.cache ? createMediaLeaseScope(options.media.cache) : null;
         leases?.begin();
         for (const url of readerPageAssetUrls(snapshot.content)) {

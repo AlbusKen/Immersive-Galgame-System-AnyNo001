@@ -302,7 +302,7 @@ function scheduleBeat(state, plan, beat) {
 function clockNeeds(state) {
     const plan = state.plan;
     const hidden = state.stage.ownerDocument?.hidden === true;
-    const visual = !hidden && !isStageIdle(state.root) && !plan?.reduced && Boolean(state.requestFrame);
+    const visual = !hidden && !isStageIdle(state.root, { ignoreRest: true }) && !plan?.reduced && Boolean(state.requestFrame);
     const voice = !hidden && state.voice;
     return {
         beat: Boolean(plan?.tempo && ((visual && plan.sway) || (voice && plan.creak))),
@@ -434,7 +434,7 @@ function part(state, name) {
 }
 
 function wantsFrame(state) {
-    if (state.stage.ownerDocument?.hidden || isStageIdle(state.root)) return false;
+    if (state.stage.ownerDocument?.hidden || isStageIdle(state.root, { ignoreRest: true })) return false;
     const plan = state.plan;
     if (!plan || plan.reduced) return state.swayFade > 0.01;
     return Boolean(plan.sway || plan.fringe || (plan.vignette && plan.heartBpm) || state.swayFade > 0.01);
