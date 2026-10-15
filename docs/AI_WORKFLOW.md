@@ -1,5 +1,9 @@
 # AI 工作流
 
+## 用户明确禁止全量门禁（2026-10-15）
+
+禁止运行 `npm run gate`、`pnpm gate` 或改名、拆分、间接执行的等价全量流程；不自动运行整套 test / simulate / perf。只有用户明确重新授权才可恢复。本条覆盖本文件内所有旧门禁要求。`build` 只生成发布文件，不附带批量验收或自动启动检查。下载、语法和启动问题直接获取并执行实际发布文件，不以酒馆、手机调试或导出数据为前提。HTTP 200、构建成功和测试数量均不能替代实际下载和启动结果。
+
 本项目主要由 AI 根据用户方向逐步实现，因此必须让每次改动都能被定位、测试和回滚。
 
 ## 开工前
@@ -37,33 +41,19 @@
 
 ## 验收
 
-每次实现代码后至少准备：
+构建发布文件使用下列命令；定向检查按当前问题选择，禁止自动批量执行测试：
 
 ```text
-npm run gate
-npm run test
-npm run simulate
 npm run build
-npm run perf
 ```
 
 当前本机可执行命令使用 npm。后续安装 pnpm 后，保持以下命令等价：
 
 ```text
-pnpm gate
-pnpm test
-pnpm simulate
 pnpm build
-pnpm perf
 ```
 
-`gate` 顺序固定为：
-
-```text
-structure -> static -> test -> simulate -> perf -> build
-```
-
-任何一层失败时先修当前层，不继续用后续错误覆盖根因。
+全量门禁入口已移除，不得按旧顺序拆开执行。下载与启动问题直接验证实际响应及执行结果。
 
 本项目不运行奶龙工具箱 `pack-project`、`verify-project`、`validate`、`check-refs` 作为本项目验收，除非用户明确要求重新接入工具箱流程。
 
@@ -89,7 +79,7 @@ NailongHub 工作流中的安装版实机验真、Computer Use 实机操作和 l
 bug 修复走以下闭环，**真机测试通过才算结束、才打 tag**：
 
 ```text
-1. 修复 + 升 patch 版本号（同步 package.json / bootstrap.js / README）+ npm run build + npm run build:loader + 本地 npm run gate 全绿
+1. 修复 + 升 patch 版本号（同步 package.json / bootstrap.js / README）+ npm run build + npm run build:loader + 直接获取并执行实际发布文件
 2. 本地预验：用真机导出的真实数据，本地复跑修复后代码，确认逻辑对（第一道闸）
 3. git commit + git push origin main   ← 先推 main，让 jsdelivr @main 能拉到新 bundle；【暂不打 tag】
 4. CDP 真机测试：触发真机重载新 bundle，抓状态确认现象消失（第二道闸）
@@ -103,7 +93,7 @@ bug 修复走以下闭环，**真机测试通过才算结束、才打 tag**：
 
 ### CDP 不可用时
 
-用户不在、不愿重启浏览器、或手机端（TauriTavern/柏宝箱等非 Chromium 宿主）时：本地 `gate` 全绿 + 真机导出数据本地复跑通过即可打 tag 结束，并在最终回复明确注明「未做 CDP 真机终验」，让用户知晓需自行确认。
+用户不在、不愿重启浏览器、或手机端（TauriTavern/柏宝箱等非 Chromium 宿主）时：直接下载并执行发布文件，明确记录实际运行环境和未覆盖的设备边界；不能据此声称真实酒馆或手机已验收，不打 tag。
 
 ## 酒馆助手脚本打包
 
@@ -133,7 +123,7 @@ D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive G
 
 打包发布任务必须遵守：
 
-- 先跑 `npm run gate`，文档-only 任务可 skipped 但必须说明原因。
+- 全量门禁已禁用。直接生成发布文件，核对下载与启动结果；文档任务只检查文档一致性。
 - `loader/igs-loader.js` 只负责加载远程 bundle，不写业务逻辑。
 - `loader/igs-loader.json` 的 `content` 必须等于 `loader/igs-loader.js` 原文。
 - 当前仓库是 private 时，不得把 private raw 地址写成最终用户可用发布源。
@@ -150,7 +140,6 @@ https://github.com/Anyno001/Immersive-Galgame-System-AnyNo001
 上传前必须在项目根目录运行：
 
 ```text
-npm run gate
 git status --short
 ```
 
@@ -167,7 +156,6 @@ git status --short
 cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Visual Novel\app"
 npm run build          # dist bundle 版本号随之更新
 npm run build:loader   # 生成 loader/…… v<当前版本>.json
-npm run gate
 cd ..
 git status --short
 git add .
@@ -187,7 +175,7 @@ git ls-remote --tags origin v<当前版本>
 
 - 真机测试失败时改完再升 patch 版本号、再 push（每次 push 都升号），真机重验；只给真机验过的版本打 tag，失败的中间版本号不打 tag。
 - tag 必须与脚本内版本号对齐；标签已存在时不覆盖、不强推。
-- CDP 不可用（用户不在/不愿重启/手机端）时，本地 gate + 真机导出数据本地复跑通过即可打 tag 结束，并在回复注明未做 CDP 真机终验。
+- CDP 不可用（用户不在/不愿重启/手机端）时，直接下载执行并记录边界；未做真实设备终验时不打 tag。
 - 只有用户明确说不要上传或不要打标签时才跳过，并在最终回复说明原因。
 
 详细发布与上传命令见 `docs/RELEASE.md`。

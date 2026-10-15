@@ -1,5 +1,12 @@
 # Visual Novel AI 协作流程
 
+## 用户明确禁止全量门禁（2026-10-15）
+
+- 禁止运行 `npm run gate`、`pnpm gate` 及任何改名、拆分、间接调用的等价全量门禁；不自动运行整套 test / simulate / perf。只有用户后续明确重新授权才可恢复。
+- 本条覆盖本文件及其它文档里的旧门禁要求。构建只负责生成发布文件，不附带批量验收或自动执行启动检查。
+- 排查下载、语法或启动错误时，直接获取实际发布响应并执行对应文件；不把酒馆、手机调试或导出数据作为这类排查的前提。
+- 本地构建成功、测试数量或 HTTP 200 均不能证明下载内容有效或程序已经启动。交付只报告本轮实际执行结果。
+
 本文件是 `projects/Visual Novel/` 的项目级协作规则。上级分流仍以 `../../AGENTS.md` 与 `../../../AGENTS.md` 为准；本项目当前是独立 app 工程，最终发布为独立酒馆助手脚本 loader JSON，不默认接入奶龙工具箱发布壳。
 
 ## 基本约定
@@ -22,8 +29,8 @@
 - `R0` 只读、讨论、方案：不改文件、不验证、不提交、不发布。
 - `R1` 文档、契约、fixtures 计划或非运行逻辑修改：检查相关文件自洽，必要时运行静态检索，不打包、不发布。
 - `R2` 单模块普通 JS/CSS 小改：运行相关单测或最小模拟测试，能运行时再补 `pnpm test`。
-- `R3` 跨模块运行时、状态、registry、storage、shujuku、generated-images 或公开 API 修改：运行 `pnpm test`、`pnpm simulate`、必要的局部 smoke。
-- `R4` loader、dist、发布流程、版本号或远程 bundle 链路修改：运行 `pnpm build`、`pnpm simulate`、`pnpm perf`，并保留模拟发布证据。
+- `R3` 跨模块运行时、状态、registry、storage、shujuku、generated-images 或公开 API 修改：只对当前改动做必要的定向检查，禁止自动批量测试。
+- `R4` loader、dist、发布流程、版本号或远程 bundle 链路修改：生成发布文件，直接获取并执行实际发布文件，记录下载和启动结果。
 - `R5` 真实 provider、真实 shujuku 写入、真实用户数据迁移或不可逆操作：先用 fake provider / fake shujuku / fixtures 做确定性模拟，真实链路必须等用户明确确认。
 
 本项目常规验证以 Visual Novel 模拟测试替换 NailongHub 的安装版实机验真。例外：bug 修复在模拟测试覆盖不到、或现象只在用户真实酒馆+存量数据下出现时，按 `docs/AI_WORKFLOW.md` 的「真机调试与复验」用 CDP 直连（F12 手动探针兜底）做真机定位与终验，真机验过才打 tag。
@@ -100,7 +107,7 @@ shujuku 数据层读取 `app/src/data/shujuku/CONTRACT.md`。模型提示词 sch
 - 每一轮产生文件改动、push 到 main 前都必须升 patch 版本号并同步脚本内版本号（`app/package.json`、`app/src/core/bootstrap.js` 的 `IGS_VERSION`、`README.md`），不复用上次已 push 的版本号；升号后 `npm run build` + `npm run build:loader` 让 dist 与 loader 版本号对齐。
 - 结束前必须在本项目独立仓库执行 `git add .`、`git commit`、`git push origin main`。
 - **tag 与 push 分离**：push 可随时累加；版本标签只在真机 CDP 测试通过后才打，且**必须与脚本内版本号对齐**（验过的那一版是 `vX.Y.Z` 就打 `vX.Y.Z`）。真机调试用 CDP 直连优先、F12 手动探针兜底（见 `docs/AI_WORKFLOW.md` 的「真机调试与复验」）。
-- 真机测试失败时改完再升号 push，真机重验；失败的中间版本号只留 commit 历史、不打 tag。CDP 不可用时本地 gate + 真机导出数据本地复跑通过即可打 tag，并在回复注明未做 CDP 真机终验。
+- 真机测试失败时改完再升号 push，真机重验；失败的中间版本号只留 commit 历史、不打 tag。CDP 不可用时保留未做真实设备终验的边界，不以本地检查代替设备验收，也不据此打 tag。
 - 版本标签已存在时不得强推覆盖；提升 patch 版本重来。
 - 上传前必须确认 `git rev-parse --show-toplevel` 指向 `D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Visual Novel`，禁止从上级 `nailongwang-main` 仓库提交本项目。
 - 上传后必须回查 `git status --short --branch`、`git ls-remote --heads origin main`；打 tag 后回查 `git ls-remote --tags origin v<当前版本>`，确认远程分支和标签存在。

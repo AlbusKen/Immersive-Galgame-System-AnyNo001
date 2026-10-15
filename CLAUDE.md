@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## 用户明确禁止全量门禁（2026-10-15）
+
+禁止运行 `npm run gate` / `pnpm gate`，也不得通过改名、拆开或间接调用执行等价全量门禁；不自动运行整套 test / simulate / perf。本条覆盖下文所有旧门禁要求，只有用户明确重新授权才可恢复。构建只生成发布文件；下载、语法和启动问题直接下载并执行实际发布文件，不要求先接入酒馆。不以构建、HTTP 200 或测试数量代替启动结果。
+
 本文件是 Claude Code 的项目指令文件。
 
 ## 项目概述
@@ -17,7 +21,6 @@ Immersive Galgame System 是一个 SillyTavern（酒馆）的酒馆助手脚本�
 ## 验收命令
 
 ```bash
-npm run gate    # 完整验收：structure + static + test + simulate + perf + build
 npm test        # 单元测试（tests/ 下除 simulate 外的全部 *.test.js）
 npm run simulate # 模拟测试（tests/simulate.test.js）
 npm run build   # 构建 bundle
@@ -56,13 +59,13 @@ npm run build   # 构建 bundle
 
 修复 bug 按以下闭环，**真机测试通过才算结束、才打 tag**：
 
-1. 修复 + 升 patch 版本号（同步脚本内版本号）+ `npm run build` + `npm run build:loader` + 本地 `npm run gate` 全绿。
+1. 修复 + 升 patch 版本号（同步脚本内版本号）+ `npm run build` + `npm run build:loader` + 直接获取并执行发布文件，记录实际结果。
 2. 本地预验：用真机导出的真实数据本地复跑修复后代码，确认逻辑正确（第一道闸，能挡掉方向性错误）。
 3. `git commit` + `git push origin main`（先推 main，让真机能加载新 bundle；暂不打 tag）。
 4. CDP 真机测试：触发真机重载新 bundle，抓状态确认现象消失（第二道闸）。
 5. 成功 → 给当前版本号打 `git tag vX.Y.Z` + `git push origin vX.Y.Z`，结束；失败 → 回第 1 步，再升号、再 push、再验，只给真机验过的版本打 tag。
 
-真机调试用 CDP 直连自动注入（详见 `docs/AI_WORKFLOW.md` 的「真机调试与复验」）。CDP 不可用（用户不在/不愿重启浏览器/手机端）时，本地 gate + 真机导出数据本地复跑通过即可打 tag 结束，并在回复注明未做 CDP 真机终验。
+真机调试用 CDP 直连自动注入（详见 `docs/AI_WORKFLOW.md` 的「真机调试与复验」）。CDP 不可用（用户不在/不愿重启浏览器/手机端）时，直接下载执行只能证明所记录环境的启动结果，未做设备终验时不打 tag，并在回复说明边界。
 
 
 ## 修改前必读

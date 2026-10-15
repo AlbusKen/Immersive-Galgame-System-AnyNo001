@@ -1,5 +1,9 @@
 # 酒馆助手脚本打包发布工作流
 
+## 用户明确禁止全量门禁（2026-10-15）
+
+禁止运行 `npm run gate`、`pnpm gate` 或改名、拆分、间接执行的等价全量流程；不自动运行整套 test / simulate / perf。只有用户明确重新授权才可恢复。本条覆盖本文件内所有旧门禁要求。`build` 只生成发布文件，不附带批量验收或自动启动检查。下载、语法和启动问题直接获取并执行实际发布文件，不以酒馆、手机调试或导出数据为前提。HTTP 200、构建成功和测试数量均不能替代实际下载和启动结果。
+
 本文件是未来 AI 处理“打包、发布、更新、上传、生成酒馆助手脚本 JSON”时的固定入口。换对话后，先读本文件，再读 `docs/RELEASE.md`。
 
 ## 固定结论
@@ -111,18 +115,13 @@ loader/igs-loader.js
 ```powershell
 cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive Galgame System\app"
 npm run build:loader -- --release v<当前版本>
-npm run gate
 ```
 
-`--release` 接受与 `app/package.json` 一致的版本号，生成锁定该 tag 的 `沉浸式Galgame系统 vX.Y.Z.json`，并删除 loader/ 里所有旧的版本化导入件（只留最新一份）；推送时必须同时推送同名 tag，否则 jsDelivr 取不到会退回 @main。每次升版本后先生成对应导入件，再运行包含发布产物一致性测试的 `gate`。无参数的 `build:loader` 仍只更新固定入口和调试版。
+`--release` 接受与 `app/package.json` 一致的版本号，生成锁定该 tag 的 `沉浸式Galgame系统 vX.Y.Z.json`，并删除 loader/ 里所有旧的版本化导入件（只留最新一份）；推送时必须同时推送同名 tag，否则 jsDelivr 取不到会退回 @main。每次升版本后先生成对应导入件，再直接核对实际发布响应和启动结果。无参数的 `build:loader` 仍只更新固定入口和调试版。
 
-`gate` 顺序固定为：
+全量门禁入口已移除，不得按旧顺序拆开执行。
 
-```text
-structure -> static -> test -> simulate -> perf -> build
-```
-
-如果只改文档，可以不跑 `npm run gate`，但最终回复必须说明 skipped 原因。
+不运行全量门禁；只改文档时只检查文档一致性。
 `npm run build` 会检查 `igs.bundle.js` 不含运行时 `import`；`npm run test` 也会通过 `gate:dist-bundle:is-self-contained-for-loader-cache-bust` 防止发布入口退化成源码转发壳。
 
 ## loader JSON 格式
@@ -191,7 +190,6 @@ loader 默认读取 `main` 的最新提交哈希，并优先加载不可变的 `
 ```powershell
 cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive Galgame System\app"
 npm run build:loader -- --release v<当前版本>
-npm run gate
 ```
 
 ```powershell
@@ -219,7 +217,6 @@ git ls-remote --tags origin v<当前版本>
 git rev-parse --show-toplevel
 cd app
 npm run build:loader -- --release v<当前版本>
-npm run gate
 cd ..
 git add .
 git commit -m "Release v<当前版本>: <本轮说明>"

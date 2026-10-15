@@ -67,7 +67,7 @@
 
 ## 文件适配器依赖方向（v0.36.40）
 
-`tavern-image-files.js` 只提供底层文件读写，禁止反向导入或导出 `tavern-generated-assets.js`、`tavern-illustrations.js`、`tavern-photos.js`。业务适配器由 core 直接装配。发布构建必须冷启动压缩包和调试包的自动/手动入口，创建正确版本的 IGS API 后才成功；仅导入源码或检查导出函数不构成启动验收。
+`tavern-image-files.js` 只提供底层文件读写，禁止反向导入或导出 `tavern-generated-assets.js`、`tavern-illustrations.js`、`tavern-photos.js`。业务适配器由 core 直接装配。按用户 2026-10-15 指令，构建只生成发布文件，不自动执行启动检查或全量门禁。排查启动时直接下载并执行实际产物，分别记录下载内容、执行环境与 API 是否创建；仅导入源码、HTTP 200 或构建成功不构成启动验收。
 
 ## 缓存所有权（v0.36.41）
 

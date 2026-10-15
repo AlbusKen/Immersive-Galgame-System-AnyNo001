@@ -124,6 +124,7 @@
                     console.warn('[IGS Loader] 远程 bundle 加载失败，尝试下一个地址。', attempt.ref, scriptUrl, error);
                 }
             }
+            if (attempt.ref === config.latestRef) forgetLatestRef(attempt.ref);
         }
 
         throw lastError || new Error('没有可用的 Immersive Galgame System 远程 bundle。');
@@ -209,6 +210,14 @@
             root.localStorage.setItem(LATEST_REF_CACHE_KEY, JSON.stringify({ ref, at: Date.now() }));
         } catch (error) {
             // Storage may be unavailable or full; the next launch simply queries again.
+        }
+    }
+
+    function forgetLatestRef(ref) {
+        try {
+            if (readCachedLatestRef()?.ref === ref) root.localStorage.removeItem(LATEST_REF_CACHE_KEY);
+        } catch (error) {
+            // Storage may be unavailable.
         }
     }
 
@@ -570,20 +579,42 @@
 
     function injectScript(src) {
         const existing = doc.querySelector(`#${SCRIPT_ID}`);
-        if (existing && existing.src === src) return Promise.resolve(existing);
+        const runtimeReady = () => {
+            const api = root.IGS || root.ImmersiveGalgameSystem;
+            return api && typeof api.openSettings === 'function' && typeof api.openLatestAvailable === 'function';
+        };
+        if (existing && existing.src === src && runtimeReady()) return Promise.resolve(existing);
         if (existing && existing.remove) existing.remove();
         return new Promise((resolve, reject) => {
             const script = doc.createElement('script');
+            let settled = false;
+            const finish = (error) => {
+                if (settled) return;
+                settled = true;
+                root.removeEventListener?.('error', onRuntimeError);
+                script.onload = null;
+                script.onerror = null;
+                if (error) { script.remove(); reject(error); }
+                else resolve(script);
+            };
+            const onRuntimeError = (event) => {
+                if (event.filename === src) finish(new Error(`remote script startup failed: ${event.message || 'module error'} (${src})`));
+            };
             script.id = SCRIPT_ID;
             script.type = 'module';
             script.src = src;
             script.onload = () => {
+                if (!runtimeReady()) {
+                    finish(new Error(`remote script did not start IGS: ${src}`));
+                    return;
+                }
                 console.info('[IGS Loader] Immersive Galgame System bundle 已加载。', src);
-                resolve(script);
+                finish();
             };
             script.onerror = () => {
-                reject(new Error(`remote script load failed: ${src}`));
+                finish(new Error(`remote script load failed: ${src}`));
             };
+            root.addEventListener?.('error', onRuntimeError);
             doc.head.appendChild(script);
         });
     }

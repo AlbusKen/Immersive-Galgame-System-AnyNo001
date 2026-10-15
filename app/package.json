@@ -1,6 +1,6 @@
 {
   "name": "igs-app",
-  "version": "0.36.59",
+  "version": "0.36.60",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,8 +13,7 @@
     "build": "node scripts/build.js",
     "build:fonts": "node scripts/split-fonts.js",
     "build:loader": "node scripts/build-loader.js",
-    "package:loader": "npm run build && npm run build:loader",
-    "gate": "npm run structure && npm run static && npm run test && npm run simulate && npm run perf && npm run build"
+    "package:loader": "npm run build && npm run build:loader"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
