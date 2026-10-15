@@ -400,19 +400,22 @@ test('gate:assets:manual-retries-settled-floor-without-regenerating-existing-ass
 });
 for (const fail of [false, true]) {
     test(`gate:assets:inflight-floor-updates-${fail ? 'failure' : 'success'}`, async () => {
-        let text = '[igs-scene:废弃工厂|夜晚|雨]\n雨声很大。', calls = 0, release, entered;
+        let text = '[igs-scene:废弃工厂|夜晚|雨]\n雨声很大。\n[igs-char:甲|平静|你好。]\n[igs-char:乙|平静|你好。]', calls = 0, release, entered;
         const started = new Promise(resolve => { entered = resolve; });
         const host = fakeHost('');
         host.readFloor = () => ({ chatId: 'chat-1', messageId: 3, swipeId: 0, isAi: true, isLatest: true, text });
         const store = createMemoryGeneratedAssetStore();
+        const assets = structuredClone(USER_ASSETS);
+        const before = structuredClone(assets);
         const service = createAssetGenerationService({ messageHost: host, store,
-            llm: { async request() { return 'id: bg1\ntags: landscape, night'; } },
+            llm: { async request() { return 'id: bg1\ntags: landscape, night\nid: ch2\ntags: woman\nid: ch3\ntags: man'; } },
             nai: { async generate() {
                 calls++;
                 if (calls === 1) { entered(); await new Promise(resolve => { release = resolve; }); }
                 return fail ? { ok: false, error: 'fixture-failed' } : { ok: true, dataUrl: 'data:image/png;base64,AAA' };
             } },
-            getSettings: () => ({ autoIllustration: { assets: { backgroundEnabled: true, strictMatch: true } }, sceneAssets: USER_ASSETS }),
+            matte: async url => url,
+            getSettings: () => ({ autoIllustration: { assets: { backgroundEnabled: true, spriteEnabled: true, strictMatch: true } }, sceneAssets: assets }),
             minBodyChars: 0,
         });
         const first = service.processMessage(3);
@@ -421,16 +424,64 @@ for (const fail of [false, true]) {
         const second = service.processMessage(3), duplicate = service.processMessage(3);
         release();
         const results = await Promise.all([first, second, duplicate]);
-        assert.equal(calls, fail ? 1 : 2, '成功只补新增场景；失败不在原任务内重发');
+        assert.equal(calls, fail ? 3 : 4, '首轮两角色一背景，成功后只补新增场景；失败不在原任务内重发');
         assert.ok(results.every(result => result.ok === !fail));
         assert.equal((await store.getFloor('chat-1|3|0')).status, fail ? 'failed' : 'done');
+        assert.deepEqual(assets, before, '未采用素材不能写入衣装、DNA 或默认映射');
         if (!fail) {
             assert.equal((await service.processMessage(3)).reason, 'already-decided');
-            assert.equal(calls, 2);
-            assert.equal(service.listReview('chat-1|3|0').length, 2);
+            assert.equal(calls, 4);
+            const review = service.listReview('chat-1|3|0');
+            assert.deepEqual(review.map(record => `${record.type}:${record.name}`).sort(),
+                ['background:地下实验室', 'background:废弃工厂', 'sprite:乙', 'sprite:甲'].sort());
+            assert.equal(resolveSpriteAsset('甲', '', { sceneAssets: assets, tempSprite: service.tempSprite }).url, '');
         }
     });
 }
+
+test('gate:assets:pending-sprites-deduplicate-without-adoption-and-retry-only-confirmed-loss', async () => {
+    const cases = [
+        { status: 'review', expected: false }, { status: 'chat', expected: false },
+        { status: 'library', expected: true }, { status: 'discarded', expected: true },
+        { status: 'failed', expected: true }, { status: 'review', imageId: '', expected: true },
+        { status: 'review', chatId: 'other-chat', expected: true },
+        { status: 'review', missing: true, expected: true },
+        { status: 'review', readError: true, expected: false },
+    ];
+    for (const fixture of cases) {
+        const store = createMemoryGeneratedAssetStore();
+        const chatId = fixture.chatId || 'chat-1', imageId = fixture.imageId ?? 'held';
+        const candidate = { key: `${chatId}|char|甲`, chatId, floorKey: `${chatId}|3|0`,
+            type: 'sprite', name: '甲', status: fixture.status, imageId };
+        await store.putAsset(candidate);
+        if (!fixture.missing) await store.putImage({ id: 'held', dataUrl: 'data:image/png;base64,KEEP' });
+        const getImage = store.getImage;
+        if (fixture.readError) store.getImage = async () => { throw new Error('private-store-detail'); };
+        const assets = { enabled: true, scenes: {}, characters: {} }, before = structuredClone(assets);
+        let writes = 0, paints = 0;
+        const reports = [];
+        const service = createAssetGenerationService({
+            messageHost: fakeHost('[igs-char:甲|平静|你好。]'), store,
+            llm: { async request() { writes++; return 'id: ch1\ntags: adult woman'; } },
+            nai: { async generate() { paints++; return { ok: true, dataUrl: 'data:image/png;base64,NEW' }; } },
+            matte: async url => url, newId: () => 'new-image', minBodyChars: 0,
+            getSettings: () => ({ autoIllustration: { assets: { spriteEnabled: true } }, sceneAssets: assets }),
+            report: (_level, message) => reports.push(message),
+        });
+        const result = await service.processMessage(3, { manual: true });
+        assert.equal(paints, Number(fixture.expected), JSON.stringify(fixture));
+        assert.equal(writes, paints);
+        assert.deepEqual(assets, before, '去重与补生均不采用候选或设默认衣装');
+        assert.equal(resolveSpriteAsset('甲', '', { sceneAssets: assets, tempSprite: service.tempSprite }).url, '');
+        if (fixture.readError) {
+            assert.deepEqual([result.ok, result.reason, result.stopGeneration], [false, 'asset-image-read-failed', true]);
+            assert.equal((await store.getFloor('chat-1|3|0')).status, 'failed');
+            assert.doesNotMatch(JSON.stringify({ result, reports }), /private-store-detail|找不到了/);
+        } else assert.equal(result.ok, true, result.error);
+        if (!fixture.expected) assert.deepEqual((await store.getAssetsByChat(chatId))[0], candidate);
+        store.getImage = getImage;
+    }
+});
 
 
 

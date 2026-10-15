@@ -405,7 +405,12 @@ export function collectAssetNeeds({ scenes = [], characters = [] } = {}, ctx = {
             const key = `char|${character}`;
             if (seen.has(key)) continue;
             seen.add(key);
-            if (resolveSpriteAsset(character, '', ctx).needsGeneration) needs.push({ type: 'sprite', name: String(character).trim() });
+            if (!resolveSpriteAsset(character, '', ctx).needsGeneration) continue;
+            const name = String(character).trim();
+            // 待确认立绘仅抑制重复补全，不成为正式衣装或默认图源。
+            const temp = typeof ctx.tempSprite === 'function' ? ctx.tempSprite(name) : '';
+            if (temp && !lostImage(temp, ctx)) continue;
+            needs.push({ type: 'sprite', name });
         }
     }
     return limit ? needs.slice(0, limit) : needs;

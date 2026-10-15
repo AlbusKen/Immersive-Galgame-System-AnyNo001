@@ -188,7 +188,16 @@ async function writeTemplateCaptions(llm, llmSettings, meta) {
         ...(meta.userPrompts !== undefined && { userPrompts: meta.userPrompts }),
         ...(meta.writingRequirements !== undefined && { writingRequirements: meta.writingRequirements }) });
     const outputs = {
-        ...(task.value.slots && { slotIds: task.value.slots.map(slot => slot.slotId) }),
+        ...(task.value.slots && {
+            slotIds: task.value.slots.map(slot => slot.slotId),
+            // token 属于任务；captionIndex 只按本图 Char 顺序编号。
+            rows: task.value.slots.flatMap(slot => slot.tokens.map((token, captionIndex) => {
+                const character = task.value.characters.find(row => row.token === token);
+                return { slotId: slot.slotId, captionIndex, token, characterKey: character.characterKey,
+                    kind: character.kind || 'named',
+                    ...(character.framing !== undefined && { framing: character.framing }) };
+            })),
+        }),
         ...(meta.outputs !== undefined && meta.outputs), format: 'dna-template',
         ...(task.value.purpose === 'sprite' && {
             identityRequirements: spriteIdentityRequirements(task.value, input.characterContext) }),
@@ -197,7 +206,7 @@ async function writeTemplateCaptions(llm, llmSettings, meta) {
         meta.imagePromptTask || (task.value.purpose === 'derived' ? 'expression' : task.value.purpose),
         { ...input, description, outputs },
         { system: meta.systemPrompt || DNA_TEMPLATE_WRITER_SYSTEM,
-            user: description + '\n本次任务与角色资料（仅作输入，不输出 JSON）：\n' + JSON.stringify(input) });
+            user: description + '\n本次任务与角色资料（仅作输入，不输出 JSON）：\n' + JSON.stringify({ ...input, outputs }) });
     if (!prepared.ok) return prepared;
     let reply;
     try {

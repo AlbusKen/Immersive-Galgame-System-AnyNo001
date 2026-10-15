@@ -822,15 +822,17 @@ test('gate:dna-template:批量 slot 显式角色映射贯通解析与唯一准�
     const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
     const fixture = templateWritingFixture(true);
     const task = { ...fixture.promptTask, characters: [...fixture.promptTask.characters,
-        { characterKey: 'Bob', token: 'rB9', framing: 'half_body' }],
-        slots: [{ slotId: 6, tokens: ['rA7'] }, { slotId: 9, tokens: ['rB9'] }] };
+        { characterKey: 'Bob', token: 'r1', framing: 'half_body' }],
+        slots: [{ slotId: 6, tokens: ['rA7'] }, { slotId: 9, tokens: ['r1'] }] };
     const context = [...fixture.characterContext, { characterKey: 'Bob', dna: {} }];
     const before = structuredClone(task);
-    const bob = fixture.reply.replace('slotid: 6', 'slotid: 9').replaceAll('Alice', 'Bob').replaceAll('rA7', 'rB9');
+    const bob = fixture.reply.replace('slotid: 6', 'slotid: 9').replaceAll('Alice', 'Bob').replaceAll('rA7', 'r1');
     const reply = bob + '\n---\n' + fixture.reply;
     const parsed = parseTemplateCaptionSlots(reply, { promptTask: task, characterContext: context });
     assert.equal(parsed.ok, true, parsed.error);
     assert.deepEqual(parsed.captions.map((c) => [c.slotId, c.characterMeta.characters[0].characterKey]), [[9, 'Bob'], [6, 'Alice']]);
+    assert.deepEqual(parsed.captions.map(c => c.promptRecipe.bindings.map(b => [b.captionIndex, b.token])),
+        [[[0, 'r1']], [[0, 'rA7']]], '独立单人图的局部索引均为 0，不从 token 推导');
     for (const item of parsed.captions) {
         const prepared = prepareCharacterCaption({ ...item, promptTask: task, characterContext: context });
         assert.equal(prepared.ok, true, prepared.error);
@@ -841,6 +843,28 @@ test('gate:dna-template:批量 slot 显式角色映射贯通解析与唯一准�
     for (const bad of [reply.replace('slotid: 9', 'slotid: 8'),
         bob.replace('slotid: 9', 'slotid: 6')])
         assert.equal(parseTemplateCaptionSlots(bad, { promptTask: task, characterContext: context }).ok, false);
+    for (const [badBob, issue] of [
+        [bob.replaceAll(': 0 |', ': 1 |'), 'missing'],
+        [bob.replace(/^(meta_dna_\w+): 0 \|/gm, '$1: 1 |'), 'mismatch'],
+    ]) {
+        const rejected = parseTemplateCaptionSlots(fixture.reply + '\n---\n' + badBob,
+            { promptTask: task, characterContext: context });
+        assert.equal(rejected.ok, false);
+        assert.deepEqual([rejected.diagnostic.field, rejected.diagnostic.issue, rejected.diagnostic.slotId],
+            ['meta_rows', issue, 9], '错误索引不自动修正，也不交接部分成功批次');
+    }
+    const pairTask = { ...task, slots: [{ slotId: 12, tokens: ['r1', 'rA7'] }] };
+    const personLines = text => text.split('\n').filter(line => /^(?:char(?:_uc)?|meta_\w+):/.test(line));
+    const header = fixture.reply.split('\n').filter(line => !/^(?:char(?:_uc)?|meta_\w+):/.test(line));
+    const pairReply = [...header, ...personLines(bob),
+        ...personLines(fixture.reply).map(line => line.replace(': 0 |', ': 1 |'))]
+        .join('\n').replace('slotid: 6', 'slotid: 12');
+    const pair = parseTemplateCaptionSlots(pairReply, { promptTask: pairTask, characterContext: context });
+    assert.equal(pair.ok, true, pair.error);
+    assert.deepEqual(pair.captions[0].promptRecipe.bindings.map(b => [b.captionIndex, b.token, b.characterKey]),
+        [[0, 'r1', 'Bob'], [1, 'rA7', 'Alice']], '双人图按本图 Char 顺序从 0 编号');
+    assert.equal(prepareCharacterCaption({ ...pair.captions[0], promptTask: pairTask,
+        characterContext: context }).ok, true);
     assert.equal(checkPromptTask({ ...task, slots: [task.slots[0]] }, context).ok, false);
     assert.deepEqual(task, before);
 });

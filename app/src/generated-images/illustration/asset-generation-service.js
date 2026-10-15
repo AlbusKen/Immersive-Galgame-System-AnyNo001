@@ -725,7 +725,15 @@ export function createAssetGenerationService(deps) {
         for (const url of probed) {
             const id = generatedAssetIdOf(url);
             if (images.has(id)) continue;
-            const record = await store.getImage(id).catch(() => null);
+            let record;
+            try { record = await store.getImage(id); }
+            catch {
+                // 读取失败不等于图片丢失，停止本轮以免重复计费。
+                const error = '已登记素材的图片读取失败，未继续补全，请稍后重试';
+                await store.putFloor(key, { status: 'failed', error, updatedAt: now() });
+                report('error', error);
+                return { ok: false, reason: 'asset-image-read-failed', stopGeneration: true, error };
+            }
             if (!record || !record.dataUrl) lost.add(url);
         }
         if (lost.size) {
