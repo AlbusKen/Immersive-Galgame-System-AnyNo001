@@ -63,6 +63,80 @@ test('gate:assets:unnamed-character-detection', () => {
         ctx, { background: true, sprite: true, limit: 4 },
     );
     assert.deepEqual(needs.map((n) => `${n.type}:${n.name}`), ['background:废弃工厂', 'sprite:神秘少女']);
+    assert.deepEqual(needs[1], { type: 'sprite', name: '神秘少女' }, '旧调用不追加空衣装字段');
+    const tagged = collectAssetNeeds({ characters: ['神秘少女', '陌生青年', '神秘少女', '艾莉'],
+        characterTriggers: [
+            { character: '神秘少女', unknownOutfit: '蓝外套' },
+            { character: '陌生青年', outfit: '白衬衣' },
+            { character: '神秘少女', unknownOutfit: '晚礼服' },
+            { character: '艾莉', outfit: '校服' },
+        ] }, ctx, { sprite: true });
+    assert.deepEqual(tagged, [
+        { type: 'sprite', name: '神秘少女', outfitName: '蓝外套' },
+        { type: 'sprite', name: '陌生青年', outfitName: '白衬衣' },
+    ], '一人一张，冻结触发标签原名；已有正式立绘不补图');
+    assert.deepEqual(collectAssetNeeds({ characters: ['神秘少女'], characterTriggers: [
+        { character: '神秘少女' }, { character: '神秘少女', unknownOutfit: '晚礼服' },
+    ] }, ctx, { sprite: true }), [{ type: 'sprite', name: '神秘少女' }],
+    '首次触发没有衣装栏时，不借后续标签衣装');
+});
+
+test('gate:assets:auto-sprite-outfit-binding-is-scoped-and-preserves-description', async () => {
+    const { bindAutoSpriteOutfitNames } = await import('../src/generated-images/illustration/character-prompt-task.js');
+    const entry = { slotId: 2, characterMeta: { version: 1, characters: [
+        { characterKey: 'Alice', outfit: { name: 'Model name', description: 'wears a blue coat' } },
+        { characterKey: 'Bob', outfit: { name: 'Bob outfit', description: 'wears a white shirt' } },
+    ] } };
+    const before = structuredClone(entry);
+    const names = [{ slotId: 1, characterKey: 'Alice', name: '晚礼服' },
+        { slotId: 2, characterKey: 'Alice', name: '蓝外套' }];
+    const bound = bindAutoSpriteOutfitNames(entry, { purpose: 'sprite' }, names);
+    assert.deepEqual(bound.characterMeta.characters[0].outfit,
+        { name: '蓝外套', description: 'wears a blue coat' });
+    assert.deepEqual(bound.characterMeta.characters[1], before.characterMeta.characters[1]);
+    assert.deepEqual(entry, before, '绑定不修改原回复');
+    assert.equal(bindAutoSpriteOutfitNames(entry, { purpose: 'sprite' }).characterMeta, entry.characterMeta);
+    assert.equal(bindAutoSpriteOutfitNames(undefined, { purpose: 'sprite' }, names), undefined);
+    assert.equal(bindAutoSpriteOutfitNames(entry, { purpose: 'sprite' }, names.slice(0, 1))
+        .characterMeta.characters[0].outfit.name, 'Model name', '不同图号不借用名称');
+    assert.equal(bindAutoSpriteOutfitNames(entry, { purpose: 'derived' }, names), entry,
+        '自动补图之外的任务保持原校验');
+    assert.equal(bindAutoSpriteOutfitNames(entry, { purpose: 'sprite' }, [...names, names[1]])
+        .characterMeta.characters[0].outfit.name, 'Model name', '歧义绑定不猜选');
+    for (const withMetadata of [false, true]) {
+        const store = createMemoryGeneratedAssetStore();
+        const floor = { chatId: 'legacy', messageId: 3, swipeId: 0, isAi: true, isLatest: true,
+            text: '[igs-thought:Alice|平和|蓝外套|她想了想。]\n[igs-char:Alice|平和|晚礼服|晚上好。]' };
+        const service = createAssetGenerationService({ store, minBodyChars: 0,
+            messageHost: { getChatId: () => floor.chatId, readFloor: () => floor,
+                readPreviousAiTexts: () => [] },
+            getSettings: () => ({ autoIllustration: { assets: { spriteEnabled: true } },
+                sceneAssets: { enabled: true, characters: {} } }),
+            nai: {
+                describe: () => ({ mode: 'dbgen', via: 'dbgen', ownPrompts: true, ready: { ok: true } }),
+                async generate(_slot, _settings, meta) {
+                    assert.equal(meta.characterContext[0].outfit.name, '蓝外套');
+                    assert.deepEqual(meta.autoSpriteOutfitNames,
+                        [{ slotId: 1, characterKey: 'Alice', name: '蓝外套' }]);
+                    return { ok: true, dataUrl: 'data:image/png;base64,FAKE',
+                        ...(withMetadata && { characterMeta: { version: 1, characters: [{
+                            characterKey: 'Alice', outfit: { name: 'Model name', description: 'wears a blue coat' },
+                        }] } }) };
+                },
+            },
+        });
+        const result = await service.processMessage(3);
+        assert.deepEqual([result.ok, result.count], [true, 1]);
+        const record = service.getRecord('legacy|char|Alice');
+        assert.equal(record.outfitName, '蓝外套');
+        assert.equal(record.outfitSnapshot, undefined, '旧入口不伪造生成快照');
+        const image = await store.getImage(record.imageId);
+        if (withMetadata) {
+            assert.deepEqual(image.characterMeta.characters[0].outfit,
+                { name: '蓝外套', description: 'wears a blue coat' });
+            assert.deepEqual(record.characterMeta, image.characterMeta);
+        } else assert.equal(image.characterMeta, undefined, '不补造模型未提供的元数据');
+    }
 });
 
 test('gate:assets:generated-library-is-separate-and-renamable', () => {
@@ -912,14 +986,12 @@ test('gate:assets:dbgen-sprites-write-once-then-paint-and-split-past-eight', asy
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const names = ['甲', '乙', '丙'];
+    const outfits = ['蓝外套', '白裙', '红衬衣'];
     const floor = {
         chatId: 'c', messageId: 3, swipeId: 0, isAi: true, isLatest: true,
-        text: names.map((name) => `[igs-char:${name}|平静|你好。]`).join('\n'),
+        text: names.map((name, index) => `[igs-char:${name}|平静|${outfits[index]}|你好。]`).join('\n')
+            + '\n[igs-char:甲|平静|晚礼服|再见。]',
     };
-    const captionOf = (text) => ({
-        v4_prompt: { caption: { base_caption: text, char_captions: [] } },
-        v4_negative_prompt: { caption: { base_caption: 'lowres', char_captions: [] } },
-    });
     const order = [];
     const service = createAssetGenerationService({
         messageHost: { getChatId: () => 'c', readFloor: () => floor, readPreviousAiTexts: () => [] },
@@ -931,11 +1003,19 @@ test('gate:assets:dbgen-sprites-write-once-then-paint-and-split-past-eight', asy
 
                 assert.equal(meta.writingRequirements.transparent, true);
                 const output = characterWriteFixture(meta);
+                for (const entry of output.captions) {
+                    entry.characterMeta.characters[0].outfit.name = 'Model renamed';
+                }
                 output.captions.reverse();
                 return output;
             },
             generateDbgenCaption: async (meta) => {
                 order.push(`paint:${meta.characterMeta.characters[0].characterKey}`);
+                const index = names.indexOf(meta.characterMeta.characters[0].characterKey);
+                assert.equal(meta.characterMeta.characters[0].outfit.name, outfits[index]);
+                const prepared = prepareCharacterCaption(meta);
+                assert.equal(prepared.ok, true, prepared.reason);
+                assert.equal(prepared.outfitSnapshot.characters[0].name, outfits[index]);
                 return { ok: true, dataUrl: 'data:image/png;base64,AAA', prompt: { positive: '1girl', negative: 'lowres' } };
             },
             generate: async () => { throw new Error('立绘不应逐张写词'); },
@@ -2286,12 +2366,6 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
             assert.deepEqual([inputs.length, paints.length], [0, 0]);
             continue;
         }
-        if (renamed) {
-            assert.equal(result.ok, false);
-            assert.equal(paints.length, 0, '衣装名称被改写时不绘图');
-            assert.equal(await store.getImage('builtin-sprite'), null);
-            continue;
-        }
         assert.equal(result.ok, true, result.error);
         assert.deepEqual([inputs.length, paints.length], [1, 1]);
         assert.deepEqual(inputs[0].lore, lore);
@@ -2304,6 +2378,9 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
         assert.ok(image.outfitContext);
         assert.equal(image.outfitContext[0].outfit.name, '蓝色外套', '首次出场衣装不被楼末换装覆盖');
         assert.equal(image.outfitSnapshot.characters[0].name, '蓝色外套');
+        assert.equal(image.characterMeta.characters[0].outfit.name, '蓝色外套',
+            '模型改名不改变触发标签的程序绑定名');
+        assert.equal(image.outfitSnapshot.characters[0].description, 'wears a blue coat');
         const record = service.getRecord('chat-1|char|Alice');
         assert.equal(record.status, 'review');
         assert.deepEqual(record.outfitSnapshot, image.outfitSnapshot);

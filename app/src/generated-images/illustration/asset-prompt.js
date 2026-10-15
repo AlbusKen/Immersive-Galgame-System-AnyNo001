@@ -50,7 +50,8 @@ export function describeAssetNeed(need, index) {
     const dnaNotes = [];
     if (need.dna && flat(need.dna.identity)) dnaNotes.push(`固定身份：${flat(need.dna.identity)}`);
     if (need.dna && flat(need.dna.defaultAppearance)) dnaNotes.push(`默认外观：${flat(need.dna.defaultAppearance)}`);
-    return { id: `ch${index + 1}`, line: [`立绘｜角色：${need.name}`, ...dnaNotes].join('｜') };
+    return { id: `ch${index + 1}`, line: [`立绘｜角色：${need.name}`,
+        ...(need.outfitName ? [`触发标签服装：${need.outfitName}（本次只写该套服装描述）`] : []), ...dnaNotes].join('｜') };
 }
 
 export function buildAssetPlannerUserPrompt({ needs = [], readableText = '', previousText = '', lore = [] } = {}) {

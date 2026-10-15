@@ -217,6 +217,8 @@ async function writeTemplateCaptions(llm, llmSettings, meta) {
     }
     if (stale()) return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效' };
     const parsed = parseTemplateCaptionSlots(reply, { ...input,
+        ...(meta.autoSpriteOutfitNames !== undefined && {
+            autoSpriteOutfitNames: meta.autoSpriteOutfitNames }),
         ...(meta.characterContextForEntry !== undefined && {
             characterContextForEntry: meta.characterContextForEntry }) });
     if (!parsed.ok) return parsed;

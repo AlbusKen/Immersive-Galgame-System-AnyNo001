@@ -61,7 +61,16 @@ test('gate:floor-assets:chat-temp-display-is-separate-from-formal-outfits', asyn
     assert.deepEqual([hit.url, hit.source, hit.outfit], ['igs-gen:pending', 'temp', '']);
     assert.deepEqual(collectFloorAssetUrls({ source: '[igs-char:小爱|平和|Hello.]',
         sceneAssets: assets, assetMatchCtx: ctx }), ['igs-gen:pending']);
-    assert.equal(resolveReaderSpriteAsset('小爱', '', ctx, '礼服').url, '', '显式衣装不能借临时图冒充命中');
+    const emptyCharacter = resolveReaderSpriteAsset('小爱', '', ctx, '礼服');
+    assert.deepEqual([emptyCharacter.url, emptyCharacter.outfit], ['igs-gen:pending', ''],
+        '人物没有正式立绘时只按名字显示，不依赖衣装快照');
+    assert.equal(resolveReaderSpriteAsset('小爱', '', ctx, '冬装').url, 'igs-gen:pending');
+    assert.equal(resolveReaderSpriteAsset('Bob', '', ctx, '礼服').url, '', '不借其他人物的临时图');
+    assert.deepEqual(collectFloorAssetUrls({ source: '[igs-char:小爱|平和|礼服|Hello.]',
+        sceneAssets: assets, assetMatchCtx: ctx }), ['igs-gen:pending']);
+    assets.characterOutfits.Alice = { 常服: { moods: { 平和: 'other-outfit.png' } } };
+    assert.equal(resolveReaderSpriteAsset('小爱', '', ctx, '礼服').url, '',
+        '人物已有正式立绘时保留衣装匹配规则');
     ctx.tempSpriteForOutfit = (name, outfit) => name === 'Alice' && outfit === '礼服' ? 'igs-gen:pending' : '';
     const named = resolveReaderSpriteAsset('小爱', '', ctx, '礼服');
     assert.deepEqual([named.url, named.outfit, named.selectionSource], ['igs-gen:pending', '礼服', 'chat-temp']);

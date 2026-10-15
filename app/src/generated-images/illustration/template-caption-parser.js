@@ -2,6 +2,7 @@
 import { CHARACTER_DNA_VIEWS } from '../../scene/character-dna.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { checkPromptTask, checkPromptOutput } from '../../schemas/prompt-recipe.js';
+import { bindAutoSpriteOutfitNames } from './character-prompt-task.js';
 
 const fields = new Set(['slotid', 'size', 'analysis', 'scene', 'scene_uc', 'prompt_mode', 'outfit_mode', 'identity_mode', 'char', 'char_uc', 'at']);
 const metaFields = new Set(['meta_kind', 'meta_key', 'meta_token', 'meta_frame', 'meta_identity', 'meta_signature',
@@ -35,7 +36,7 @@ const position = (slotId, captionIndex) => ({
     ...(Number.isInteger(captionIndex) && captionIndex >= 0 && captionIndex < 16 && { captionIndex }) });
 const side = (base, chars) => ({ caption: { base_caption: base, char_captions: chars } });
 
-export function parseTemplateCaptionSlots(text, { promptTask, characterContext, characterContextForEntry } = {}) {
+export function parseTemplateCaptionSlots(text, { promptTask, characterContext, characterContextForEntry, autoSpriteOutfitNames } = {}) {
     const task = checkPromptTask(promptTask, characterContext);
     if (!task.ok) return task;
     if (!task.value) return fail('PROMPT_MODE_CONFLICT', 'promptTask', 'missing');
@@ -148,7 +149,7 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext, 
         if (!caption.v4_prompt.caption.base_caption.trim() && !positive.some((c) => c.char_caption.trim())) return reject('caption', 'missing');
         const meta = checkCharacterMeta({ version: 1, characters }, caption, characterContext.map((c) => c.characterKey));
         if (!meta.ok) return atBlock(meta, block);
-        const entry = { slotId: block.slotId, caption, characterMeta: meta.value,
+        let entry = { slotId: block.slotId, caption, characterMeta: meta.value,
             promptRecipe: { version: 1, mode: 'dna_template', caption, bindings,
                 ...(block.identity_mode !== undefined && { identityMode: block.identity_mode }),
                 ...(block.outfit_mode !== undefined && { outfitMode: block.outfit_mode }) },
@@ -173,6 +174,7 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext, 
             catch { return reject('at', 'invalid'); }
             if (!Array.isArray(context)) return reject('at', 'invalid');
         }
+        entry = bindAutoSpriteOutfitNames(entry, task.value, autoSpriteOutfitNames);
         const checked = checkPromptOutput(entry, task.value, context);
         if (!checked.ok) return atBlock(checked, block);
         Object.assign(entry, checked.value);

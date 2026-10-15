@@ -378,7 +378,7 @@ export function isNonSpriteSpeaker(name) {
 }
 
 // 汇总本楼缺失的素材：场景按「场景名+时间」去重，角色按名字去重；按出现顺序截断到 limit。
-export function collectAssetNeeds({ scenes = [], characters = [] } = {}, ctx = {}, flags = {}) {
+export function collectAssetNeeds({ scenes = [], characters = [], characterTriggers = [] } = {}, ctx = {}, flags = {}) {
     const needs = [];
     const seen = new Set();
     const limit = Math.max(0, Number(flags.limit) || 0);
@@ -410,7 +410,9 @@ export function collectAssetNeeds({ scenes = [], characters = [] } = {}, ctx = {
             // 待确认立绘仅抑制重复补全，不成为正式衣装或默认图源。
             const temp = typeof ctx.tempSprite === 'function' ? ctx.tempSprite(name) : '';
             if (temp && !lostImage(temp, ctx)) continue;
-            needs.push({ type: 'sprite', name });
+            const trigger = characterTriggers.find(d => d.character === name);
+            const outfitName = trigger?.unknownOutfit || trigger?.outfit || '';
+            needs.push({ type: 'sprite', name, ...(outfitName && { outfitName }) });
         }
     }
     return limit ? needs.slice(0, limit) : needs;

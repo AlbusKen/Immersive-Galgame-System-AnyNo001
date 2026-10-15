@@ -3,6 +3,7 @@ import { normalizeCharacterDna, readCharacterDnaView,
     CHARACTER_DNA_REQUIRED_VIEWS, CHARACTER_DNA_VIEWS } from '../../scene/character-dna.js';
 import { moodPresetEntry, moodPresetTags } from '../../scene/mood-groups.js';
 import { savedCharacterOutfits } from '../../scene/outfit-identity.js';
+import { isValidOutfitName } from '../../scene/character-outfits.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
 
 export const usesCharacterTemplates = (backend) => ['nai', 'dbgen'].includes(backend?.describe?.().mode);
@@ -101,6 +102,20 @@ export function savedExpressionTemplate(context, mood, prompts, { nsfw = false }
             centers, positionExplicit: true }] },
         promptTask: task.promptTask,
     } };
+}
+
+// 自动补立绘的标签原名是程序输入；只绑定已有旁路名称，不补身份或改写模型描述。
+export function bindAutoSpriteOutfitNames(entry, task, names) {
+    if (task?.purpose !== 'sprite' || !Array.isArray(names) || !Array.isArray(entry?.characterMeta?.characters)) return entry;
+    return inheritImageTaskLease(entry, { ...entry, characterMeta: { ...entry.characterMeta,
+        characters: entry.characterMeta.characters.map(character => {
+            const matches = names.filter(source => source.characterKey === character.characterKey
+                && source.slotId === entry.slotId);
+            const name = matches.length === 1 ? matches[0].name : '';
+            return character.outfit && isValidOutfitName(name)
+                ? { ...character, outfit: { ...character.outfit, name } } : character;
+        }),
+    } });
 }
 
 // 仅复制发送所需字段；历史审计字段不能成为本次发送指令。

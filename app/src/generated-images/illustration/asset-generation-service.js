@@ -15,13 +15,14 @@ import { composeSpriteCaption, hasSpriteDna, spritePromptNeedsWriting } from '..
 import { normalizeStoredPrompt, promptFromCaption, promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
 import { promptTimeBucket, sceneVariantCaption, sceneVariantTags } from '../scene-variant-tags.js';
 import { sceneTimeBucket } from '../../scene/time-bucket.js';
-import { resolveCharacterKey } from '../../scene/scene-directives.js';
+import { extractSceneDirectives, resolveCharacterKey } from '../../scene/scene-directives.js';
+import { createOutfitResolver, isValidOutfitName } from '../../scene/character-outfits.js';
 import { isCharacterDnaEmpty, resolveCharacterDna } from '../../scene/character-dna.js';
 import { buildCharacterContext, spriteAdoptionEvidence } from '../../scene/character-identity.js';
 import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
 import { prepareCharacterCaption } from '../character-caption.js';
 import { BUILTIN_PROMPTS } from '../prompt-registry.js';
-import { usesCharacterTemplates, characterPromptTask, singleCharacterContext, preflightCharacterTask, savedExpressionTemplate, characterTemplateInput, characterPromptRecovery } from './character-prompt-task.js';
+import { usesCharacterTemplates, characterPromptTask, singleCharacterContext, preflightCharacterTask, savedExpressionTemplate, characterTemplateInput, characterPromptRecovery, bindAutoSpriteOutfitNames } from './character-prompt-task.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
 import { cgCharacterState } from './cg-character-bindings.js';
 
@@ -428,20 +429,36 @@ export function createAssetGenerationService(deps) {
         const size = isSprite ? s.auto.assets.spriteSize : backgroundSize(s);
         // 数据库生图：描述只说明画什么。正负模板随 userPrompts 传出，出图前合并进最终 caption。
         const userPrompts = { positive: slot.scene, negative: slot.sceneUc };
+        const characterContext = isSprite ? buildCharacterContext([item.need.name], s.sceneAssets) : undefined;
+        const outfitName = isSprite && isValidOutfitName(item.need.outfitName) ? item.need.outfitName : '';
+        const autoSpriteOutfitNames = outfitName && characterContext.length === 1
+            ? [{ slotId: 1, characterKey: characterContext[0].characterKey, name: outfitName }] : [];
+        if (autoSpriteOutfitNames.length) {
+            const source = characterContext[0];
+            source.outfit = { name: outfitName,
+                description: source.outfits.find(outfit => outfit.name === outfitName)?.description || '' };
+        }
         const meta = {
             messageId: floor.messageId, size, description: buildDbgenAssetDescription(item.need, { transparent }), userPrompts,
             skipRecall: true,
-            ...(isSprite && { characterContext: buildCharacterContext([item.need.name], s.sceneAssets) }),
+            ...(isSprite && { characterContext }),
+            ...(autoSpriteOutfitNames.length && { autoSpriteOutfitNames }),
             ...(isSprite && hasSpriteDna(item.need.dna) && { replaceCharacterKeywords: false }),
             imageKind: isSprite ? 'sprite' : 'background',
             ...(transparent && { transparent: true }),
         };
         let result;
         try { result = await nai.generate(slot, { ...s.auto.nai, size }, meta); } catch (error) { result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` }; }
+        if (isSprite && result?.ok && result.characterMeta && autoSpriteOutfitNames.length) {
+            const bound = bindAutoSpriteOutfitNames({ slotId: 1, characterMeta: result.characterMeta },
+                { purpose: 'sprite' }, autoSpriteOutfitNames);
+            result = { ...result, characterMeta: bound.characterMeta };
+        }
         const key = tempAssetKeyOf(floor.chatId, item.need);
         const base = {
             key, chatId: floor.chatId, floorKey, messageId: floor.messageId, swipeId: floor.swipeId,
             type: item.need.type, name: item.need.name, time: item.need.time || '', weather: item.need.weather || '',
+            ...(outfitName && { outfitName }),
             tags: item.tags, createdAt: now(),
         };
         let record;
@@ -608,8 +625,11 @@ export function createAssetGenerationService(deps) {
                 ? messageHost.readPreviousAiTexts(floor.messageId, 3) : []) : null;
         const contexts = template ? new Map(items.map((item) => {
             const c = story.atFirstAppearance(item.need.name);
+            const name = isValidOutfitName(item.need.outfitName) ? item.need.outfitName : c.outfit.name;
+            const description = name === c.outfit.name ? c.outfit.description
+                : c.outfits.find(outfit => outfit.name === name)?.description || '';
             return [item.need.name, singleCharacterContext(c.characterKey, c.dna,
-                c.outfit.name ? { name: c.outfit.name, prompt: c.outfit.description } : undefined,
+                name ? { name, prompt: description } : undefined,
                 s.sceneAssets)[0]];
         })) : null;
         const putSpriteRecord = async (item, result) => {
@@ -617,6 +637,7 @@ export function createAssetGenerationService(deps) {
             const base = {
                 key, chatId: floor.chatId, floorKey, messageId: floor.messageId, swipeId: floor.swipeId,
                 type: item.need.type, name: item.need.name, time: item.need.time || '', weather: item.need.weather || '',
+                ...(isValidOutfitName(item.need.outfitName) && { outfitName: item.need.outfitName }),
                 tags: item.tags, createdAt: now(),
             };
             let record;
@@ -656,9 +677,14 @@ export function createAssetGenerationService(deps) {
             })).values()] : undefined;
             const task = template ? characterPromptTask(context, 'sprite', 'half_body',
                 batch.map((item) => [contexts.get(item.need.name).characterKey])) : null;
+            const autoSpriteOutfitNames = batch.flatMap((item, index) => isValidOutfitName(item.need.outfitName)
+                ? [{ slotId: index + 1, characterKey: template ? contexts.get(item.need.name).characterKey
+                    : buildCharacterContext([item.need.name], s.sceneAssets)[0]?.characterKey,
+                name: item.need.outfitName }] : []);
             try {
                 written = await writePrompt({
                     imagePromptTask: 'sprite',
+                    ...(autoSpriteOutfitNames.length && { autoSpriteOutfitNames }),
                     description: buildDbgenSpriteBatchDescription(batch.map((item) => item.need), { transparent, template }),
                     messageId: floor.messageId,
                     ...(builtin && { numberedText, previousText,
@@ -682,7 +708,8 @@ export function createAssetGenerationService(deps) {
             }
             for (let index = 0; index < batch.length; index += 1) {
                 const item = batch[index];
-                const found = captions.find((entry) => Number(entry.slotId) === index + 1);
+                const found = bindAutoSpriteOutfitNames(captions.find((entry) => Number(entry.slotId) === index + 1),
+                    task?.promptTask || { purpose: 'sprite' }, autoSpriteOutfitNames);
                 const caption = found && found.caption;
                 const slot = buildAssetSlot({ need: { type: 'sprite', name: item.need.name }, tags: '', uc: '' },
                     { transparent, whiteBackground: !transparent, templates: s.auto.assets.templates });
@@ -713,6 +740,9 @@ export function createAssetGenerationService(deps) {
                             ...(transparent && { transparent: true }),
                             userPrompts: { positive: prompts.positive, negative: prompts.negative },
                         });
+                        if (result.ok && found.characterMeta) result = {
+                            ...result, characterMeta: found.characterMeta,
+                        };
                     } catch (error) {
                         result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` };
                     }
@@ -736,6 +766,14 @@ export function createAssetGenerationService(deps) {
         }
         await loadTempRecords(floor.chatId);
         const numbered = numberParagraphs(floor.text);
+        const outfitResolver = createOutfitResolver(s.sceneAssets);
+        // 原名只用于本次补图，不经衣装词池改名，也不把楼末换装套到首次触发上。
+        const characterTriggers = extractSceneDirectives(floor.text, {
+            outfitResolver: (name, token) => {
+                const resolved = outfitResolver(name, token);
+                return resolved && isValidOutfitName(token) ? token : resolved;
+            },
+        }).directives.filter(d => d.type === 'char' || d.type === 'thought');
         const match = matchContext(s);
         // 命中的 igs-gen 图先记下，查一遍图片本体还在不在；丢了的按缺图重算，否则一直「已有素材」却显示不出来。
         const probed = new Set();
@@ -747,7 +785,7 @@ export function createAssetGenerationService(deps) {
                 ? collectAssetNeeds({ scenes: numbered.scenes, characters: [] }, match, { background: true, sprite: false })
                 : [],
             s.auto.assets.spriteEnabled
-                ? collectAssetNeeds({ scenes: [], characters: numbered.characters }, match, { background: false, sprite: true, limit: s.auto.assets.maxPerFloor })
+                ? collectAssetNeeds({ scenes: [], characters: numbered.characters, characterTriggers }, match, { background: false, sprite: true, limit: s.auto.assets.maxPerFloor })
                 : [],
         ];
         let [backgroundNeeds, spriteNeeds] = collectNeeds();

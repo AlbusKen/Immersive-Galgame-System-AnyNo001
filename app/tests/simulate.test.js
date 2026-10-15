@@ -1213,7 +1213,8 @@ test('gate:assets:reader-shows-saved-items-before-generation-finishes', async ()
     }
 });
 
-for (const registered of [false, true]) test(`gate:assets:reader-hydrates-review-sprite-for-matching-named-outfit-${registered}`, async () => {
+for (const scenario of ['unregistered', 'no-snapshot', 'different-outfit', 'existing-sprite'])
+test(`gate:assets:reader-hydrates-review-sprite-by-character-${scenario}`, async () => {
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
@@ -1224,12 +1225,16 @@ for (const registered of [false, true]) test(`gate:assets:reader-hydrates-review
     const floor = { chatId: 'chat-named', messageId: 40, swipeId: 0, text: raw };
     const assets = { enabled: true, characters: { Alice: {} },
         characterAliases: { Alice: ['小爱'] },
-        characterOutfits: registered ? { Alice: { [outfit]: { moods: {} } } } : {} };
+        characterOutfits: scenario === 'existing-sprite'
+            ? { Alice: { 常服: { moods: { 平和: 'saved.png' } }, [outfit]: { moods: {} } } } : {} };
     const before = structuredClone(assets);
+    const snapshot = structuredClone(candidate.outfitSnapshot);
+    if (scenario === 'different-outfit') snapshot.characters[0].name = '另一套衣装';
     await store.putImage(candidate);
     await store.putAsset({ key: 'chat-named|char|小爱', chatId: floor.chatId,
         floorKey: 'chat-named|40|0', type: 'sprite', name: '小爱', status: 'review',
-        imageId: candidate.id, outfitSnapshot: candidate.outfitSnapshot });
+        imageId: candidate.id,
+        ...(scenario !== 'no-snapshot' && { outfitSnapshot: snapshot }) });
     let update;
     const service = createAssetGenerationService({ store,
         messageHost: { getChatId: () => floor.chatId }, nai: {},
@@ -1247,11 +1252,14 @@ for (const registered of [false, true]) test(`gate:assets:reader-hydrates-review
         assert.equal(content().spriteImage, candidate.dataUrl, JSON.stringify(content().spriteMatch));
         assert.equal(content().spriteMatch.source, 'temp');
         assert.equal(content().spriteMatch.requestedOutfit, outfit);
-        assert.equal(content().spriteOutfit, outfit);
+        assert.equal(content().spriteOutfit, scenario === 'existing-sprite' ? outfit : '',
+            '按人物名显示时不把正文衣装标成临时图的实际衣装');
         assert.notEqual(document.getElementById('igs-sprite').style.display, 'none');
         assert.equal(service.getRecord('chat-named|char|小爱').status, 'review');
-        assert.equal(service.tempSpriteForOutfit('小爱', outfit), `igs-gen:${candidate.id}`);
-        assert.equal(service.tempSpriteForOutfit('Alice', outfit), `igs-gen:${candidate.id}`);
+        const exact = ['no-snapshot', 'different-outfit'].includes(scenario) ? '' : `igs-gen:${candidate.id}`;
+        assert.equal(service.tempSpriteForOutfit('小爱', outfit), exact);
+        assert.equal(service.tempSpriteForOutfit('Alice', outfit), exact);
+        assert.equal(service.tempSprite('Bob'), '', '不同人物不借用临时图');
         assert.equal(service.tempSpriteForOutfit('Alice', '礼服'), '');
         assert.deepEqual(assets, before);
     } finally { host.destroy(); }

@@ -14,6 +14,7 @@ import { checkPromptTask, checkPromptOutput, isSceneOnlyPromptOutput } from '../
 import { prepareCharacterCaption } from './character-caption.js';
 import { runImageTask, staleImageTask, inheritImageTaskLease } from './image-task-runtime.js';
 import { imageWritingContext } from './image-prompt-context.js';
+import { bindAutoSpriteOutfitNames } from './illustration/character-prompt-task.js';
 
 // 生图来源：nai = IGS 内置 NAI；dbgen = 数据库生图插件（window.NaiDbGen）；
 // extension = 智绘姬：剧情 CG、素材与物品图经智绘姬的出图事件生成，剧情 CG 优先用它写在楼层里的词；
@@ -372,6 +373,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             const checked = checkCharacterMeta(entry.characterMeta, entry.caption, meta.characterContext?.map((c) => c.characterKey));
             if (!checked.ok) return describePromptFailure(checked, 'igs-prompt-output', entry.slotId);
             entry.characterMeta = checked.value;
+            Object.assign(entry, bindAutoSpriteOutfitNames(entry, task.value, meta.autoSpriteOutfitNames));
             const prompt = checkPromptOutput(entry, task.value, meta.characterContext);
             if (!prompt.ok) return describePromptFailure(prompt, 'igs-prompt-output', entry.slotId);
             Object.assign(entry, prompt.value);

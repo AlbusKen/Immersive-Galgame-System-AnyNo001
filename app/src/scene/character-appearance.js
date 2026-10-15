@@ -40,6 +40,16 @@ export function outfitSpriteSlots(entry) {
     return slots;
 }
 
+// 已登记地址即算正式立绘；读取失败不等于从未有图。
+export function hasCharacterSprite(assets, character) {
+    const key = appearanceCharacterKey(assets, character);
+    if (!key) return false;
+    return [assets?.characters?.[key], assets?.generated?.characters?.[key]]
+        .some(slots => Object.values(plain(slots)).some(url => text(url)))
+        || Object.values(plain(assets?.characterOutfits?.[key]))
+            .some(entry => Object.keys(outfitSpriteSlots(entry)).length > 0);
+}
+
 // 可用性由调用方提供；仅有 URL 表示已登记，不代表资源已经成功读取。
 function imageState(url, availability) {
     try {

@@ -325,7 +325,8 @@ export function buildDbgenSpriteBatchDescription(needs = [], options = {}) {
         OUTFIT_TEMPLATE_RULE,
         SPRITE_HALF_BODY_RULE,
         '每份从独立一行 slotid: 本图编号开始，写完全部 scene、char、char_uc 和 meta 字段再分隔下一图；--- 后下一非空行必须是新的 slotid，单图内部不分段。',
-        ...needs.map((need, index) => `${index + 1}. ${need.name}`),
+        ...needs.map((need, index) => `${index + 1}. ${need.name}${need.outfitName
+            ? `；触发标签衣装原名：${need.outfitName}，名称逐字沿用，只补充服装描述，不采用楼末其他衣装。` : ''}`),
         '每份只画该 slot 指定的角色，固定身份使用自身 token。',
         '仅缺景别的角色同次输出独立景别 DNA 候选；已有景别逐字保留，服装独立。',
         SPRITE_DAILY_POSE_LINE,
@@ -333,7 +334,8 @@ export function buildDbgenSpriteBatchDescription(needs = [], options = {}) {
         '不重新选择生成点，不从正文摘挂载句。',
     ].join('\n');
     const items = Array.isArray(needs) ? needs : [];
-    const list = items.map((need, index) => `${index + 1}. ${need && need.name ? need.name : ''}`);
+    const list = items.map((need, index) => `${index + 1}. ${need && need.name ? need.name : ''}${need?.outfitName
+        ? `；本次服装：${need.outfitName}（触发标签原名，不采用楼末其他衣装）` : ''}`);
     const count = list.length;
     const profiles = items
         .map((need, index) => {
@@ -373,6 +375,7 @@ export function buildDbgenAssetDescription(need = {}, options = {}) {
         return [
             `画角色「${need.name || ''}」的立绘。`,
             `角色外貌与服装依据正文补充。${spriteGroundLine(options.transparent)}`,
+            ...(need.outfitName ? [`本次服装固定为触发标签的「${need.outfitName}」，只补充描述，不采用楼末其他衣装。`] : []),
             SPRITE_DAILY_POSE_LINE,
             ...characterDnaLines(need.name, need.dna),
         ].join('\n');
