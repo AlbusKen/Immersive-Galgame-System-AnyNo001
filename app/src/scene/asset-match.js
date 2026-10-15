@@ -301,13 +301,16 @@ function isTrustedUserMatch(quality, strict) {
     return strict ? TRUSTED.has(quality) : true;
 }
 
-// 已登记场景缺当前时段的图：原图是插件生成的才补一张时段差分。本聊天补过（含失败、丢弃）就不再补。
+// 失败不算已有差分；自动避免重复发送，手动补全允许重试。明确丢弃的仍尊重用户选择。
 function missingTimeVariant(state, hit, ctx) {
     if (hit.timed === true || !hit.key || !TRUSTED.has(hit.quality) || !isGeneratedAssetUrl(hit.url)) return null;
     const time = sceneTimeSlot(state.time, ctx.sceneAssets && ctx.sceneAssets.timeGroups);
     if (!time) return null;
     const temp = typeof ctx.tempSceneTime === 'function' ? ctx.tempSceneTime(hit.key, time) : null;
-    return { scene: hit.key, time, baseImageId: generatedAssetIdOf(hit.url), url: (temp && temp.url) || '', tried: Boolean(temp) };
+    const retry = temp && ((temp.status === 'failed' && (ctx.retryFailedVariants === true || (ctx.floorKey && temp.floorKey !== ctx.floorKey)))
+        || (temp.status === 'skipped' && temp.skipReason !== 'same-time'));
+    const url = temp?.url && !unavailableImage(temp.url, ctx) ? temp.url : '';
+    return { scene: hit.key, time, baseImageId: generatedAssetIdOf(hit.url), url, tried: Boolean(temp) && !retry && !(temp?.url && lostImage(temp.url, ctx)) };
 }
 
 function withTimeVariant(result, state, hit, ctx) {
@@ -359,23 +362,21 @@ function hasLostImage(record, ctx) {
 export function resolveBackgroundAsset(sceneState, ctx = {}) {
     const state = sceneState || {};
     if (!state.scene) return { url: '', source: 'none', needsGeneration: false };
-    const user = ctx.sceneAssets ? lookupSceneBackground(state, ctx.sceneAssets) : { url: null, quality: 'none' };
-    if (lostImage(user.url, ctx)) return { url: '', source: 'none', quality: user.quality, needsGeneration: true };
-    if (user.url && isTrustedUserMatch(user.quality, ctx.strict === true)) {
+    const availability = { isUnavailableImage: url => unavailableImage(url, ctx) };
+    const user = ctx.sceneAssets ? lookupSceneBackground(state, ctx.sceneAssets, availability) : { url: null, quality: 'none' };
+    const userAvailable = user.url && !unavailableImage(user.url, ctx);
+    if (userAvailable && isTrustedUserMatch(user.quality, ctx.strict === true)) {
         return withTimeVariant({ url: user.url, source: 'user', quality: user.quality, timed: user.timed === true, needsGeneration: false }, state, user, ctx);
     }
-    // 用户已登记的场景（精确/别名/强模糊命中）哪怕该时段没图，也不替用户生成。
-    if (TRUSTED.has(user.quality)) {
-        return { url: user.url || '', source: user.url ? 'user' : 'none', quality: user.quality, timed: Boolean(user.url) && user.timed === true, needsGeneration: false };
-    }
     const library = normalizeGeneratedLibrary(ctx.generatedAssets);
-    const generated = lookupSceneBackground(state, { ...ctx.sceneAssets, scenes: library.scenes });
-    if (generated.url && TRUSTED.has(generated.quality) && !lostImage(generated.url, ctx)) {
+    const generated = lookupSceneBackground(state, { ...ctx.sceneAssets, scenes: library.scenes }, availability);
+    if (generated.url && TRUSTED.has(generated.quality) && !unavailableImage(generated.url, ctx)) {
         return withTimeVariant({ url: generated.url, source: 'library', quality: generated.quality, timed: generated.timed === true, needsGeneration: false }, state, generated, ctx);
     }
     const temp = typeof ctx.tempBackground === 'function' ? ctx.tempBackground(state.scene, state.time || '') : '';
-    if (temp && !lostImage(temp, ctx)) return { url: temp, source: 'temp', needsGeneration: false };
-    return { url: user.url || '', source: user.url ? 'placeholder' : 'none', quality: user.quality, needsGeneration: true };
+    if (temp && !unavailableImage(temp, ctx)) return { url: temp, source: 'temp', needsGeneration: false };
+    const placeholder = userAvailable ? user : lookupSceneBackground({ ...state, scene: '默认' }, ctx.sceneAssets, availability);
+    return { url: placeholder.url || '', source: placeholder.url ? 'placeholder' : 'none', quality: placeholder.quality, needsGeneration: true };
 }
 
 function lookupSpriteWithFallback(sceneState, sceneAssets) {

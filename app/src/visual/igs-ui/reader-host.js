@@ -2930,7 +2930,7 @@ export function createIgsReaderHost(options = {}) {
                 disabled: '请在设置中开启自动背景或自动立绘并保存',
                 'scene-assets-disabled': '请在设置中开启场景素材并保存',
                 'not-eligible': '当前楼层不是最新的非空 AI 回复',
-                'nothing-missing': '本楼没有未登记的人物或场景，已登记的素材不会重复生成',
+                'nothing-missing': '本楼已有可用素材，或时段差分已跳过、已丢弃，无需重复生成',
             };
             if (!result || !result.ok) {
                 feedback('error', `补全素材失败：${result && result.error || '素材生成失败（未返回具体原因）'}`);
@@ -2939,7 +2939,7 @@ export function createIgsReaderHost(options = {}) {
             } else if (skipped[result.reason]) {
                 return skip(result || { ok: false, reason: 'error' }, `补全素材已跳过：${skipped[result.reason]}`);
             } else {
-                feedback('success', `补全素材完成：已生成 ${result.count || 0} 项素材，待确认`);
+                feedback('success', `补全素材完成：已生成 ${result.count || 0} 项，可在「素材 → 待确认」查看与入库`);
             }
             return result || { ok: false, reason: 'error' };
         } catch (error) {

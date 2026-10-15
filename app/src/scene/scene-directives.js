@@ -463,7 +463,7 @@ function lookupSceneUrl(scenes, sceneName, time, weather, sceneAssets) {
     return lookupSceneBackground({ scene: sceneName, time, weather }, { ...sceneAssets, scenes }).url;
 }
 
-export function lookupSceneBackground(sceneState, sceneAssets) {
+export function lookupSceneBackground(sceneState, sceneAssets, options = {}) {
     const scenes = (sceneAssets && sceneAssets.scenes) || {};
     const state = sceneState || {};
     const match = classifySceneKey(scenes, state.scene);
@@ -472,31 +472,36 @@ export function lookupSceneBackground(sceneState, sceneAssets) {
     const quality = useDefault ? 'default' : match.quality;
     const key = match.key != null ? match.key : (useDefault ? '默认' : null);
     if (!raw) return { url: null, key, quality, timed: false };
-    const resolved = resolveSceneEntry(raw, state.time, state.weather, sceneAssets);
+    const resolved = resolveSceneEntry(raw, state.time, state.weather, sceneAssets, options);
     return { url: resolved.url || null, key, quality, timed: Boolean(resolved.url) && resolved.timed };
 }
 
 // timed：命中了素材自带的时段变体（times 层或内置示例图的时段替换），说明画面本身已有该时段光照，
 // 渲染层据此跳过时段调色，避免夜景素材再被压暗一次。
-function resolveSceneEntry(raw, time, weather, sceneAssets) {
+function resolveSceneEntry(raw, time, weather, sceneAssets, options) {
     const entry = typeof raw === 'string' ? { url: raw } : raw;
+    const usable = url => Boolean(url) && !options.isUnavailableImage?.(url);
     const timeGroups = sceneAssets && sceneAssets.timeGroups;
     const weatherGroups = sceneAssets && sceneAssets.weatherGroups;
     const timeKey = resolveLayerKey(entry.times, time, timeGroups) || sameBucketTimeKey(entry.times, time);
     if (timeKey != null) {
         const timeRaw = entry.times[timeKey];
-        const timeEntry = typeof timeRaw === 'string' ? { url: timeRaw } : timeRaw;
+        const timeEntry = (typeof timeRaw === 'string' ? { url: timeRaw } : timeRaw) || {};
         const weatherKey = resolveLayerKey(timeEntry.weathers, weather, weatherGroups);
         if (weatherKey != null) {
             const weatherRaw = timeEntry.weathers[weatherKey];
             const weatherEntry = typeof weatherRaw === 'string' ? { url: weatherRaw } : weatherRaw;
-            return { url: (weatherEntry && weatherEntry.url) || (typeof weatherRaw === 'string' ? weatherRaw : null) || null, timed: true };
+            const url = String(weatherEntry?.url || '').trim();
+            if (usable(url)) return { url, timed: true };
         }
-        return { url: resolveSceneTimeAsset(timeEntry.url || '', time), timed: true };
+        const url = String(timeEntry.url || '').trim();
+        const resolved = resolveSceneTimeAsset(url, time);
+        if (usable(resolved)) return { url: resolved, timed: true };
     }
-    const base = entry.url || '';
+    const base = String(entry.url || '').trim();
     const url = resolveSceneTimeAsset(base, time);
-    return { url, timed: Boolean(base) && url !== base };
+    const available = usable(url);
+    return { url: available ? url : '', timed: available && url !== base };
 }
 
 // quality：exact（槽位名）/ group（组词）/ fuzzy（模糊兜底，可能错配）/ default / none。

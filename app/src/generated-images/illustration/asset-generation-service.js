@@ -187,7 +187,7 @@ export function createAssetGenerationService(deps) {
         const chatId = currentChat();
         if (!chatId) return null;
         const record = tempCache.peek(chatId, tempAssetKeyOf(chatId, { type: 'background', name: scene, time }));
-        return record ? { url: tempUrl(record) } : null;
+        return record ? { url: tempUrl(record), status: record.status, skipReason: record.skipReason, floorKey: record.floorKey } : null;
     }
     function tempSprite(name) {
         if (stopped) return '';
@@ -235,20 +235,24 @@ export function createAssetGenerationService(deps) {
 
     async function loadSmallThumb(id) {
         const generation = tempCache.epoch();
-        const record = await displayRecord(id);
-        if (stopped || tempCache.epoch() !== generation) return;
-        const key = thumbKey(id), stamp = cache.token(key);
-        const value = await cache.load(key, async () => {
-            let dataUrl = await thumbStore.get(id).catch(() => '');
-            if (dataUrl) return dataUrl;
-            const full = (await displayImage(id, record))?.dataUrl || '';
-            if (!full) return '';
-            if (!stopped && tempCache.epoch() === generation) failedImages.delete(id);
-            const small = await Promise.resolve().then(() => makeThumb(full)).catch(() => '');
-            if (small && cache.token(key) === stamp) await thumbStore.put(id, small, stamp);
-            return small || full;
-        });
-        if (value && tempCache.epoch() === generation && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' });
+        const cached = cache.peek(imageKey(id));
+        const release = cached ? cache.pin(imageKey(id)) : () => {};
+        try {
+            const record = cached ? null : await displayRecord(id);
+            if (stopped || tempCache.epoch() !== generation) return;
+            const key = thumbKey(id), stamp = cache.token(key);
+            const value = await cache.load(key, async () => {
+                let dataUrl = await thumbStore.get(id).catch(() => '');
+                if (dataUrl) return dataUrl;
+                const full = cached || (await displayImage(id, record))?.dataUrl || '';
+                if (!full) return '';
+                if (!stopped && tempCache.epoch() === generation) failedImages.delete(id);
+                const small = await Promise.resolve().then(() => makeThumb(full)).catch(() => '');
+                if (small && cache.token(key) === stamp) await thumbStore.put(id, small, stamp);
+                return small || full;
+            });
+            if (value && tempCache.epoch() === generation && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' });
+        } finally { release(); }
     }
 
     function thumbSourceId(url) {
@@ -269,7 +273,8 @@ export function createAssetGenerationService(deps) {
     }
 
     // 本楼匹配的临时工作区，不依赖缓存是否接纳记录；完成后释放。
-    function matchContext(s, chatId, numbered) {
+    function matchContext(s, floor, numbered, manual) {
+        const chatId = floor.chatId;
         const exact = new Map(), backgrounds = new Map(), requests = new Map();
         const assertChat = () => { if (stopped || messageHost.getChatId() !== chatId) throw Object.assign(new Error('media-metadata-stale'), { code: 'media-metadata-stale' }); };
         const recordOf = (type, name, time = '') => {
@@ -277,9 +282,9 @@ export function createAssetGenerationService(deps) {
             if (!exact.has(key)) requests.set(`r:${key}`, async () => { assertChat(); exact.set(key, await tempCache.read(chatId, key)); });
             return exact.get(key);
         };
-        const match = { sceneAssets: s.sceneAssets, generatedAssets: s.sceneAssets.generated, strict: s.strict,
+        const match = { sceneAssets: s.sceneAssets, generatedAssets: s.sceneAssets.generated, strict: s.strict, retryFailedVariants: manual, floorKey: floorKeyOf(floor),
             tempSprite: name => tempUrl(recordOf('sprite', name)),
-            tempSceneTime(scene, time) { const record = recordOf('background', scene, time); return record ? { url: tempUrl(record) } : null; },
+            tempSceneTime(scene, time) { const record = recordOf('background', scene, time); return record ? { url: tempUrl(record), status: record.status, skipReason: record.skipReason, floorKey: record.floorKey } : null; },
             tempBackground(scene, time) {
                 const hit = tempUrl(recordOf('background', scene, time));
                 if (hit) return hit;
@@ -372,6 +377,7 @@ export function createAssetGenerationService(deps) {
         const base = {
             key, chatId: floor.chatId, floorKey, messageId: floor.messageId, swipeId: floor.swipeId,
             type: item.need.type, name: item.need.name, time: item.need.time || '', weather: item.need.weather || '',
+            ...(item.need.variantOf && { variantOf: item.need.variantOf }),
             tags: item.tags, createdAt: now(),
         };
         let record;
@@ -395,7 +401,7 @@ export function createAssetGenerationService(deps) {
     }
 
     // 已登记场景缺这个时段：拿原图存下的提示词换时间标签直接出图，不写词。
-    // 原图没存提示词、或本来就是这个时段，记成 skipped，本聊天不再查。
+    // 原图没词时交还既有背景写词队列；只有原图本来就是这个时段才跳过。
     async function generateTimeVariant(need, s, floor, floorKey) {
         const key = tempAssetKeyOf(floor.chatId, need);
         const base = {
@@ -405,9 +411,10 @@ export function createAssetGenerationService(deps) {
         const stored = await getImagePrompt(need.variantOf);
         const caption = stored ? sceneVariantCaption(stored, sceneVariantTags(need.time, '')) : null;
         const baseText = stored && stored.caption ? stored.caption.v4_prompt.caption.base_caption : stored && stored.positive;
+        if (!caption) return { ...base, status: 'needs-prompt' };
         let record;
-        if (!caption || promptTimeBucket(baseText) === sceneTimeBucket(need.time)) {
-            record = { ...base, imageId: '', status: 'skipped' };
+        if (promptTimeBucket(baseText) === sceneTimeBucket(need.time)) {
+            record = { ...base, imageId: '', status: 'skipped', skipReason: 'same-time' };
         } else {
             let result;
             try {
@@ -473,6 +480,7 @@ export function createAssetGenerationService(deps) {
             const base = {
                 key, chatId: floor.chatId, floorKey, messageId: floor.messageId, swipeId: floor.swipeId,
                 type: item.need.type, name: item.need.name, time: item.need.time || '', weather: item.need.weather || '',
+                ...(item.need.variantOf && { variantOf: item.need.variantOf }),
                 tags: item.tags, createdAt: now(),
             };
             let record;
@@ -584,7 +592,7 @@ export function createAssetGenerationService(deps) {
             return { ok: true, reason: 'body-too-short' };
         }
         const numbered = numberParagraphs(floor.text);
-        const match = matchContext(s, floor.chatId, numbered);
+        const match = matchContext(s, floor, numbered, manual);
         // 命中的 igs-gen 图先记下，查一遍图片本体还在不在；丢了的按缺图重算，否则一直「已有素材」却显示不出来。
         const probed = new Set();
         const lost = new Set();
@@ -606,12 +614,14 @@ export function createAssetGenerationService(deps) {
             let record;
             try { record = await (store.getImageRecord ? store.getImageRecord(id) : store.getImage(id)); }
             catch { report('warn', '素材记录暂时读不到，保留已有引用'); continue; }
-            if (!record || !record.dataUrl) lost.add(url);
+            if (!record || !record.dataUrl) {
+                lost.add(url);
+                await match.hydrate();
+                [backgroundNeeds, spriteNeeds] = collectNeeds();
+            }
         }
         if (lost.size) {
-            report('warn', `第 ${messageId} 楼有 ${lost.size} 张已登记素材的图片找不到了，按缺图重新生成`);
-            await match.hydrate();
-            [backgroundNeeds, spriteNeeds] = collectNeeds();
+            report('warn', `第 ${messageId} 楼有 ${lost.size} 张已登记素材的图片找不到了，已跳过失效槽并重新检查兜底`);
         }
         const variantNeeds = backgroundNeeds.filter((need) => need.variantOf);
         const needs = [...backgroundNeeds.filter((need) => !need.variantOf), ...spriteNeeds];
@@ -633,6 +643,7 @@ export function createAssetGenerationService(deps) {
         if (variantNeeds.length) report('info', `第 ${messageId} 楼按原图提示词补 ${variantNeeds.length} 张场景时段差分…`);
         for (const need of variantNeeds) {
             const record = await generateTimeVariant(need, s, floor, key);
+            if (record.status === 'needs-prompt') { needs.push(need); continue; }
             if (record.status === 'skipped') continue;
             attempted += 1;
             if (record.status === 'review') count += 1;
@@ -714,6 +725,7 @@ export function createAssetGenerationService(deps) {
 
     async function processMessage(messageId, { manual = false } = {}) {
         const s = readSettings();
+        if (manual) s.auto.assets = { ...s.auto.assets, spriteEnabled: true, backgroundEnabled: true };
         if (!s.auto.assets.spriteEnabled && !s.auto.assets.backgroundEnabled) return { ok: true, reason: 'disabled' };
         if (!s.sceneAssets.enabled) return { ok: true, reason: 'scene-assets-disabled' };
         const floor = messageHost.readFloor(messageId);
