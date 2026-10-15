@@ -7,13 +7,13 @@ const states = new WeakMap();
 
 // 只列舞台层；对话层（打字机、点击等待）、工具栏、资料页 / 地图 / CG 库与设置面板都不在内。
 // 粒子循环也按这张表认舞台，面板里的画布（如地图自带的天气层）不受暂停影响。
-const STAGE_LAYERS = '#igs-bg-blur,#igs-bg,#igs-sprite,#igs-cast,#igs-effect-layer,#igs-effect-front-layer,#igs-fx-stage,#igs-fx-front,.igs-dfx-sky,.igs-grade-layer,.igs-rm-back,.igs-sd-ghost,.igs-sd-curtain';
+const STAGE_LAYERS = '#igs-bg-blur,#igs-bg,#igs-sprite,#igs-cast,#igs-effect-layer,#igs-effect-front-layer,#igs-fx-stage,#igs-fx-front,.igs-dfx-sky,.igs-grade-layer,.igs-rm-back,.igs-rm-front,.igs-sd-ghost,.igs-sd-curtain';
 const PAUSED = `#${OVERLAY_ID}[${STAGE_PAUSED_ATTR}] :is(${STAGE_LAYERS})`;
 
 // 背景被整块盖住（如直播手机亮着）：只停手机背后的背景、立绘、天气与时段层，演出层（直播手机本身）与自动翻页照常。
 export const STAGE_COVERED_ATTR = 'data-igs-stage-covered';
 export const LIVE_HOST_ATTR = 'data-igs-live-host';
-const BACKDROP_LAYERS = '#igs-bg-blur,#igs-bg,#igs-sprite,#igs-cast,#igs-effect-layer,.igs-dfx-sky,.igs-grade-layer,.igs-rm-back,.igs-sd-ghost';
+const BACKDROP_LAYERS = '#igs-bg-blur,#igs-bg,#igs-sprite,#igs-cast,#igs-effect-layer,.igs-dfx-sky,.igs-grade-layer,.igs-rm-back,.igs-rm-front,.igs-sd-ghost';
 const COVERED = `#${OVERLAY_ID}[${STAGE_COVERED_ATTR}] :is(${BACKDROP_LAYERS})`;
 
 export const STAGE_PAUSE_STYLE_TEXT = `${[PAUSED, `${PAUSED}::before`, `${PAUSED}::after`, `${PAUSED} *`, `${PAUSED} *::before`, `${PAUSED} *::after`].join(',')}{animation-play-state:paused!important;}`
@@ -36,35 +36,35 @@ function overlayOf(target) {
 function stateOf(overlay) {
     let state = states.get(overlay);
     if (!state) {
-        state = { reasons: new Set(), resumers: new Set(), covered: false };
+        state = { reasons: new Set(), resumers: new Set(), idleListeners: new Set(), covered: false };
         states.set(overlay, state);
     }
     return state;
+}
+
+function notifyIdleChange(state, wasIdle) {
+    const idle = Boolean(state.reasons.size || state.covered);
+    if (idle === wasIdle) return;
+    const callbacks = [...state.idleListeners, ...(!idle ? state.resumers : [])];
+    for (const callback of callbacks) {
+        try { callback(idle); } catch { /* 单个演出不能打断其他演出的暂停与恢复。 */ }
+    }
 }
 
 export function setStagePauseReason(target, reason, on) {
     const overlay = overlayOf(target);
     if (!overlay || !reason) return false;
     const state = stateOf(overlay);
-    const was = state.reasons.size > 0;
+    const wasIdle = Boolean(state.reasons.size || state.covered);
     if (on) state.reasons.add(reason);
     else state.reasons.delete(reason);
     const paused = state.reasons.size > 0;
     if (paused) {
-        if (typeof overlay.setAttribute === 'function') overlay.setAttribute(STAGE_PAUSED_ATTR, Array.from(state.reasons).join(' '));
-        return true;
-    }
-    if (typeof overlay.removeAttribute === 'function') overlay.removeAttribute(STAGE_PAUSED_ATTR);
-    if (was && !state.covered) {
-        for (const resume of Array.from(state.resumers)) {
-            try {
-                resume();
-            } catch {
-                // 单个订阅方出错不影响其他循环恢复。
-            }
-        }
-    }
-    return false;
+        const value = Array.from(state.reasons).join(' ');
+        if (overlay.getAttribute?.(STAGE_PAUSED_ATTR) !== value) overlay.setAttribute?.(STAGE_PAUSED_ATTR, value);
+    } else if (overlay.getAttribute?.(STAGE_PAUSED_ATTR) != null) overlay.removeAttribute?.(STAGE_PAUSED_ATTR);
+    notifyIdleChange(state, wasIdle);
+    return paused;
 }
 
 export function isStagePaused(target) {
@@ -86,20 +86,20 @@ export function setStageCovered(target, on) {
     const state = stateOf(overlay);
     const next = Boolean(on);
     if (state.covered === next) return;
+    const wasIdle = Boolean(state.reasons.size || state.covered);
     state.covered = next;
     if (next) {
         if (typeof overlay.setAttribute === 'function') overlay.setAttribute(STAGE_COVERED_ATTR, '1');
-        return;
-    }
-    if (typeof overlay.removeAttribute === 'function') overlay.removeAttribute(STAGE_COVERED_ATTR);
-    if (state.reasons.size) return;
-    for (const resume of Array.from(state.resumers)) {
-        try {
-            resume();
-        } catch {
-            // 单个订阅方出错不影响其他循环恢复。
-        }
-    }
+    } else if (typeof overlay.removeAttribute === 'function') overlay.removeAttribute(STAGE_COVERED_ATTR);
+    notifyIdleChange(state, wasIdle);
+}
+
+export function onStageIdleChange(target, callback) {
+    const overlay = overlayOf(target);
+    if (!overlay || typeof callback !== 'function') return () => {};
+    const { idleListeners } = stateOf(overlay);
+    idleListeners.add(callback);
+    return () => idleListeners.delete(callback);
 }
 
 export function onStageResume(target, callback) {
