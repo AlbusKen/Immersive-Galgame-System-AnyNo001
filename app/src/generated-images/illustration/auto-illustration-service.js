@@ -306,11 +306,16 @@ export function createAutoIllustrationService(deps) {
             report('warn', `第 ${messageId} 楼数据库生图插件返回了 ${Array.isArray(written.captions) ? written.captions.length : 0} 张，按 ${returned.length} 张生成`);
         }
         const slots = [];
+        let unmatchedAnchors = 0, unsafeAnchors = 0;
         for (const item of returned) {
             const anchorSentence = String(item.anchorSentence || item.anchor || '').trim();
             const found = findAnchorInsertIndex(floor.text, anchorSentence);
             if (found.index < 0) {
-                report('warn', `第 ${messageId} 楼第 ${item.slotId} 张没有能对上正文的生成点，跳过`);
+                const matched = Number.isFinite(found.anchorIndex);
+                if (matched) unsafeAnchors++; else unmatchedAnchors++;
+                report('warn', `第 ${messageId} 楼第 ${item.slotId} 张${matched
+                    ? '生成点已命中正文，但无法在完整结构之后安全插入'
+                    : '没有能对上正文的生成点'}，跳过`);
                 continue;
             }
             const slot = Number(item.slotId) || slots.length + 1;
@@ -318,7 +323,10 @@ export function createAutoIllustrationService(deps) {
             slots.push({ slot, caption: item.caption, anchorSentence });
         }
         if (!slots.length) {
-            const error = '数据库生图插件没有返回能对上正文的生成点';
+            const error = unsafeAnchors
+                ? unmatchedAnchors ? `生成点均不可用（正文未命中 ${unmatchedAnchors} 个，无法安全插入 ${unsafeAnchors} 个）`
+                    : '生成点已命中正文，但没有安全的独占行插入位置'
+                : '数据库生图插件没有返回能对上正文的生成点';
             await store.putFloor(key, { ...base, status: 'failed', error, updatedAt: now() });
             report('error', `第 ${messageId} 楼插图规划失败，未发送生图请求：${error}`);
             progress(floor, { phase: 'done' });

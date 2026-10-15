@@ -76,24 +76,18 @@ NailongHub 工作流中的安装版实机验真、Computer Use 实机操作和 l
 
 ### 修复闭环（真机可用时）
 
-bug 修复走以下闭环，**真机测试通过才算结束、才打 tag**：
+bug 修复按当前用户规则交付测试版本：
 
-```text
-1. 修复 + 升 patch 版本号（同步 package.json / bootstrap.js / README）+ npm run build + npm run build:loader + 直接获取并执行实际发布文件
-2. 本地预验：用真机导出的真实数据，本地复跑修复后代码，确认逻辑对（第一道闸）
-3. git commit + git push origin main   ← 先推 main，让 jsdelivr @main 能拉到新 bundle；【暂不打 tag】
-4. CDP 真机测试：触发真机重载新 bundle，抓状态确认现象消失（第二道闸）
-5a. 测试成功 → git tag v<当前版本> + git push origin v<当前版本> → 结束（tag 与脚本内版本号对齐）
-5b. 测试失败 → 改完再升 patch 版本号、再 push（每次 push 都升号），真机重验；只给真机验过的那一版打 tag
-```
+1. 修复、必要的定向验证、升 patch，同步 package.json / bootstrap / README。
+2. 构建 bundle 与 `npm run build:loader -- --release test-v<当前版本>`，记录实际执行证据。
+3. 提交并推送 main，为同一提交创建并推送 `test-v<当前版本>` 测试标签。
+4. 有条件时做真实酒馆/手机复验；未做时保留边界。后续修复再次升号和打测试标签，不覆盖旧标签。
 
-- 每次 push 都升 patch 版本号；tag = 经过真机验证的那一版版本号，必须与脚本内版本号对齐。
-- 失败的中间版本号只留在 commit 历史、不打 tag；不强推、不覆盖已存在的 tag。
-- loader 从 `@main` 拉取，push 到 main 后真机即可加载新代码做验证。
+2026-10-15 起每次更新均附测试标签，不自动创建 `v<当前版本>` 正式版标签。测试标签不是设备验收结论。
 
 ### CDP 不可用时
 
-用户不在、不愿重启浏览器、或手机端（TauriTavern/柏宝箱等非 Chromium 宿主）时：直接下载并执行发布文件，明确记录实际运行环境和未覆盖的设备边界；不能据此声称真实酒馆或手机已验收，不打 tag。
+用户不在、不愿重启浏览器、或手机端（TauriTavern/柏宝箱等非 Chromium 宿主）时：直接下载并执行发布文件，明确记录实际运行环境和未覆盖的设备边界；不能据此声称真实酒馆或手机已验收；照常交付对应测试标签。
 
 ## 酒馆助手脚本打包
 
@@ -147,35 +141,23 @@ git status --short
 
 ## 每轮结束回退点
 
-每一轮只要产生文件改动，结束前必须 push 到 main。**tag 与 push 分离：push 可随时累加，tag 仅在真机验证通过后才打**（见上文「修复闭环」）。
-
-第一步——升版本号 + 推代码到 main（修复后立即执行，让 jsdelivr `@main` 能拉到新 bundle 供真机验证）：
+每次更新都升 patch，选择性暂存本轮文件，提交并推送 main，同时为该提交打 `test-v<当前版本>` 测试标签。保留无关工作区改动，不自动创建正式版标签。
 
 ```powershell
-# 先升 patch 版本号：package.json、bootstrap.js 的 IGS_VERSION、README 状态行/更新日志
-cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Visual Novel\app"
-npm run build          # dist bundle 版本号随之更新
-npm run build:loader   # 生成 loader/…… v<当前版本>.json
+cd app
+npm run build
+npm run build:loader -- --release test-v<当前版本>
 cd ..
-git status --short
-git add .
-git commit -m "Release v<当前版本>: <简短说明>"
-git push origin main
-```
-
-第二步——真机 CDP 测试通过后，才打 tag 并推送：
-
-```powershell
-git tag -a v<当前版本> -m "v<当前版本>: <简短说明>"
-git push origin v<当前版本>
+# 仅 git add 本轮修改的具体文件
+git commit -m "test-v<当前版本>: <简短说明>"
+git tag -a test-v<当前版本> -m "test-v<当前版本>: <简短说明>"
+git push origin HEAD:main
+git push origin test-v<当前版本>
 git status --short --branch
 git ls-remote --heads origin main
-git ls-remote --tags origin v<当前版本>
+git ls-remote --tags origin test-v<当前版本>
 ```
 
-- 真机测试失败时改完再升 patch 版本号、再 push（每次 push 都升号），真机重验；只给真机验过的版本打 tag，失败的中间版本号不打 tag。
-- tag 必须与脚本内版本号对齐；标签已存在时不覆盖、不强推。
-- CDP 不可用（用户不在/不愿重启/手机端）时，直接下载执行并记录边界；未做真实设备终验时不打 tag。
-- 只有用户明确说不要上传或不要打标签时才跳过，并在最终回复说明原因。
+标签版本与脚本版本一致；已存在标签不覆盖、不强推。真实设备尚未终验时明确记录，测试标签不阻断交付。只有用户明确要求不要上传或不要打标签时跳过。
 
 详细发布与上传命令见 `docs/RELEASE.md`。

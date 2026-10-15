@@ -33,7 +33,7 @@
 - `R4` loader、dist、发布流程、版本号或远程 bundle 链路修改：生成发布文件，直接获取并执行实际发布文件，记录下载和启动结果。
 - `R5` 真实 provider、真实 shujuku 写入、真实用户数据迁移或不可逆操作：先用 fake provider / fake shujuku / fixtures 做确定性模拟，真实链路必须等用户明确确认。
 
-本项目常规验证以 Visual Novel 模拟测试替换 NailongHub 的安装版实机验真。例外：bug 修复在模拟测试覆盖不到、或现象只在用户真实酒馆+存量数据下出现时，按 `docs/AI_WORKFLOW.md` 的「真机调试与复验」用 CDP 直连（F12 手动探针兜底）做真机定位与终验，真机验过才打 tag。
+本项目常规验证以 Visual Novel 模拟测试替换 NailongHub 的安装版实机验真。例外：bug 修复在模拟测试覆盖不到、或现象只在用户真实酒馆+存量数据下出现时，按 `docs/AI_WORKFLOW.md` 的「真机调试与复验」用 CDP 直连（F12 手动探针兜底）做真机定位与终验，真实设备验证单独记录；每次更新均推送 `test-vX.Y.Z` 测试标签，不自动创建正式版标签。
 
 ## 执行清单规则
 
@@ -91,7 +91,7 @@ shujuku 数据层读取 `app/src/data/shujuku/CONTRACT.md`。模型提示词 sch
 ## 发布策略
 
 - 只讨论、只规划、只审查时，不提交、不打包、不发布。
-- 用户要求实现时，默认做到本地修改、文档更新、可执行范围内的模拟验证、升版本号、提交、推送 GitHub main；版本标签按「GitHub 回退点硬要求」在真机验证通过后才打。
+- 用户要求实现时，默认做到本地修改、文档更新、可执行范围内的模拟验证、升版本号、提交、推送 GitHub main；同时按「GitHub 回退点硬要求」创建并推送 `test-vX.Y.Z` 测试标签。
 - 用户明确要求只做本地草稿、不上传或不打标签时，才跳过 GitHub 上传；最终回复必须说明 skipped 原因。
 - 用户明确要求发布酒馆导入件时，才额外生成 loader、release notes 或 GitHub Release。
 - 发布候选不得依赖真实 API key、真实聊天记录或真实 shujuku 数据作为唯一验证来源。
@@ -104,13 +104,13 @@ shujuku 数据层读取 `app/src/data/shujuku/CONTRACT.md`。模型提示词 sch
 
 版本号、tag 与修复闭环的细则以 `CLAUDE.md` 的「版本号同步清单 / 提交与推送规则 / Bug 修复闭环」为准，本节与其保持一致。
 
-- 每一轮产生文件改动、push 到 main 前都必须升 patch 版本号并同步脚本内版本号（`app/package.json`、`app/src/core/bootstrap.js` 的 `IGS_VERSION`、`README.md`），不复用上次已 push 的版本号；升号后 `npm run build` + `npm run build:loader` 让 dist 与 loader 版本号对齐。
-- 结束前必须在本项目独立仓库执行 `git add .`、`git commit`、`git push origin main`。
-- **tag 与 push 分离**：push 可随时累加；版本标签只在真机 CDP 测试通过后才打，且**必须与脚本内版本号对齐**（验过的那一版是 `vX.Y.Z` 就打 `vX.Y.Z`）。真机调试用 CDP 直连优先、F12 手动探针兜底（见 `docs/AI_WORKFLOW.md` 的「真机调试与复验」）。
-- 真机测试失败时改完再升号 push，真机重验；失败的中间版本号只留 commit 历史、不打 tag。CDP 不可用时保留未做真实设备终验的边界，不以本地检查代替设备验收，也不据此打 tag。
+- 每一轮产生文件改动、push 到 main 前都必须升 patch 版本号并同步脚本内版本号（`app/package.json`、`app/src/core/bootstrap.js` 的 `IGS_VERSION`、`README.md`），不复用上次已 push 的版本号；升号后 `npm run build` + `npm run build:loader -- --release test-v<当前版本>` 让 dist 与 loader 版本号对齐。
+- 结束前必须在本项目独立仓库选择性暂存本轮文件，执行 `git commit`、`git push origin main`，保留无关工作区改动。
+- **2026-10-15 用户新规则**：每次更新提交与 main 推送都创建并推送 `test-vX.Y.Z` 测试标签，版本号必须与脚本内 `X.Y.Z` 对齐。测试标签标识可回退提交，不代表真实设备验收；不自动创建 `vX.Y.Z` 正式版标签，正式发布须用户另行明确要求。
+- 修复继续变化时再次升号、提交并推送新的测试标签；CDP 不可用时明确记录真实酒馆和手机未终验，不阻断测试标签交付。
 - 版本标签已存在时不得强推覆盖；提升 patch 版本重来。
 - 上传前必须确认 `git rev-parse --show-toplevel` 指向 `D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Visual Novel`，禁止从上级 `nailongwang-main` 仓库提交本项目。
-- 上传后必须回查 `git status --short --branch`、`git ls-remote --heads origin main`；打 tag 后回查 `git ls-remote --tags origin v<当前版本>`，确认远程分支和标签存在。
+- 上传后必须回查 `git status --short --branch`、`git ls-remote --heads origin main`；打 tag 后回查 `git ls-remote --tags origin test-v<当前版本>`，确认远程分支和标签存在。
 - 只有用户明确要求“只本地修改/不要上传/不要打标签”时才能跳过；跳过必须写入最终回复和必要的 README/docs 技术债记录。
 
 ## 技术债记录
@@ -127,7 +127,7 @@ shujuku 数据层读取 `app/src/data/shujuku/CONTRACT.md`。模型提示词 sch
 
 ## 版本号规则
 
-当前项目版本使用 `vMAJOR.MINOR.PATCH`。
+程序版本使用 `MAJOR.MINOR.PATCH`；每次更新的测试标签使用 `test-vMAJOR.MINOR.PATCH`，不自动创建正式版标签。
 
 - 文档、契约、测试计划补充：增加 patch，例如 `v0.1.5` -> `v0.1.6`
 - 新功能模块或可用模拟测试：增加 minor，并重置 patch，例如 `v0.1.6` -> `v0.2.0`

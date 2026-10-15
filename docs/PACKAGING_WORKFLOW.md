@@ -114,10 +114,10 @@ loader/igs-loader.js
 
 ```powershell
 cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive Galgame System\app"
-npm run build:loader -- --release v<当前版本>
+npm run build:loader -- --release test-v<当前版本>
 ```
 
-`--release` 接受与 `app/package.json` 一致的版本号，生成锁定该 tag 的 `沉浸式Galgame系统 vX.Y.Z.json`，并删除 loader/ 里所有旧的版本化导入件（只留最新一份）；推送时必须同时推送同名 tag，否则 jsDelivr 取不到会退回 @main。每次升版本后先生成对应导入件，再直接核对实际发布响应和启动结果。无参数的 `build:loader` 仍只更新固定入口和调试版。
+`--release` 只接受与 `app/package.json` 一致的 `test-vX.Y.Z`，生成锁定该测试标签的 `沉浸式Galgame系统 test-vX.Y.Z.json`，并删除 loader/ 里所有旧的版本化导入件（只留最新一份）；推送时必须同时推送同名 tag，否则 jsDelivr 取不到会退回 @main。每次升版本后先生成对应导入件，再直接核对实际发布响应和启动结果。无参数的 `build:loader` 仍只更新固定入口和调试版。
 
 全量门禁入口已移除，不得按旧顺序拆开执行。
 
@@ -189,47 +189,47 @@ loader 默认读取 `main` 的最新提交哈希，并优先加载不可变的 `
 
 ```powershell
 cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive Galgame System\app"
-npm run build:loader -- --release v<当前版本>
+npm run build:loader -- --release test-v<当前版本>
 ```
 
 ```powershell
 cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive Galgame System"
 git status --short
-git add .
+# 仅 git add 本轮修改的具体文件
 git commit -m "Prepare loader packaging workflow"
 git push origin main
 git ls-remote --heads origin main
 ```
 
-真实酒馆复验通过后才执行：
+每次更新都为本次提交创建并推送测试标签：
 
 ```powershell
-git tag -a v<当前版本> -m "v<当前版本>: Prepare loader packaging workflow"
-git push origin v<当前版本>
-git ls-remote --tags origin v<当前版本>
+git tag -a test-v<当前版本> -m "test-v<当前版本>: Prepare loader packaging workflow"
+git push origin test-v<当前版本>
+git ls-remote --tags origin test-v<当前版本>
 ```
 
-## 每轮推送与验收后回退点规则
+## 每轮推送与测试回退点规则
 
-后续 AI 每轮结束时，只要本项目有文件改动，必须完成：
+2026-10-15 用户新规则：每次更新均推送 main 和 `test-vX.Y.Z` 测试标签，不自动创建正式版标签；真实设备验证单独记录。每轮有文件改动时必须完成：
 
 ```powershell
 git rev-parse --show-toplevel
 cd app
-npm run build:loader -- --release v<当前版本>
+npm run build:loader -- --release test-v<当前版本>
 cd ..
-git add .
+# 仅 git add 本轮修改的具体文件
 git commit -m "Release v<当前版本>: <本轮说明>"
 git push origin main
 git ls-remote --heads origin main
 ```
 
-仅在真实酒馆复验通过后执行：
+每次更新都为本次提交创建并推送测试标签：
 
 ```powershell
-git tag -a v<当前版本> -m "v<当前版本>: <本轮说明>"
-git push origin v<当前版本>
-git ls-remote --tags origin v<当前版本>
+git tag -a test-v<当前版本> -m "test-v<当前版本>: <本轮说明>"
+git push origin test-v<当前版本>
+git ls-remote --tags origin test-v<当前版本>
 ```
 
 `git rev-parse --show-toplevel` 必须返回 `D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive Galgame System`。如果标签已存在，不强推覆盖，提升 patch 版本后重新发布。

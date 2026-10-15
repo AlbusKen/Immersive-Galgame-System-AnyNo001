@@ -79,7 +79,7 @@ loader 默认追踪 GitHub API 返回的 `main` 最新提交哈希，并优先�
 ## 后续建议命令
 
 ```text
-npm run build:loader -- --release v<当前版本>
+npm run build:loader -- --release test-v<当前版本>
 npm run build
 ```
 
@@ -88,7 +88,7 @@ npm run build
 
 生成 loader JSON 后，必须额外验证 JSON 字段和 `content`：
 
-先用 `npm run build:loader -- --release v<当前版本>` 生成版本化导入件，再直接核对其 JSON 字段及 loader 原文一致性。
+先用 `npm run build:loader -- --release test-v<当前版本>` 生成版本化导入件，再直接核对其 JSON 字段及 loader 原文一致性。
 
 ```powershell
 node -e "const fs=require('fs'); const js=fs.readFileSync('loader/igs-loader.js','utf8'); const j=JSON.parse(fs.readFileSync('loader/igs-loader.json','utf8')); if(j.type!=='script'||j.content!==js||!j.content.includes('igs.bundle.js')) throw new Error('bad loader json');"
@@ -111,7 +111,7 @@ gh repo create Anyno001/Immersive-Galgame-System-AnyNo001 --public --source . --
 
 ```powershell
 cd "D:\下载\酒馆\奶龙王\nailongwang-main\奶龙工具箱\projects\Immersive Galgame System\app"
-npm run build:loader -- --release v<当前版本>
+npm run build:loader -- --release test-v<当前版本>
 cd ..
 git status --short
 git add .
@@ -120,20 +120,20 @@ git push origin main
 git ls-remote --heads origin main
 ```
 
-仅在真实酒馆复验通过后执行：
+每次更新都为本次提交创建并推送测试标签：
 
 ```powershell
-git tag -a v<当前版本> -m "v<当前版本>: <简短更新说明>"
-git push origin v<当前版本>
-git ls-remote --tags origin v<当前版本>
+git tag -a test-v<当前版本> -m "test-v<当前版本>: <简短更新说明>"
+git push origin test-v<当前版本>
+git ls-remote --tags origin test-v<当前版本>
 ```
 
-## 每轮上传与真机复验后打标签
+## 每轮上传并打测试标签
 
-- 任何实现、修复、文档工作流变更、fixtures/test 变更，只要写入了文件，结束前都必须推送到 `origin/main`；真实酒馆复验通过前不创建版本标签。
-- 复验通过后标签格式固定为 `vMAJOR.MINOR.PATCH`，必须与已验收版本的 `app/package.json` 对应。
+- 任何实现、修复、文档工作流变更、fixtures/test 变更，只要写入了文件，结束前都必须推送到 `origin/main`；同时创建并推送 `test-vMAJOR.MINOR.PATCH` 测试标签。
+- 测试标签版本必须与该提交的 `app/package.json` 对应；不自动创建 `vMAJOR.MINOR.PATCH` 正式版标签，正式发布须用户另行明确要求。
 - 标签已存在时禁止覆盖，提升 patch 版本再发布。
-- 文档任务只检查文档一致性，仍需提交、推送；全量门禁已禁用，打标签仍须等待真实设备复验。
+- 文档任务只检查文档一致性，仍需提交、推送；全量门禁已禁用。测试标签不代表真实设备验收，未终验时保留边界。
 - 上传必须在本项目独立仓库根目录执行，先确认 `git rev-parse --show-toplevel` 返回本项目目录。
 
 如果需要给 SillyTavern loader 直接加载 GitHub raw bundle，先确认没有真实密钥、真实聊天记录、真实 shujuku 数据和本机私有路径，再保持仓库 public 或建立单独的公开发布仓库。

@@ -33,14 +33,14 @@ npm run build   # 构建 bundle
 1. `app/package.json` — `"version": "X.Y.Z"`
 2. `app/src/core/bootstrap.js` — `const IGS_VERSION = 'X.Y.Z'`
 3. `README.md` — 当前状态行和更新日志
-4. 升号后必须 `npm run build`（dist bundle 内 `IGS version` 注释随之更新）+ `npm run build:loader`（更新 `loader/igs-loader.json` 自动更新版 + 生成当前版本的固定版 `loader/沉浸式Galgame系统 vX.Y.Z.json`）
+4. 升号后必须 `npm run build`（dist bundle 内 `IGS version` 注释随之更新）+ `npm run build:loader -- --release test-vX.Y.Z`（更新自动更新版并生成锁定测试标签的 `loader/沉浸式Galgame系统 test-vX.Y.Z.json`）
 
 ## Loader 说明
 
 `loader/` 下有两类 loader：
 
 - **自动更新版** `igs-loader.json`（脚本名「沉浸式Galgame系统（自动更新）」）：拉取 `@main` 最新代码，push 到 main 后真机即可加载验证。这是开发/日常使用的 loader，固定一个文件、不带版本号。
-- **固定版** `沉浸式Galgame系统 vX.Y.Z.json`：在 loader 源前注入 `IGS_LOADER_REF='vX.Y.Z'`，锁定加载该 tag 的 bundle、不自动更新。`build:loader` 会按当前 `package.json` 版本生成。固定版要真正可用，前提是 `vX.Y.Z` tag 已打并推送（否则 jsDelivr 拉 `@vX.Y.Z` 会 404）。
+- **测试固定版** `沉浸式Galgame系统 test-vX.Y.Z.json`：在 loader 源前注入 `IGS_LOADER_REF='test-vX.Y.Z'`，锁定测试标签；使用 `build:loader -- --release test-vX.Y.Z` 生成并随提交推送同名标签。`--pin` 仍可锁定历史正式标签。
 
 历史上曾每次升号生成一份「（自动更新） vX.Y.Z.json」副本，但它们内容全同且都指向 `@main`、不锁版本，纯属冗余，已于 v0.23.21 清理，并改为上述固定版机制。
 
@@ -48,24 +48,17 @@ npm run build   # 构建 bundle
 
 ## 提交与推送规则
 
-- 每次有文件改动必须提交并推送到 main（`git push origin main`）。
-- **每次 push 前都升 patch 版本号并同步脚本内版本号**（见上文「版本号同步清单」），不复用上次已 push 的版本号。
-- **tag 与 push 分离**：push 可随时累加；版本标签只在真机 CDP 测试通过后才打。loader 拉取 `@main`，push 到 main 后真机即可加载新代码验证。
-- **tag 必须与脚本内版本号对齐**：真机验过的那一版版本号是 `X.Y.Z`，就打 `git tag vX.Y.Z`，不打不对应的号。
-- 真机测试失败时，改完再升号 push（新版本号），真机重验；只给真机验过的那一版打 tag——失败的中间版本号只留在 commit 历史，不打 tag。
-- 禁止覆盖旧标签；不要用 `git tag -d` + 重建的方式覆盖已推送的标签。
+- 每次更新提交前升 patch，并同步 package.json、bootstrap、README、dist 与 loader。
+- 2026-10-15 用户新规则：每次更新提交均推送 main，并为同一提交创建和推送 `test-vX.Y.Z` 测试标签；版本号与脚本一致。
+- 不自动创建 `vX.Y.Z` 正式版标签，正式发布须用户另行明确要求。
+- 禁止覆盖旧标签；只暂存本轮文件，保留无关工作区改动。
 
 ## Bug 修复闭环
 
-修复 bug 按以下闭环，**真机测试通过才算结束、才打 tag**：
-
-1. 修复 + 升 patch 版本号（同步脚本内版本号）+ `npm run build` + `npm run build:loader` + 直接获取并执行发布文件，记录实际结果。
-2. 本地预验：用真机导出的真实数据本地复跑修复后代码，确认逻辑正确（第一道闸，能挡掉方向性错误）。
-3. `git commit` + `git push origin main`（先推 main，让真机能加载新 bundle；暂不打 tag）。
-4. CDP 真机测试：触发真机重载新 bundle，抓状态确认现象消失（第二道闸）。
-5. 成功 → 给当前版本号打 `git tag vX.Y.Z` + `git push origin vX.Y.Z`，结束；失败 → 回第 1 步，再升号、再 push、再验，只给真机验过的版本打 tag。
-
-真机调试用 CDP 直连自动注入（详见 `docs/AI_WORKFLOW.md` 的「真机调试与复验」）。CDP 不可用（用户不在/不愿重启浏览器/手机端）时，直接下载执行只能证明所记录环境的启动结果，未做设备终验时不打 tag，并在回复说明边界。
+1. 复现并修复，执行本问题必要的定向验证；全量门禁仍禁用。
+2. 升 patch、同步文档，构建 bundle 与 `--release test-vX.Y.Z` loader，记录实际执行结果。
+3. 提交并推送 main；创建 `git tag -a test-vX.Y.Z` 并推送，核对分支和标签。
+4. 真实酒馆与手机未终验时明确记录边界；测试标签不代表设备验收。后续发现问题则升号提交新的测试标签，不覆盖旧标签。
 
 
 ## 修改前必读
