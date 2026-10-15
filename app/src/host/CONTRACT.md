@@ -1,5 +1,11 @@
 # host 模块契约
 
+## 固定版本启动器（test-v0.36.66）
+
+- 固定版 loader 的 tag 属于脚本内部常量，不允许页面残留的 `IGS_LOADER_REF`、配置 ref 或 base 改写。该版本失败明确报错，禁止请求 main 或其他版本。
+- 只有已记录的来源 ref、base 与实际 API 版本均匹配时复用实例；来源未知或不匹配先等待现有 `shutdown()` 完成。关闭失败停止替换，不能让两个媒体所有者并存。
+- 模块加载完成还要核实 API 的实际版本；返回错误版本时关闭该实例并报要求版本与实际版本，不把脚本 load 事件当作指定版本就绪。
+
 ## 副 LLM 转发（v0.36.58）
 
 - 独立 OpenAI 兼容接口的模型列表与生成，分别 POST 到酒馆同源 `/api/backends/chat-completions/status` 和 `/generate`；使用宿主 `getRequestHeaders` 的 CSRF 头和当前酒馆会话，不向浏览器直连上游，也不依赖通用 `/proxy`。

@@ -2,6 +2,7 @@
     'use strict';
 
     const REPOSITORY = 'Anyno001/Immersive-Galgame-System-AnyNo001';
+    const PINNED_REF = '';
     const DEFAULT_REF = 'main';
     const MAIN_BASE = `https://cdn.jsdelivr.net/gh/${REPOSITORY}@main`;
     const MAIN_BRANCH_URL = `https://api.github.com/repos/${REPOSITORY}/branches/main`;
@@ -29,11 +30,12 @@
     }
 
     ensureQrButtonBinding();
-    Promise.resolve(reconcileExistingRuntime()).then(existingRuntime => {
+    Promise.resolve(resolveLoaderConfig()).then(async config => {
+        const existingRuntime = await reconcileExistingRuntime(config);
         if (existingRuntime.done) return;
-        root[INSTANCE_KEY] = { repository: REPOSITORY, loadedAt: Date.now() };
+        root[INSTANCE_KEY] = { repository: REPOSITORY, loadedAt: Date.now(), requestedRef: config.ref };
         scheduleLoaderMagicWandEntry();
-        return load();
+        return load(config);
     }).catch((error) => {
         console.error('[IGS Loader] 启动失败。', error);
         try {
@@ -93,8 +95,7 @@
         }
     }
 
-    async function load() {
-        const config = await resolveLoaderConfig();
+    async function load(config) {
         const attempts = buildLoadAttempts(config);
         const bundleFiles = root.IGS_DEBUG === true ? ['igs.bundle.debug.js', 'igs.bundle.js'] : ['igs.bundle.js'];
         let lastError = null;
@@ -107,43 +108,51 @@
                     const probe = await probeBundleUrl(scriptUrl);
                     if (!probe.ok) {
                         lastError = probe.error || new Error(`remote bundle not available: ${scriptUrl}`);
-                        console.warn('[IGS Loader] 远程 bundle 探测失败，尝试下一个地址。', attempt.ref, scriptUrl, lastError);
+                        console.warn(config.locked ? '[IGS Loader] 固定版本不可用，停止加载。' : '[IGS Loader] 远程 bundle 探测失败，尝试下一个地址。', attempt.ref, scriptUrl, lastError);
                         continue;
                     }
                 }
                 try {
                     injectCss(cssUrl);
-                    await injectScript(scriptUrl);
+                    await injectScript(scriptUrl, config.version);
                     if (attempt.ref === config.latestRef && !config.latestFromCache) rememberLatestRef(attempt.ref);
+                    root[INSTANCE_KEY] = {
+                        repository: REPOSITORY, loadedAt: Date.now(), status: 'ready', reused: false,
+                        activeRef: attempt.ref, activeBase: attempt.base, version: (root.IGS || root.ImmersiveGalgameSystem).version,
+                    };
                     scheduleMagicWandEnsure();
                     schedulePendingQrOpen();
                     console.info('[IGS Loader] 使用远程版本。', attempt.ref, attempt.base);
                     return { ...config, activeRef: attempt.ref, activeBase: attempt.base };
                 } catch (error) {
                     lastError = error;
+                    await releaseRuntime(root.IGS || root.ImmersiveGalgameSystem);
                     clearTraceElements();
-                    console.warn('[IGS Loader] 远程 bundle 加载失败，尝试下一个地址。', attempt.ref, scriptUrl, error);
+                    console.warn(config.locked ? '[IGS Loader] 固定版本加载失败，停止加载。' : '[IGS Loader] 远程 bundle 加载失败，尝试下一个地址。', attempt.ref, scriptUrl, error);
                 }
             }
             if (attempt.ref === config.latestRef) forgetLatestRef(attempt.ref);
         }
 
-        throw lastError || new Error('没有可用的 Immersive Galgame System 远程 bundle。');
+        const failure = lastError || new Error('没有可用的 Immersive Galgame System 远程 bundle。');
+        throw config.locked ? new Error(`固定版本 ${config.ref} 加载失败：${failure.message}`) : failure;
     }
 
     async function resolveLoaderConfig() {
         const userConfig = getObject(root.IGS_LOADER_CONFIG);
-        const explicitRef = String(userConfig.ref || root.IGS_LOADER_REF || '').trim();
+        const explicitRef = String(PINNED_REF || userConfig.ref || root.IGS_LOADER_REF || '').trim();
         const latest = !explicitRef && !userConfig.base && !root.IGS_LOADER_BASE
             ? await resolveLatestRef()
             : { ref: '', fromCache: false };
         const latestRef = latest.ref || null;
         const ref = explicitRef || latestRef || DEFAULT_REF;
+        const version = /^(?:test-)?v(\d+\.\d+\.\d+)$/.exec(ref)?.[1] || '';
+        const locked = Boolean(PINNED_REF || version);
         const defaultBase = `https://cdn.jsdelivr.net/gh/${REPOSITORY}@${ref}`;
-        const hasCustomBase = Boolean(userConfig.base || root.IGS_LOADER_BASE);
-        const base = String(userConfig.base || root.IGS_LOADER_BASE || defaultBase).replace(/\/+$/, '');
-        const cacheBust = userConfig.cacheBust === undefined ? ref === 'main' || Boolean(explicitRef && !/^v\d+\.\d+\.\d+$/.test(ref)) : userConfig.cacheBust !== false;
-        return { ref, base, cacheBust, hasCustomBase, latestRef, latestFromCache: latest.fromCache };
+        const hasCustomBase = !PINNED_REF && Boolean(userConfig.base || root.IGS_LOADER_BASE);
+        const base = String(PINNED_REF ? defaultBase : userConfig.base || root.IGS_LOADER_BASE || defaultBase).replace(/\/+$/, '');
+        const cacheBust = userConfig.cacheBust === undefined ? ref === 'main' || Boolean(explicitRef && !version) : userConfig.cacheBust !== false;
+        return { ref, base, version, locked, cacheBust, hasCustomBase, latestRef, latestFromCache: latest.fromCache };
     }
 
     function buildLoadAttempts(config) {
@@ -154,6 +163,7 @@
                 cacheBust: config.cacheBust,
             },
         ];
+        if (config.locked) return attempts;
         if (!config.hasCustomBase && config.latestRef && config.latestRef !== config.ref) {
             attempts.push({
                 ref: config.latestRef,
@@ -578,11 +588,12 @@
         link.href = href;
     }
 
-    function injectScript(src) {
+    function injectScript(src, expectedVersion = '') {
         const existing = doc.querySelector(`#${SCRIPT_ID}`);
         const runtimeReady = () => {
             const api = root.IGS || root.ImmersiveGalgameSystem;
-            return api && typeof api.openSettings === 'function' && typeof api.openLatestAvailable === 'function';
+            return api && typeof api.openSettings === 'function' && typeof api.openLatestAvailable === 'function'
+                && (!expectedVersion || api.version === expectedVersion);
         };
         if (existing && existing.src === src && runtimeReady()) return Promise.resolve(existing);
         if (existing && existing.remove) existing.remove();
@@ -606,7 +617,10 @@
             script.src = src;
             script.onload = () => {
                 if (!runtimeReady()) {
-                    finish(new Error(`remote script did not start IGS: ${src}`));
+                    const actual = (root.IGS || root.ImmersiveGalgameSystem)?.version || '未启动';
+                    finish(new Error(expectedVersion
+                        ? `固定版本加载失败：要求 ${expectedVersion}，实际 ${actual}。${src}`
+                        : `remote script did not start IGS: ${src}`));
                     return;
                 }
                 console.info('[IGS Loader] Immersive Galgame System bundle 已加载。', src);
@@ -620,11 +634,16 @@
         });
     }
 
-    async function reconcileExistingRuntime() {
+    async function reconcileExistingRuntime(config) {
         const api = root.IGS || root.ImmersiveGalgameSystem;
-        if (api && typeof api.ensureMagicWandEntry === 'function') {
+        const previous = root[INSTANCE_KEY];
+        const sameSource = previous?.repository === REPOSITORY && previous?.activeRef === config.ref && previous?.activeBase === config.base;
+        const sameVersion = !config.version || api?.version === config.version;
+        if (api && typeof api.ensureMagicWandEntry === 'function' && typeof api.openSettings === 'function'
+            && typeof api.openLatestAvailable === 'function' && sameSource && sameVersion) {
             const result = safeEnsureMagicWandEntry(api);
             root[INSTANCE_KEY] = {
+                ...previous,
                 repository: REPOSITORY,
                 loadedAt: Date.now(),
                 status: 'ready',
@@ -639,15 +658,11 @@
         if (api) {
             console.warn('[IGS Loader] 检测到旧版 IGS 残留，准备重新加载。');
             try {
-                if (typeof api.shutdown === 'function' || typeof api.destroy === 'function') {
-                    const result = await (typeof api.shutdown === 'function' ? api.shutdown() : api.destroy());
-                    if (result?.ok === false) throw new Error(result.error || result.reason || 'media-shutdown-failed');
-                }
+                await releaseRuntime(api);
             } catch (error) {
                 console.error('[IGS Loader] 旧版 IGS 尚未完成销毁，停止重新加载。', error);
                 throw error;
             }
-            clearGlobalApi(api);
         }
 
         const staleTrace = root[INSTANCE_KEY] || TRACE_IDS.find((id) => doc.querySelector(`#${id}`));
@@ -662,6 +677,15 @@
         }
 
         return { done: false };
+    }
+
+    async function releaseRuntime(api) {
+        if (!api) return;
+        const release = typeof api.shutdown === 'function' ? api.shutdown : api.destroy;
+        if (typeof release !== 'function') throw new Error('旧 IGS 无法安全关闭，停止加载新实例。');
+        const result = await release.call(api);
+        if (result?.ok === false) throw new Error(result.error || result.reason || 'media-shutdown-failed');
+        clearGlobalApi(api);
     }
 
     function safeEnsureMagicWandEntry(api) {

@@ -30,10 +30,11 @@ function assertLoaderButtonConfig(button, label) {
     }
 }
 
-// 版本化固定 loader：在 loader 源前注入 IGS_LOADER_REF，把它锁定到具体 tag（不追 main、不自动更新）。
+// 固定 tag 属于本次脚本，不能被页面残留的 ref/base 覆盖。
 function buildPinnedContent(source, ref) {
-    const prefix = `(function(){try{(window.parent&&window.parent.document?window.parent:window).IGS_LOADER_REF=${JSON.stringify(ref)};}catch(e){try{window.IGS_LOADER_REF=${JSON.stringify(ref)};}catch(e2){}}})();\n`;
-    return prefix + source;
+    const marker = "const PINNED_REF = '';";
+    if (!source.includes(marker)) throw new Error('Loader source missing fixed ref marker.');
+    return source.replace(marker, `const PINNED_REF = ${JSON.stringify(ref)};`);
 }
 
 function writePinnedLoader(ref) {
@@ -57,7 +58,7 @@ function writePinnedLoader(ref) {
     };
     fs.writeFileSync(pinnedPath, `${JSON.stringify(pinnedJson, null, 2)}\n`, 'utf8');
     const verify = JSON.parse(fs.readFileSync(pinnedPath, 'utf8'));
-    if (verify.content !== pinnedContent || !verify.content.includes(`IGS_LOADER_REF=${JSON.stringify(ref)}`)) {
+    if (verify.content !== pinnedContent || !verify.content.includes(`const PINNED_REF = ${JSON.stringify(ref)};`)) {
         throw new Error(`Pinned loader JSON for ${ref} does not match source.`);
     }
     console.log(`loader:pinned ok ${path.relative(projectRoot, pinnedPath)}`);
