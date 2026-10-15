@@ -375,9 +375,11 @@ export function createAssetGenerationService(deps) {
             skipRecall: true,
             imageKind: isSprite ? 'sprite' : 'background',
             ...(dbgenTransparent && { transparent: true }),
+            // 背景底图记下种子，之后的时段差分复用它。
+            ...(!isSprite && { seed: randomSeed() }),
         };
         let result;
-        try { result = await nai.generate(slot, { ...s.auto.nai, size }, meta); } catch (error) { result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` }; }
+        try { result = await nai.generate(slot, { ...s.auto.nai, size, ...(meta.seed && { seed: meta.seed }) }, meta); } catch (error) { result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` }; }
         const key = tempAssetKeyOf(floor.chatId, item.need);
         const base = {
             key, chatId: floor.chatId, floorKey, messageId: floor.messageId, swipeId: floor.swipeId,
@@ -393,6 +395,8 @@ export function createAssetGenerationService(deps) {
                 : { id: imageId, dataUrl: result.dataUrl, type: item.need.type, createdAt: base.createdAt };
             const prompt = normalizeStoredPrompt(result.prompt);
             if (prompt) image.prompt = prompt;
+            const usedSeed = Number.isInteger(result.seed) && result.seed > 0 ? result.seed : meta.seed;
+            if (!isSprite && usedSeed > 0) image.seed = usedSeed;
             const saved = await putImageWithQuotaFallback(image);
             rememberImage(imageId, image.dataUrl);
             record = { ...base, imageId, status: 'review', ...(saved.diagnostic ? { sourceUnavailable: saved.diagnostic } : {}) };
@@ -422,14 +426,16 @@ export function createAssetGenerationService(deps) {
             record = { ...base, imageId: '', status: 'skipped', skipReason: 'same-time' };
         } else {
             let result;
+            // 复用白天底图的种子，构图更接近；底图没存种子才随机。
+            const seed = (await getImageSeed(need.variantOf)) || randomSeed();
             try {
-                result = await nai.generateDbgenCaption({ caption, size: backgroundSize(s), seed: randomSeed(), imageKind: 'background' });
+                result = await nai.generateDbgenCaption({ caption, size: backgroundSize(s), seed, imageKind: 'background' });
             } catch (error) {
                 result = { ok: false, error: `出图失败：${(error && error.message) || error}` };
             }
             if (result && result.ok && result.dataUrl) {
                 const imageId = newId();
-                const image = { id: imageId, dataUrl: result.dataUrl, type: 'background', createdAt: base.createdAt };
+                const image = { id: imageId, dataUrl: result.dataUrl, type: 'background', createdAt: base.createdAt, seed };
                 const prompt = normalizeStoredPrompt(result.prompt) || promptFromCaption(caption);
                 if (prompt) image.prompt = prompt;
                 await putImageWithQuotaFallback(image);
@@ -466,12 +472,14 @@ export function createAssetGenerationService(deps) {
             const caption = captions[index] && captions[index].caption;
             const slot = buildAssetSlot(item, { transparent: false, templates: s.auto.assets.templates });
             let result;
+            const seed = randomSeed();
             if (!caption) {
                 result = { ok: false, error: written && written.error ? written.error : '没有对应的背景提示词' };
             } else {
                 try {
                     result = await nai.generateDbgenCaption({
                         caption,
+                        seed,
                         size: backgroundSize(s),
                         imageKind: 'background',
                         messageId: floor.messageId,
@@ -494,6 +502,8 @@ export function createAssetGenerationService(deps) {
                 const image = { id: imageId, dataUrl: result.dataUrl, type: item.need.type, createdAt: base.createdAt };
                 const prompt = normalizeStoredPrompt(result.prompt);
                 if (prompt) image.prompt = prompt;
+                const usedSeed = Number.isInteger(result.seed) && result.seed > 0 ? result.seed : seed;
+                if (usedSeed > 0) image.seed = usedSeed;
                 await store.putImage(image);
                 rememberImage(imageId, image.dataUrl);
                 record = { ...base, imageId, status: 'review' };
@@ -1247,6 +1257,16 @@ export function createAssetGenerationService(deps) {
         const text = prompt && String(prompt.positive || '').trim();
         if (!text) return { ok: false, error: '写提示词没有返回服装标签' };
         return { ok: true, prompt: text };
+    }
+
+    async function getImageSeed(id) {
+        const key = String(id || '');
+        if (!key || !store || typeof store.getImage !== 'function') return 0;
+        try {
+            const record = await (typeof store.getImageRecord === 'function' ? store.getImageRecord(key) : store.getImage(key));
+            const seed = record && record.seed;
+            return Number.isInteger(seed) && seed > 0 ? seed : 0;
+        } catch (error) { return 0; }
     }
 
     // edited：用户在「提示词」里改过并保存。重画时照原样用，不再叠情绪 / 衣服 / DNA。

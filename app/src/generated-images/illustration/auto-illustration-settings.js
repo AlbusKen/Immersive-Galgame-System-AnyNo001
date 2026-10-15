@@ -68,8 +68,8 @@ export function normalizeAutoIllustrationSettings(value) {
             spriteEnabled: bool(assets.spriteEnabled),
             backgroundEnabled: bool(assets.backgroundEnabled),
             strictMatch: bool(assets.strictMatch),
-            // 默认关：现有差分是换词重画（随机种子），先画白天暂不提升画质，等图生图接好再开。
-            dayFirst: bool(assets.dayFirst),
+            // 默认开：非白天先画白天底图，再复用底图种子换时间词出差分。
+            dayFirst: !(assets.dayFirst === false || assets.dayFirst === 'false' || assets.dayFirst === 0 || assets.dayFirst === '0'),
             maxPerFloor: clampInt(assets.maxPerFloor, 1, 16, 2),
             spriteSize: str(assets.spriteSize, '832x1216') || '832x1216',
             backgroundSize: str(assets.backgroundSize, '1216x832') || '1216x832',

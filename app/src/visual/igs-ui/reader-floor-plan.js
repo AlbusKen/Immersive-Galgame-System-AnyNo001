@@ -1,6 +1,6 @@
 import { createNarrationSpriteTracker, otherNamesOf, sceneCarryOf, NARRATION_HOLD_PAGES, SCENE_AHEAD_PAGES } from '../../scene/narration-sprite.js';
 import { createNarrationNamer } from '../../scene/narration-focus.js';
-import { extractSceneDirectives, resolveCharacterKey, narrativeRanges, prepareIllustrationPages } from '../../scene/scene-directives.js';
+import { extractSceneDirectives, resolveCharacterKey, narrativeRanges, prepareIllustrationPages, applySceneClock } from '../../scene/scene-directives.js';
 import { DEFAULT_MOOD_GROUPS } from '../../scene/mood-groups.js';
 import { createOutfitResolver } from '../../scene/character-outfits.js';
 import { extractFxDirectives, createFxPageResolver } from '../../scene/fx-directives.js';
@@ -107,7 +107,8 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
     const scenes = outfitDirectives.filter(d => d.type === 'scene');
     const sceneAt = (offset) => {
         const own = offset >= 0 ? lastBefore(scenes, offset, false) : null;
-        return own && own.scene ? { ...own, character: '', mood: '', lastDirectiveType: 'scene' } : inheritedSceneState;
+        // 正文里写的钟点（如 14:30）在本场景内覆盖时间栏。
+        return own && own.scene ? { ...applySceneClock(own, offset), character: '', mood: '', lastDirectiveType: 'scene' } : inheritedSceneState;
     };
     const sceneStates = offsets.map(sceneAt);
     const dread = Array.from(source.matchAll(/\[igs-dread:\s*([0-3])\s*\]/g), m => ({ offset: m.index, value: Number(m[1]) }));
@@ -519,6 +520,6 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         return itemTargets.get(name);
     };
     return { text, segments, source, sceneDirectives, outfitDirectives, inheritedSceneState, pages, offsets,
-        sceneAt, locator, keyOf, castCharacters, castAliases, selfNames: selfAll, carriesAcross: carriesAt, carryOf, sceneOfPage, sceneLeads, presentOf, genderOf, userName, sceneSpeaker: scene.speaker, latestSpeechByPage, fxDirectives, illustrations, eventCgs,
+        sceneAt, locator, keyOf, castCharacters, castAliases, selfNames: selfAll, carriesAcross: carriesAt, carryOf, sceneOfPage, sceneLeads, presentOf, genderOf, userName, userKey, userSource: userCharKey ? 'manual' : userKey ? 'name' : '', sceneSpeaker: scene.speaker, latestSpeechByPage, fxDirectives, illustrations, eventCgs,
         tagItems, tagNames: new Set(tagItems.map(item => normalizeItemName(item.name))), itemPageFor, assets: null, tablesRevision: -1 };
 }

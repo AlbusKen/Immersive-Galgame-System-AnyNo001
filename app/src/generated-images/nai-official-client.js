@@ -123,7 +123,7 @@ export function createNaiOfficialClient(deps = {}) {
         const valid = validateNaiV4Request(body);
         if (!valid.ok) return { ok: false, error: `生图请求无效：${valid.reason}` };
         const sent = await sendWithRetry(body, settings);
-        if (sent && sent.ok) return { ...sent, prompt: promptFromNaiBody(body) };
+        if (sent && sent.ok) return { ...sent, prompt: promptFromNaiBody(body), seed: body.parameters.seed };
         return sent;
     }
 

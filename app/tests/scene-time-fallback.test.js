@@ -40,7 +40,7 @@ test('gate:scene-time-fallback:clock-times-map-by-hour', () => {
 });
 
 test('gate:scene-time-fallback:setting-defaults-on', () => {
-    assert.equal(normalizeAutoIllustrationSettings({}).assets.dayFirst, false);
+    assert.equal(normalizeAutoIllustrationSettings({}).assets.dayFirst, true);
     assert.equal(normalizeAutoIllustrationSettings({ assets: { dayFirst: true } }).assets.dayFirst, true);
     assert.equal(normalizeAutoIllustrationSettings({ assets: { dayFirst: false } }).assets.dayFirst, false);
     assert.equal(normalizeAutoIllustrationSettings({ assets: { dayFirst: 'false' } }).assets.dayFirst, false);
@@ -52,6 +52,7 @@ const dayCaption = { v4_prompt: { caption: { base_caption: 'tavern, day, blue sk
 function setup({ dayFirst = true, canCaption = true, texts = ['[igs-scene:酒馆|夜晚|晴]\n灯亮了。'] } = {}) {
     const store = createMemoryGeneratedAssetStore();
     const calls = [];
+    const seeds = [];
     let id = 0;
     const floors = texts.map((text, index) => ({ chatId: 'c', messageId: index + 1, swipeId: 0, isAi: true, isLatest: true, text }));
     const nai = {
@@ -62,6 +63,7 @@ function setup({ dayFirst = true, canCaption = true, texts = ['[igs-scene:酒馆
             async generateDbgenCaption(meta) {
                 const base = meta.caption.v4_prompt.caption.base_caption;
                 calls.push(['caption', base]);
+                seeds.push(meta.seed);
                 return { ok: true, dataUrl: 'data:image/png;base64,X', prompt: { positive: base, negative: 'lowres' } };
             },
         }),
@@ -75,8 +77,16 @@ function setup({ dayFirst = true, canCaption = true, texts = ['[igs-scene:酒馆
         newId: () => `v${++id}`,
         minBodyChars: 0,
     });
-    return { service, calls };
+    return { service, calls, seeds };
 }
+
+test('gate:scene-time-fallback:variant-reuses-day-base-seed', async () => {
+    const { service, seeds } = setup();
+    await service.processMessage(1);
+    assert.equal(seeds.length, 2);
+    assert.ok(Number.isInteger(seeds[0]) && seeds[0] > 0);
+    assert.equal(seeds[1], seeds[0]);
+});
 
 test('gate:scene-time-fallback:night-scene-paints-day-base-then-variant', async () => {
     const { service, calls } = setup();

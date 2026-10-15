@@ -119,7 +119,7 @@ export function buildNaiV4Request(slot, naiSettings = {}, random = Math.random) 
             sampler: resolveSampler(settings.sampler),
             steps: Math.max(1, Math.min(50, Number(settings.steps) || 28)),
             n_samples: 1,
-            seed: Math.floor(random() * 4294967295),
+            seed: Number.isInteger(settings.seed) && settings.seed > 0 ? settings.seed : Math.floor(random() * 4294967295),
             noise_schedule: resolveNoiseSchedule(settings.noiseSchedule, model),
             cfg_rescale: 0,
             skip_cfg_above_sigma: null,

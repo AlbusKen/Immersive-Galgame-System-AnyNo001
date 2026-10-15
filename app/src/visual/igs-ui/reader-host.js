@@ -3827,6 +3827,7 @@ export function createIgsReaderHost(options = {}) {
                 spriteMatch,
                 backgroundMatch,
                 castSprites,
+                userChar: { key: prepared.userKey || '', source: prepared.userSource || '' },
                 pendingCastRefs,
                 speakerCastOrder,
                 images: cloneData(displayImageState.images),

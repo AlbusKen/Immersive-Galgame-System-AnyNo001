@@ -74,3 +74,9 @@ test('gate:page-diagnostic:settings-button-copies-active-reader-page', async () 
     await handleSettingsAction('copy-page-diagnostic', ctx(null));
     assert.match(shown.at(-1)[1], /先打开阅读器/);
 });
+
+test('gate:page-diagnostic:reports-user-sprite-source', () => {
+    assert.match(buildPageDiagnostic(snapshot(), {}), /User立绘：无/);
+    assert.match(buildPageDiagnostic(snapshot({ userChar: { key: '我', source: 'manual' } }), {}), /User立绘：我（手动指定）/);
+    assert.match(buildPageDiagnostic(snapshot({ userChar: { key: '阿明', source: 'name' } }), {}), /User立绘：阿明（按用户名）/);
+});
