@@ -144,9 +144,23 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         if (!keyMemo.has(name)) keyMemo.set(name, resolveCharacterKey(sceneAssets?.characters, sceneAssets?.characterAliases, name) || name);
         return keyMemo.get(name);
     };
+    // 旁白点名用的角色名单：上传区 + 生成区（AI 生成的角色和别名只登记在生成区）。
+    const generatedLib = sceneAssets?.generated && typeof sceneAssets.generated === 'object' ? sceneAssets.generated : {};
+    const castCharacters = { ...(generatedLib.characters || {}), ...(sceneAssets?.characters || {}) };
+    const castAliases = {};
+    for (const map of [generatedLib.characterAliases, sceneAssets?.characterAliases]) {
+        for (const [key, list] of Object.entries(map && typeof map === 'object' ? map : {})) {
+            if (Array.isArray(list)) castAliases[key] = [...(castAliases[key] || []), ...list];
+        }
+    }
+    const castKeyMemo = new Map();
+    const castKeyOf = name => {
+        if (!castKeyMemo.has(name)) castKeyMemo.set(name, resolveCharacterKey(castCharacters, castAliases, name) || name);
+        return castKeyMemo.get(name);
+    };
     // 本楼说过话 / 有心理活动的 + 前 3 个 AI 楼的；宿主没给前楼名单时（null）不拦。
     const castNearby = Array.isArray(payload.recentCast)
-        ? new Set([...charThoughtDirectives.map(d => d.character), ...payload.recentCast].filter(Boolean).map(keyOf))
+        ? new Set([...charThoughtDirectives.map(d => d.character), ...payload.recentCast].filter(Boolean).map(castKeyOf))
         : null;
     const thoughtCharacters = new Set(charThoughtDirectives.filter(d => d.type === 'thought').map(d => keyOf(d.character)));
     const othersMemo = new Map();
@@ -157,10 +171,9 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
     let leadNames = null;
     const narrationLeadName = (text) => {
         if (!leadNames) {
-            const aliasMap = sceneAssets?.characterAliases && typeof sceneAssets.characterAliases === 'object' ? sceneAssets.characterAliases : {};
-            const userKey = userName ? keyOf(userName) : '';
-            leadNames = Object.keys(sceneAssets?.characters || {}).filter((key) => key !== userKey)
-                .flatMap((key) => [key, ...(Array.isArray(aliasMap[key]) ? aliasMap[key] : [])])
+            const userKey = userName ? castKeyOf(userName) : '';
+            leadNames = Object.keys(castCharacters).filter((key) => key !== userKey)
+                .flatMap((key) => [key, ...(castAliases[key] || [])])
                 .map((n) => String(n || '').trim())
                 .map((name) => ({ name, probe: name.replace(/[\s\p{P}\p{S}]/gu, '') }))
                 .filter(({ probe }) => Array.from(probe).length >= 2)
@@ -184,7 +197,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
             const groups = Array.isArray(sceneAssets?.moodGroups) && sceneAssets.moodGroups.length ? sceneAssets.moodGroups : DEFAULT_MOOD_GROUPS;
             groupMoodWords = groups.flatMap((g) => [g && g.label, ...(Array.isArray(g && g.words) ? g.words : [])]);
         }
-        const slots = Object.keys(sceneAssets?.characters?.[keyOf(name)] || {});
+        const slots = Object.keys(castCharacters[castKeyOf(name)] || {});
         const body = String(text || '');
         let best = '', bestAt = Infinity;
         for (const raw of [...slots, ...groupMoodWords]) {
@@ -309,9 +322,9 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         // 情绪：旁白里的情绪词 → 这个人本楼上次的情绪 → 默认。本楼和前 3 个 AI 楼都没露面的（久违提到）不出立绘。
         if (textType === 'narration' && !spriteChar && sceneAssets.narrationNameSwitch !== false) {
             const named = narrationLeadName(currentText);
-            if (named && (castNearby === null || castNearby.has(keyOf(named)))) {
+            if (named && (castNearby === null || castNearby.has(castKeyOf(named)))) {
                 spriteChar = named;
-                spriteMood = narrationMood(currentText, named) || lastMoodByKey.get(keyOf(named)) || '';
+                spriteMood = narrationMood(currentText, named) || lastMoodByKey.get(castKeyOf(named)) || '';
                 lastBubble = { speaker: named, mood: spriteMood, index: normalizedIndex };
             }
         }
@@ -364,7 +377,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
             spriteMood = sceneStateForBg.mood || '';
         }
         if (classified && classified.speaker) lastBubble = { ...classified, index: normalizedIndex };
-        if (spriteChar && spriteMood) lastMoodByKey.set(keyOf(spriteChar), spriteMood);
+        if (spriteChar && spriteMood) lastMoodByKey.set(castKeyOf(spriteChar), spriteMood);
         pages.push({ textType, bubbleSpeaker, bubbleMood, segmentBody, systemSpeaker, spriteChar, spriteMood,
             narrationDropped, narrationDroppedKey, spriteLeft, currentOffset: offsets[normalizedIndex], sceneStateForBg,
             sceneDread: (lastBefore(dread, offsets[normalizedIndex] < 0 ? source.length : offsets[normalizedIndex], false)?.value) ?? payload.inheritedDread ?? null });
