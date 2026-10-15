@@ -295,7 +295,7 @@ function unavailableImageProbe(generatedAssets) {
 export function createIgsReaderHost(options = {}) {
     bindImageCacheDocument(getRootDocument(options.global), options.media?.cache);
     // 快速连翻的整页渲染最小间隔（见 renderTurnedPage）；放闭包开头，避免提前调用时未初始化。
-    const PAGE_RENDER_GAP_MS = Number.isFinite(options.pageRenderGapMs) ? options.pageRenderGapMs : 80;
+    const PAGE_RENDER_GAP_MS = Number.isFinite(options.pageRenderGapMs) ? options.pageRenderGapMs : 32;
     let statusHudClient = null;
     let statusHudCallback = null;
     let statusHudApi = null;
