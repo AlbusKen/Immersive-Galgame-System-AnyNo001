@@ -4345,7 +4345,11 @@ export function createIgsReaderHost(options = {}) {
             hasActiveSettings: () => Boolean(state.activeSettings),
             closeSettings,
             handleReaderAction,
-            handleBlankClick: () => handleOptionBubbleBlankClick(current, snapshot),
+            // 点击层监听只绑一次，闭包里的 current/snapshot 是首次渲染的；必须读当前阅读器，否则按旧页判断「末页」会吞掉翻页。
+            handleBlankClick: () => {
+                const live = state.activeReader || current;
+                return handleOptionBubbleBlankClick(live, live.snapshot || snapshot);
+            },
             isActiveReader: (reader) => state.activeReader === reader,
             closeReader,
             resolveAssetUrl: (url) => resolveReaderAssetUrl(url, current),
