@@ -718,14 +718,16 @@ export function bootstrapIGS(options = {}) {
         // 交互摘要：只在有待送出的事件时注入，生成结束后清空（见 attachMetaDigestSync）。
         // 直播互动与 Meta 互动共用待送出事件，各自开关、各自成段，合并后走同一条注入路径。
         const metaDigestRule = [resolveMetaDigestRule(readerSettings && readerSettings.metaFx), resolveLiveDigestRule(readerSettings)].filter(Boolean).join('\n\n');
+        const promptContext = collectPromptContext(resolveTavernContext(), { document: globalObject.document });
+        const outfitContext = { previousAiTexts: promptContext.previousAiTexts,
+            sourceFilter: unified.bridge?.sourceFilter, virtualRegex: unified.bridge?.virtualRegex };
         if (sceneAssets && sceneAssets.promptAdaptive === false) {
-            return injectLegacyPromptRules(sceneAssets, readerSettings, { ancient, eraRule, placement, metaDigestRule });
+            return injectLegacyPromptRules(sceneAssets, readerSettings, { ancient, eraRule, placement, metaDigestRule, outfitContext });
         }
         if (generationType === 'impersonate' || generationType === 'quiet') {
             promptInjector.clear();
             return { ok: true, reason: 'generation-type-skipped' };
         }
-        const promptContext = collectPromptContext(resolveTavernContext(), { document: globalObject.document });
         // 社区平台写法只展开最近提到的平台，其余只列名字。
         if (readerSettings && readerSettings.feedFx) readerSettings.feedFx.mentioned = mentionedFeedPlatforms([promptContext.userText, ...(promptContext.recentAiTexts || []).slice(-2)]);
         const sceneOn = Boolean(sceneAssets && sceneAssets.enabled && scenePromptRuleEnabled(sceneAssets) && sceneAssets.promptRule);
@@ -733,7 +735,7 @@ export function bootstrapIGS(options = {}) {
         const triggers = resolvePromptTriggers({ ...promptContext, entries });
         const grammar = buildTagGrammar({
             readerSettings,
-            sceneRule: sceneOn ? resolvePromptRuleContent(sceneAssets, { compact: true, presentText: promptContext.presentText }) : '',
+            sceneRule: sceneOn ? resolvePromptRuleContent(sceneAssets, { compact: true, presentText: promptContext.presentText, ...outfitContext }) : '',
             ancient,
             expand: triggers.hits,
             tailRules: eraRule ? [eraRule] : [],
@@ -752,11 +754,13 @@ export function bootstrapIGS(options = {}) {
     }
 
     // 关闭按需注入时的旧行为：各块完整拼接；未自定义的场景规则用改版前的长版原文。
-    function injectLegacyPromptRules(sceneAssets, readerSettings, { ancient, eraRule, placement, metaDigestRule }) {
+    function injectLegacyPromptRules(sceneAssets, readerSettings, { ancient, eraRule, placement, metaDigestRule, outfitContext }) {
         const rules = [];
         if (sceneAssets && sceneAssets.enabled && scenePromptRuleEnabled(sceneAssets) && sceneAssets.promptRule) {
-            const promptRule = sceneAssets.promptRule === DEFAULT_SCENE_PROMPT_RULE ? LEGACY_DEFAULT_SCENE_PROMPT_RULE_V3 : sceneAssets.promptRule;
-            rules.push(resolvePromptRuleContent({ ...sceneAssets, promptRule }));
+            const promptRule = sceneAssets.promptRule === DEFAULT_SCENE_PROMPT_RULE
+                ? `${LEGACY_DEFAULT_SCENE_PROMPT_RULE_V3}\n{{previous_outfit_dna}}`
+                : sceneAssets.promptRule;
+            rules.push(resolvePromptRuleContent({ ...sceneAssets, promptRule }, outfitContext));
         }
         const chatShow = readerSettings && readerSettings.chatShow;
         // 随身手机：聊天与来电等手机演出按现代写法。

@@ -14,6 +14,7 @@ import { collectAssetZipEntries } from '../../scene/asset-zip.js';
 import { assetOwnerKey, draftAssetLibrary, draftEffectiveAssets, effectiveSceneAssets, ensureCardLibrary, hasSharedCopy, isSharedCollection, libraryHasContent, moveLibraryEntry, rememberAssetScope } from '../../scene/asset-scope.js';
 import { buildCharacterCardPack, buildImageZip, buildPresetArchive, mergeLabelGroups, parseCharacterCardPack, parsePresetArchive, parseSettingsArchive, spriteEntriesForNames } from '../../scene/card-pack.js';
 import { getSillyTavernContext } from '../../host/tavern-helper-adapter.js';
+import { collectPromptContext } from '../../host/prompt-context.js';
 import { localImageCacheFor } from '../../media/tavern-image-cache.js';
 import { createIndexedDbAssetThumbStore } from '../../media/asset-thumb-store.js';
 import { buildPageDiagnostic } from './page-diagnostic.js';
@@ -3198,14 +3199,17 @@ export async function handleSettingsAction(action, ctx) {
             ? settingsState.asyncState.promptRuleDraft
             : assets.promptRule);
         // 空词表留下的空行按按需注入的写法收掉。
-        const sceneRule = resolvePromptRuleContent({ ...assets, promptRule: rule }).replace(/\n{2,}/g, '\n').trim();
+        const { previousAiTexts } = collectPromptContext(getSillyTavernContext(options.global || globalThis));
+        const sceneRule = resolvePromptRuleContent({ ...assets, promptRule: rule }, { previousAiTexts,
+            sourceFilter: settingsState.draft.bridge.sourceFilter, virtualRegex: settingsState.draft.bridge.virtualRegex })
+            .replace(/\n{2,}/g, '\n').trim();
         const text = buildTagGrammar({ readerSettings: {}, sceneRule, moodWord: firstMoodWord(assets) }).system;
         const nav = (options.global || globalThis).navigator;
         const copied = nav && nav.clipboard && typeof nav.clipboard.writeText === 'function'
             ? await Promise.resolve(nav.clipboard.writeText(text)).then(() => true, () => false)
             : false;
         settingsState.asyncState.promptRuleStatus = copied ? '已复制词表展开后的完整规则。' : '复制失败，请在弹窗中手动复制。';
-        const turnOff = scenePromptRuleEnabled(assets) ? '粘贴后请关闭「自动注入格式规则」，以免重复发送。' : '';
+        const turnOff = (scenePromptRuleEnabled(assets) ? '粘贴后请关闭「自动注入格式规则」，以免重复发送。' : '') + '衣装资料为复制时的静态快照，不会随下一轮自动更新。';
         if (typeof dialogs.edit === 'function') {
             await dialogs.edit(copied ? `已复制到剪贴板，可粘贴到酒馆预设中新建的提示词条目。${turnOff}` : '复制失败，请手动全选下方内容后复制。', text, { okLabel: '关闭' });
         }

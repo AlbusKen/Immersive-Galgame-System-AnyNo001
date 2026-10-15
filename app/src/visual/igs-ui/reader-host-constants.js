@@ -348,7 +348,7 @@ export const INITIAL_IMAGE_POLL_ATTEMPTS = 8;
 export const INITIAL_IMAGE_POLL_INTERVAL_MS = 250;
 
 // 通用规则（每行一条、| 分隔、不发明新标签等）由 tag-grammar 统一写在最前，这里只写场景与台词本身。
-export const DEFAULT_SCENE_PROMPT_RULE = `【场景与台词】
+export const LEGACY_DEFAULT_SCENE_PROMPT_RULE_V4 = `【场景与台词】
 [igs-scene:场景名|时间|天气]：本轮开头输出一次（即使与上轮相同），换场景时再输出；NSFW场景加第4栏大写NSFW，其他场景不写第4栏
 [igs-char:角色名|表情|服装|对白]：角色开口时使用
 [igs-thought:角色名|表情|服装|心里话]：角色内心独白
@@ -364,6 +364,8 @@ export const DEFAULT_SCENE_PROMPT_RULE = `【场景与台词】
 天气：只用天气类型词 晴天/多云/小雨/大雨/雷雨/小雪/大雪等
 {{weather_groups}}
 {{scene_groups}}`.trim();
+
+export const DEFAULT_SCENE_PROMPT_RULE = `${LEGACY_DEFAULT_SCENE_PROMPT_RULE_V4}\n{{previous_outfit_dna}}`;
 
 // 关闭精简注入时使用的长版原文。已保存的提示词不在这里被替换，要换新规则用「恢复默认提示词」。
 export const LEGACY_DEFAULT_SCENE_PROMPT_RULE_V3 = `[igs标签语法]
@@ -411,19 +413,23 @@ export const LEGACY_DEFAULT_SCENE_PROMPT_RULE_V3 = `[igs标签语法]
 [核心原则]
 igs标签是透明的元数据层。正文的文风、叙事密度、修辞手法、段落节奏完全由其他文风指令决定，不受标签存在的影响。标签插在段落之间，读者略去所有标签后，剩余正文应当是一篇完整的、符合当前文风要求的文章。其中，表情字段为角色可外在观察的神态表情，禁止理解成语气或说话方式。`.trim();
 
-// 只有没存过提示词时用当前默认。已存的内容保持原样，换新规则走「恢复默认提示词」。
+// 空值及逐字等于上一版默认的规则采用新默认；自定义原文保持不动。
 export function normalizeScenePromptRule(value) {
     const rule = String(value || '');
-    return rule ? rule : DEFAULT_SCENE_PROMPT_RULE;
+    return !rule || rule === LEGACY_DEFAULT_SCENE_PROMPT_RULE_V4 ? DEFAULT_SCENE_PROMPT_RULE : rule;
 }
 
 // 自定义规则缺服装占位符时 AI 不会写服装栏；只提示，不改写用户规则。
 export const PROMPT_RULE_OUTFIT_HINT = '当前为自定义规则，未包含服装栏说明；如需服装差分可恢复默认或手动添加 {{outfit_groups}}';
+export const PROMPT_RULE_OUTFIT_DNA_HINT = '可添加 {{previous_outfit_dna}}，注入上一轮出场角色对应衣装的已保存服装 DNA 和延续说明；无可用 DNA 的衣装不显示。';
 
 export function scenePromptRuleOutfitHint(rule) {
-    return String(rule || '').includes('{{outfit_groups}}') ? '' : PROMPT_RULE_OUTFIT_HINT;
+    const text = String(rule || '');
+    return [text.includes('{{outfit_groups}}') ? '' : PROMPT_RULE_OUTFIT_HINT,
+        text.includes('{{previous_outfit_dna}}') ? '' : PROMPT_RULE_OUTFIT_DNA_HINT]
+        .filter(Boolean).join('\n');
 }
 
 // 规则原文里的 {{mood_groups}} 等占位符酒馆不认识，所以提醒用「复制到酒馆预设」拿词表已展开的版本，而不是直接复制输入框。
-export const PROMPT_RULE_PRESET_HINT = '也可点击「复制到酒馆预设」，将词表已展开的完整规则粘贴到酒馆预设中使用；粘贴后请关闭上方开关，以免重复发送。';
-export const PROMPT_RULE_OFF_HINT = '自动注入已关闭，聊天模型将不再收到这段规则。请将「复制到酒馆预设」的内容粘贴到酒馆预设中，否则 AI 不会输出场景与台词标签，背景与立绘将无法切换；场景、表情或服装有变动后需重新复制。';
+export const PROMPT_RULE_PRESET_HINT = '也可点击「复制到酒馆预设」，将占位符已展开的完整规则粘贴到酒馆预设中使用；粘贴后请关闭上方开关，以免重复发送。{{previous_outfit_dna}} 自动注入时逐轮刷新，复制结果只是当时快照，之后需重新复制。';
+export const PROMPT_RULE_OFF_HINT = '自动注入已关闭，聊天模型将不再收到这段规则。请将「复制到酒馆预设」的内容粘贴到酒馆预设中，否则 AI 不会输出场景与台词标签，背景与立绘将无法切换；词表或上一轮衣装有变动后需重新复制，静态快照不会逐轮刷新。';

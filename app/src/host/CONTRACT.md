@@ -29,6 +29,7 @@
 - 标签语法注入（`prompt-injector.js`，由 `core/bootstrap.js` 的 `syncSceneAssetsInjection` 驱动）：`bridge.sceneAssets.promptPlacement` 默认 `system`，主规则以 `IN_PROMPT` 写入 `igs-scene-assets-format-rule`（相对静态、可命中前缀缓存），本轮提醒与按需展开的块、交互摘要以 `IN_CHAT` depth 0 写入 `igs-scene-assets-depth0`；`depth0` 为旧行为，两段合并成一条 `IN_CHAT` depth 0。`clear()` 同时清两个 key。酒馆助手回退只有聊天内位置，始终合并。`bridge.sceneAssets.promptRuleEnabled === false` 时主规则不含【场景与台词】块（用户改由酒馆预设提供），其余已开启的语法块照常注入，都没有时两个 key 都清掉。
 - `bridge.sceneAssets.promptAdaptive` 默认开：`GENERATION_STARTED` 时按本轮上下文（`prompt-context.js`：最近 12 层 AI 正文、输入框或最近一条用户消息、角色卡名与群聊成员）重算，`impersonate` / `quiet` 生成期间清空，`GENERATION_ENDED` / `GENERATION_STOPPED` 与换聊天时恢复；预算上限约 1500 token，按「场景 > 文字演出 > 演出 > 物品 > 聊天 > 日常 > 战斗 > 亲密」填入，超出的块降级为索引行。关闭时按旧版全量拼接（未自定义的场景规则用 V3 长版原文），与改版前逐字一致，代写与静默生成也不清空。
 
+- 正文衣装上下文由 `prompt-context.js` 提供当前聊天内、排除用户与系统消息后的最近 AI 文本窗口，最后一条为目标楼层，前面的仅用于衣装继承。`syncSceneAssetsInjection` 将同一正文过滤及替换配置传给占位符展开；按需与旧拼接入口均支持 `{{previous_outfit_dna}}`，关闭场景规则时不注入。切聊天及生成事件重算，不缓存上一聊天的衣装；设置页复制共用上下文入口，复制文本不自动刷新。
 ## 输入发送契约
 
 - 写入酒馆输入框。
