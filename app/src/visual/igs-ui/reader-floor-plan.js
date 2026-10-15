@@ -156,7 +156,9 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
     const castAliases = {};
     // 手动指定的 USER 立绘角色（须在名单里）：酒馆用户名在本次解析中归到它名下，只改这份新拼的别名表，不碰存储。
     const userCharacter = String(sceneAssets?.userCharacter || '').trim();
-    const userCharKey = userCharacter && Object.hasOwn(castCharacters, userCharacter) ? userCharacter : '';
+    // 名单含默认槽或衣柜里有图都算：换装后的立绘只登记在衣柜，不影响「你」开头的旁白换成主角。
+    const userCharKey = userCharacter && (Object.hasOwn(castCharacters, userCharacter)
+        || Object.keys(outfitsOfCharacter(sceneAssets?.characterOutfits, sceneAssets?.characterAliases, userCharacter).outfits).length > 0) ? userCharacter : '';
     for (const map of [generatedLib.characterAliases, sceneAssets?.characterAliases]) {
         for (const [key, list] of Object.entries(map && typeof map === 'object' ? map : {})) {
             if (Array.isArray(list)) castAliases[key] = [...(castAliases[key] || []), ...list];

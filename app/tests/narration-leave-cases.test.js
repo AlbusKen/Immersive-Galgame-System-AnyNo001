@@ -279,3 +279,25 @@ test('楼首换场：本楼还没写到衣服时取同场景往后第一次写�
     assert.equal(outfits({ scene: '正殿', time: '白天' }), '睡衣');
     assert.equal(outfits({ scene: '寝殿', time: '深夜' }), '朝服');
 });
+
+
+test('User 立绘角色只有衣柜图时，「你」开头的旁白页照常换成主角', () => {
+    const segs = ['[小雪]：你来了。', '你在梦中漫步，四周是无尽的花海。'];
+    const source = '[igs-char:小雪|平和|你来了。]\n' + segs[1];
+    const floor = prepareReaderFloor({ text: source, segments: segs,
+        extracted: { sceneDirectives: extractSceneDirectives(source).directives, markerLayoutSource: source },
+        payload: { raw: source, recentCast: [] }, scene: { speaker: '' },
+        readerSettings: { _sceneAssets: { enabled: true, userCharacter: '白墨', characters: { 小雪: { 平和: 'x' } },
+            characterOutfits: { 白墨: { 校服: { moods: { 平和: 'u' } } } }, characterAliases: {} } }, userName: '白墨' });
+    assert.deepEqual(floor.pages.map(p => p.spriteChar), ['小雪', '白墨']);
+});
+
+test('User 立绘角色既无默认槽也无衣柜图时，「你」开头旁白页仍不点名主角', () => {
+    const segs = ['[小雪]：你来了。', '你在梦中漫步，四周是无尽的花海。'];
+    const source = '[igs-char:小雪|平和|你来了。]\n' + segs[1];
+    const floor = prepareReaderFloor({ text: source, segments: segs,
+        extracted: { sceneDirectives: extractSceneDirectives(source).directives, markerLayoutSource: source },
+        payload: { raw: source, recentCast: [] }, scene: { speaker: '' },
+        readerSettings: { _sceneAssets: { enabled: true, userCharacter: '白墨', characters: { 小雪: { 平和: 'x' } }, characterAliases: {} } }, userName: '白墨' });
+    assert.deepEqual(floor.pages.map(p => p.spriteChar), ['小雪', '小雪']);
+});
