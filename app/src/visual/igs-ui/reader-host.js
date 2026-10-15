@@ -51,7 +51,8 @@ import { isTtsSpeaking, replayTts, setTtsErrorHandler, stopTts } from './tts.js'
 import { playUiSfx } from './ui-sfx.js';
 import { findLastDreadLevel } from '../../scene/horror.js';
 import { parseHtmlCardMarker } from '../../scene/html-cards.js';
-import { resolveBackgroundAsset, resolveSpriteAsset, resolveNudeSpriteAsset, isGeneratedAssetUrl, bindGeneratedBackground, isNonSpriteSpeaker } from '../../scene/asset-match.js';
+import { resolveBackgroundAsset, resolveNudeSpriteAsset, isGeneratedAssetUrl, bindGeneratedBackground, isNonSpriteSpeaker } from '../../scene/asset-match.js';
+import { resolveReaderSpriteAsset } from './reader-sprite-asset.js';
 import { STAGE_CAST_MAX_SEATS, STAGE_CAST_SCAN_LIMIT, pickCastMembers, resolveCastOffset, resolveStageCast } from '../../scene/stage-cast.js';
 import { normalizeStageCastSettings } from './stage-direction-settings.js';
 import { resolveRomanceRivalTarget } from './romance-settings.js';
@@ -412,6 +413,8 @@ export function createIgsReaderHost(options = {}) {
         ? options.onGeneratedAssetUpdated((detail) => {
             const settings = state.activeSettings;
             const imageLoaded = Boolean(detail && detail.reason === 'image-loaded');
+            // 新素材或状态变化后重新收集本楼图源，未出场的临时立绘也参与预取。
+            if (!imageLoaded) floorAssetPlan = { key: '', urls: [] };
             if (state.activeReader) {
                 if (imageLoaded) warmActiveFloorImages();
                 if (settings) readerStaleBehindSettings = true;
@@ -3241,7 +3244,7 @@ export function createIgsReaderHost(options = {}) {
         // 对手立绘：素材模式下按对手名取默认立绘，供遭遇演出与打对手的出招使用；找不到就不显示。
         const battleFoe = pageFx.battle && pageFx.battle.foe;
         if (battleContext && battleFoe && sceneAssets && sceneAssets.enabled) {
-            pageFx.foeImage = resolveGenerated(resolveSpriteAsset(battleFoe, '', assetMatchCtx).url) || '';
+            pageFx.foeImage = resolveGenerated(resolveReaderSpriteAsset(battleFoe, '', assetMatchCtx).url) || '';
         }
         // NSFW 页整楼挂图；SFW 页只在事件那几页显示，之后回到背景和立绘。
         const illustrationHit = /(?:\[igs-img:|<IMG>)/i.test(sceneSourceForOffset)
@@ -3518,7 +3521,7 @@ export function createIgsReaderHost(options = {}) {
                 };
                 const wantedOutfit = outfitFor(spriteChar);
                 const outfitWhy = { outfitSource: (outfitTrace && outfitTrace.source) || '', outfitReason: (outfitTrace && outfitTrace.reason) || '', outfitOffset };
-                const spriteHit = resolveSpriteAsset(spriteChar, spriteMood, assetMatchCtx, wantedOutfit);
+                const spriteHit = resolveReaderSpriteAsset(spriteChar, spriteMood, assetMatchCtx, wantedOutfit);
                 spriteMatch = { character: spriteHit.character || spriteChar, mood: spriteMood || '',
                     requestedOutfit: wantedOutfit || '', outfit: spriteHit.outfit || '',
                     source: spriteHit.source, selectionSource: spriteHit.selectionSource || '',
@@ -3555,7 +3558,7 @@ export function createIgsReaderHost(options = {}) {
                         pin: castPin,
                         seats: STAGE_CAST_MAX_SEATS - (spriteImage ? 1 : 0),
                         resolve: (m) => {
-                            const hit = resolveSpriteAsset(m.character, m.mood, assetMatchCtx, outfitFor(m.character));
+                            const hit = resolveReaderSpriteAsset(m.character, m.mood, assetMatchCtx, outfitFor(m.character));
                             const image = resolveGenerated(hit.url);
                             const character = hit.character || m.character;
                             return image ? { character, mood: hit.slot || m.mood, outfit: withFormGender(character, hit.outfit || ''), image } : null;

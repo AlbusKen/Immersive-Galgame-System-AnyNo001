@@ -1128,6 +1128,89 @@ test('gate:dna-floor-review:手机审核点击使用权威候选和统一采用�
     }
 });
 
+test('gate:assets:reader-shows-saved-items-before-generation-finishes', async () => {
+    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
+    for (const view of ['reader', 'review']) {
+        const document = createFakeDocument();
+        const raw = '[igs-scene:废弃工厂|夜晚|雨]\n雨声很大。\n[igs-char:Alice|平和|Hello.]\n[igs-char:Bob|平和|Hi.]';
+        const floor = { chatId: 'chat-live', messageId: 39, swipeId: 0, isAi: true, isLatest: true, text: raw };
+        const store = createMemoryGeneratedAssetStore(), releases = [];
+        const bridge = { sceneAssets: { enabled: true, scenes: {}, characters: {} },
+            autoIllustration: { assets: { backgroundEnabled: true, spriteEnabled: true } } };
+        const before = structuredClone(bridge);
+        let settingsState = { bridge, readerSettings: { stageCast: { enabled: true } } };
+        let update, id = 0, settled = false;
+        const service = createAssetGenerationService({ store, minBodyChars: 0,
+            messageHost: { getChatId: () => floor.chatId, readFloor: () => floor, readPreviousAiTexts: () => [] },
+            llm: { async request() { return 'id: bg1\ntags: factory\nid: ch2\ntags: woman\nid: ch3\ntags: man'; } },
+            nai: { generate() { return new Promise(resolve => releases.push(resolve)); } },
+            matte: async url => url, newId: () => `live-${++id}`, getSettings: () => bridge,
+            events: { emit: (_name, detail) => update?.(detail) },
+        });
+        const host = createIgsReaderHost({ global: { document }, generatedAssets: service,
+            getUnifiedSettings: () => settingsState,
+            saveUnifiedSettings: next => { settingsState = structuredClone(next); return { ok: true }; },
+            getIllustrationSource: () => floor,
+            onGeneratedAssetUpdated: listener => { update = listener; return () => { update = null; }; },
+        });
+        const waitFor = async predicate => {
+            for (let i = 0; i < 50 && !predicate(); i++) await new Promise(resolve => setTimeout(resolve, 5));
+            assert.ok(predicate(), `中间态未出现：${view}`);
+        };
+        const content = () => host.getState().activeReader.snapshot.content;
+        let job;
+        try {
+            const opened = host.openReader({ messageId: 39, message: { id: 39, text: raw }, raw }, { mode: 'pc' });
+            assert.equal(opened.ok, true);
+            for (let i = 0; i < 8 && content().speaker !== 'Alice'; i++) await opened.controller.invokeAction('next');
+            assert.equal(content().speaker, 'Alice');
+            assert.equal(content().spriteImage, null);
+            const settings = view === 'review' ? host.openSettings({ tab: 'scene', mode: 'pc' }).controller : null;
+            settings?.switchSceneSubTab('review');
+            const savedAssetsBefore = settings ? structuredClone(settings.getSnapshot().draft.bridge.sceneAssets) : null;
+            job = service.processMessage(39).finally(() => { settled = true; });
+            await waitFor(() => releases.length === 1);
+            releases[0]({ ok: true, dataUrl: 'data:image/png;base64,BG' });
+            await waitFor(() => releases.length === 2);
+            assert.equal(settled, false);
+            assert.equal(service.listReview('chat-live|39|0').length, 1);
+            if (settings) assert.match(settings.getSnapshot().html, /废弃工厂/);
+            else assert.equal(content().backgroundImage, 'data:image/png;base64,BG');
+            releases[1]({ ok: true, dataUrl: 'data:image/png;base64,ALICE' });
+            await waitFor(() => releases.length === 3);
+            assert.equal(settled, false, '后一项尚未完成');
+            assert.equal((await store.getFloor('chat-live|39|0')).status, 'planning');
+            assert.equal(service.listReview('chat-live|39|0').length, 2);
+            if (settings) {
+                assert.match(settings.getSnapshot().html, /data:image\/png;base64,ALICE/);
+                assert.equal(settings.close().ok, true, '设置保存成功后关闭并补刷舞台');
+                assert.deepEqual(settingsState.bridge.sceneAssets, savedAssetsBefore, '保存不额外采用候选');
+            }
+            assert.equal(content().spriteImage, 'data:image/png;base64,ALICE',
+                JSON.stringify({ view, match: content().spriteMatch, speaker: content().speaker }));
+            assert.equal(content().spriteMatch.source, 'temp');
+            assert.equal(content().spriteOutfit, '');
+            assert.deepEqual(bridge, before, '逐项显示不采用候选、登记衣装或设置默认');
+            await service.setStatus('chat-live|char|Alice', 'chat');
+            assert.equal(content().spriteImage, 'data:image/png;base64,ALICE');
+            releases[2]({ ok: true, dataUrl: 'data:image/png;base64,BOB' });
+            assert.equal((await job).count, 3);
+            for (let i = 0; i < 8 && content().speaker !== 'Bob'; i++) await opened.controller.invokeAction('next');
+            assert.equal(content().spriteImage, 'data:image/png;base64,BOB');
+            assert.ok(content().castSprites.some(row => row.character === 'Alice'));
+            await service.setStatus('chat-live|char|Alice', 'discarded');
+            assert.ok(!content().castSprites.some(row => row.character === 'Alice'));
+            assert.deepEqual(bridge, before);
+        } finally {
+            for (const release of releases) release({ ok: false, error: 'fixture-stop' });
+            if (job) await job;
+            host.destroy();
+        }
+    }
+});
+
+
 test('gate:assets:reader-manual-retries-settled-floor', async () => {
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');

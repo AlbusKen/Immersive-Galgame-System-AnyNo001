@@ -46,3 +46,31 @@ test('gate:floor-assets:skips-narrators-and-keeps-inherited-background', () => {
     });
     assert.deepEqual(urls, ['class.png', 'igs-gen:base']);
 });
+test('gate:floor-assets:chat-temp-display-is-separate-from-formal-outfits', async () => {
+    const { resolveReaderSpriteAsset } = await import('../src/visual/igs-ui/reader-sprite-asset.js');
+    const { resolveSpriteAsset } = await import('../src/scene/asset-match.js');
+    const assets = structuredClone(sceneAssets);
+    assets.characters.Alice = {};
+    assets.characterAliases.Alice = ['小爱'];
+    const before = structuredClone(assets);
+    let available = 'available';
+    const ctx = { sceneAssets: assets, tempSprite: name => name === 'Alice' ? 'igs-gen:pending' : '',
+        imageAvailability: () => ({ status: available }) };
+    assert.equal(resolveSpriteAsset('小爱', '', ctx).url, '', '正式衣装解析不采用临时图');
+    const hit = resolveReaderSpriteAsset('小爱', '平和', ctx);
+    assert.deepEqual([hit.url, hit.source, hit.outfit], ['igs-gen:pending', 'temp', '']);
+    assert.deepEqual(collectFloorAssetUrls({ source: '[igs-char:小爱|平和|Hello.]',
+        sceneAssets: assets, assetMatchCtx: ctx }), ['igs-gen:pending']);
+    assert.equal(resolveReaderSpriteAsset('小爱', '', ctx, '礼服').url, '', '显式衣装不能借临时图冒充命中');
+    for (available of ['missing', 'read-error', 'decode-error'])
+        assert.equal(resolveReaderSpriteAsset('小爱', '', ctx).url, '', available);
+    available = 'available';
+    assets.characterOutfits.Alice = { 常服: { moods: { 平和: 'saved.png' } } };
+    assets.characterDefaultOutfits.Alice = { version: 1, outfitName: '常服' };
+    assert.equal(resolveReaderSpriteAsset('小爱', '', ctx).url, 'saved.png', '正式图优先');
+    available = 'read-error';
+    assert.equal(resolveReaderSpriteAsset('小爱', '', ctx).url, '', '正式图读取失败不换成临时图');
+    delete assets.characterOutfits.Alice;
+    delete assets.characterDefaultOutfits.Alice;
+    assert.deepEqual(assets, before, '显示和预取不修改资料');
+});

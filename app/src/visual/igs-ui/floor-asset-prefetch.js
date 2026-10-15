@@ -1,7 +1,8 @@
 import { extractSceneDirectives, classifySceneKey } from '../../scene/scene-directives.js';
-import { resolveBackgroundAsset, resolveNudeSpriteAsset, resolveSpriteAsset, isNonSpriteSpeaker } from '../../scene/asset-match.js';
+import { resolveBackgroundAsset, resolveNudeSpriteAsset, isNonSpriteSpeaker } from '../../scene/asset-match.js';
 import { createOutfitResolver, resolveSpriteOutfit } from '../../scene/character-outfits.js';
 import { isSystemRole } from './system-role.js';
+import { resolveReaderSpriteAsset } from './reader-sprite-asset.js';
 
 function pushUrl(urls, seen, url) {
     const source = String(url || '').trim();
@@ -67,7 +68,7 @@ export function collectFloorAssetUrls({
         const name = String(directive.character || '').trim();
         if (!name || isNonSpriteSpeaker(name) || isSystemRole(name, systemRole)) continue;
         const outfit = outfitFor(name, Number(directive.offset));
-        pushUrl(urls, seen, resolveSpriteAsset(name, directive.mood || '', ctx, outfit).url);
+        pushUrl(urls, seen, resolveReaderSpriteAsset(name, directive.mood || '', ctx, outfit).url);
         const place = sceneBefore(directives, Number(directive.offset), inheritedScene);
         if (place.nsfw) pushUrl(urls, seen, resolveNudeSpriteAsset(name, directive.mood || '', ctx).url);
     }
