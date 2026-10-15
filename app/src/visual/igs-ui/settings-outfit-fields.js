@@ -471,6 +471,7 @@ export const OUTFIT_SETTINGS_STYLE_TEXT = `
 .igs-char-title{display:flex;align-items:baseline;gap:8px;flex:1 1 120px;min-width:0;padding:4px 0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .igs-char-title:focus-visible{outline:2px solid var(--igs-settings-line-strong);outline-offset:2px;border-radius:var(--igs-settings-radius-small)}
 .igs-char-name{flex-shrink:0;font-size:14px;font-weight:600;color:var(--igs-settings-ink)}
+.igs-char-user-tag{flex-shrink:0;padding:0 5px;border:1px solid var(--igs-settings-line-strong);border-radius:var(--igs-settings-radius-small);font-size:10px;line-height:15px;color:var(--igs-settings-ink-3)}
 .igs-char-aliases{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--igs-settings-ink-4)}
 .igs-char-info-row{display:flex;align-items:center;gap:8px;min-width:0}
 .igs-char-info-row.is-block{flex-direction:column;align-items:stretch;gap:6px;padding-top:6px;border-top:1px solid var(--igs-settings-line)}

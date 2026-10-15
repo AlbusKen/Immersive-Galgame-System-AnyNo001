@@ -54,9 +54,16 @@ function ownedDialogSkin(card) {
     return skin ? { dialogSkin: skin } : null;
 }
 
+// 指定某角色为 USER 立绘（角色名）：跟着角色卡存，卡里写过（含清空）就盖过全局。
+function ownedUserCharacter(card) {
+    if (!card || typeof card !== 'object' || Array.isArray(card)) return null;
+    return typeof card.userCharacter === 'string' ? { userCharacter: card.userCharacter.trim() } : null;
+}
+
 export function libraryHasContent(card) {
     const lib = plain(card);
     if (ownedWorldview(lib) || ownedDialogSkin(lib)) return true;
+    if (ownedUserCharacter(lib)?.userCharacter) return true;
     for (const field of LIBRARY_FIELDS) {
         if (Object.keys(plain(lib[field])).length) return true;
     }
@@ -150,6 +157,7 @@ export function effectiveSceneAssets(sceneAssets, scopeKey) {
         ...rest,
         ...(ownedWorldview(card) || {}),
         ...(ownedDialogSkin(card) || {}),
+        ...(ownedUserCharacter(card) || {}),
         scenes: over('scenes'),
         characters: over('characters'),
         characterAliases: over('characterAliases'),
@@ -192,6 +200,7 @@ export function normalizeAssetCards(sceneAssets) {
             statusAvatars: plain(card.statusAvatars),
             ...(ownedWorldview(card) || {}),
             ...(ownedDialogSkin(card) || {}),
+            ...(ownedUserCharacter(card) || {}),
         };
     }
     sceneAssets.cards = out;

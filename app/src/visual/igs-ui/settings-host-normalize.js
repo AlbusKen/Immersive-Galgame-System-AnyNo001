@@ -151,6 +151,8 @@ export function normalizeSceneAssets(value) {
     normalized.characterHouses = normalizeCharacterHouses(normalized.characterHouses);
     normalized.characterVoices = normalizeCharacterVoices(normalized.characterVoices);
     normalized.characterSpriteScales = normalizeCharacterSpriteScales(normalized.characterSpriteScales);
+    // 指定为 USER 立绘的角色名，空 = 不指定。
+    normalized.userCharacter = typeof normalized.userCharacter === 'string' ? normalized.userCharacter.trim() : '';
     normalized.wardrobe = normalizeWardrobe(normalized.wardrobe);
     normalized.eventCgs = normalizeEventCgs(normalized.eventCgs);
     normalized.moodGroups = normalizeMoodGroups(normalized.moodGroups);

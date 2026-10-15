@@ -4021,7 +4021,7 @@ export function createIgsReaderHost(options = {}) {
                 return;
             }
             // Focused controls own their keyboard input; sliders must not turn pages.
-            if (event.key !== 'Escape' && event.target?.closest?.('button, input, select, textarea, [role="button"], [role="slider"]')) return;
+            if (event.key !== 'Escape' && event.target?.closest?.('button, input, select, textarea, [role="button"], [role="slider"], .igs-dfx-document-scroll, .igs-ancient-panel-scroll')) return;
             const input = state.activeReader.dom && state.activeReader.dom.input;
             if (doc.activeElement === input && event.key !== 'Escape') return;
             if (event.key === 'Escape') {

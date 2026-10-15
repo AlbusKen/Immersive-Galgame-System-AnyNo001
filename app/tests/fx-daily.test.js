@@ -284,20 +284,23 @@ test('gate: daily-fx ancient era swaps clock, sticky note and letter for incense
     assert.equal(cards(r).length, 1);
     const [skip] = cards(r);
     assert.match(skip.className, /is-ancient/);
-    assert.match(skip.innerHTML, /igs-dfx-incense/);
+    assert.match(skip.innerHTML, /<svg class="new-incense"/);
+    assert.match(skip.innerHTML, /d="M60 55V172" stroke="#c9c2a8"/);
+    assert.match(skip.innerHTML, /dur="2900ms"/);
     assert.doesNotMatch(skip.innerHTML, /igs-dfx-clock/);
     r.advance(3100);
     assert.deepEqual(sounds, ['drum', 'paper']);
     assert.equal(cards(r).length, 1);
     const [note] = cards(r);
-    assert.match(note.innerHTML, /igs-dfx-scrap/);
+    assert.match(note.innerHTML, /igs-dfx-document-paper/);
+    assert.doesNotMatch(note.innerHTML, /igs-dfx-document-seal/);
     assert.doesNotMatch(note.innerHTML, /igs-dfx-tape/);
     result = renderDailyFx(r.root, ancient('[igs-fx:letter|沈清秋|见字如面]', 1), r.ctx);
     const [letter] = cards(r);
     assert.match(letter.className, /igs-dfx-letter is-ancient/);
-    assert.match(letter.innerHTML, /igs-dfx-letter-sign">沈清秋</);
-    assert.match(DAILY_FX_STYLE_TEXT, /\.igs-dfx-letter\.is-ancient \.igs-dfx-paper\{writing-mode:vertical-rl/);
-    assert.match(DAILY_FX_STYLE_TEXT, /@keyframes igs-dfx-burn/);
+    assert.match(letter.innerHTML, /igs-dfx-document-sign">沈清秋</);
+    assert.match(DAILY_FX_STYLE_TEXT, /\.igs-dfx-document-text\{[^}]*writing-mode:vertical-rl/);
+    assert.match(DAILY_FX_STYLE_TEXT, /\.igs-dfx-timeskip \.new-incense\{/);
     // 现代模式不受影响。
     sounds.length = 0;
     renderDailyFx(r.root, snap(fxOf('[igs-fx:timeskip|三小时后]'), {}, 2), r.ctx);

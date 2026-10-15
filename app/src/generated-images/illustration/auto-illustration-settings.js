@@ -68,6 +68,8 @@ export function normalizeAutoIllustrationSettings(value) {
             spriteEnabled: bool(assets.spriteEnabled),
             backgroundEnabled: bool(assets.backgroundEnabled),
             strictMatch: bool(assets.strictMatch),
+            // 默认关：现有差分是换词重画（随机种子），先画白天暂不提升画质，等图生图接好再开。
+            dayFirst: bool(assets.dayFirst),
             maxPerFloor: clampInt(assets.maxPerFloor, 1, 16, 2),
             spriteSize: str(assets.spriteSize, '832x1216') || '832x1216',
             backgroundSize: str(assets.backgroundSize, '1216x832') || '1216x832',

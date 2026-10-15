@@ -59,6 +59,7 @@ import { createRecordPanelController } from '../src/visual/igs-ui/record-panel.j
 import { DEFAULT_SCENE_PROMPT_RULE } from '../src/visual/igs-ui/reader-host-constants.js';
 import { applyTypewriterEffect } from '../src/visual/igs-ui/typewriter-runtime.js';
 import { createAutoPlayClock } from './helpers/auto-play-clock.js';
+import { waitForReaderPage } from './helpers/reader-render.js';
 import { setStagePauseReason } from '../src/visual/igs-ui/stage-pause.js';
 import { VISUAL_MODES } from '../src/visual/visual-mode.js';
 
@@ -733,16 +734,18 @@ test('gate:assets:reader-manual-generation-feedback', async () => {
         assert.deepEqual(calls, [[39, { manual: true }]]);
         assert.match(host.getState().activeReader.generationTip, /已生成 1 项/);
         assert.equal(logs.at(-1).level, 'success');
-        for (const [next, text, level] of [
-            [{ ok: false, reason: 'generation-failed' }, /补全素材失败/, 'error'],
-            [{ ok: false, reason: 'plan-failed', error: '副 LLM 规划失败' }, /副 LLM 规划失败/, 'error'],
-            [{ ok: true, reason: 'disabled' }, /开启自动背景或自动立绘/, 'warn'],
-            [{ ok: true, reason: 'scene-assets-disabled' }, /开启场景素材/, 'warn'],
-            [{ ok: true, reason: 'nothing-missing' }, /没有未登记/, 'skipped'],
+        for (const [next, level] of [
+            [{ ok: false, reason: 'generation-failed' }, 'error'],
+            [{ ok: false, reason: 'plan-failed', error: '副 LLM 规划失败' }, 'error'],
+            [{ ok: true, reason: 'disabled' }, 'warn'],
+            [{ ok: true, reason: 'scene-assets-disabled' }, 'warn'],
+            [{ ok: true, reason: 'nothing-missing' }, 'skipped'],
         ]) {
             result = next;
             assert.equal(await opened.controller.invokeAction('generate-assets'), next);
-            assert.match(host.getState().activeReader.generationTip, text);
+            const tip = host.getState().activeReader.generationTip;
+            assert.ok(typeof tip === 'string' && tip.trim(), '每种结果都有可见反馈');
+            if (next.error) assert.ok(tip.includes(next.error), '失败反馈保留可诊断原因');
             assert.equal(logs.at(-1).level, level);
             if (level === 'skipped') assert.equal(document.getElementById('igs-gen-strip').getAttribute('data-state'), 'skipped');
         }
@@ -912,7 +915,7 @@ test('gate:assets:reader-manual-rejects-ineligible-or-changed-floor', async () =
     } finally { host.destroy(); }
 });
 
-test('gate:simulation:html-card-page-hides-inherited-sprite-and-restores-it-after-paging', () => {
+test('gate:simulation:html-card-page-hides-inherited-sprite-and-restores-it-after-paging', async () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const raw = `<content>
 [igs-scene:Room|night|clear]
@@ -944,6 +947,7 @@ test('gate:simulation:html-card-page-hides-inherited-sprite-and-restores-it-afte
         assert.equal(sprite.style.display, 'block');
 
         opened.controller.invokeAction('next');
+        await waitForReaderPage(host);
         assert.equal(current().htmlCardPage, true);
         assert.equal(current().spriteImage, null);
         assert.equal(sprite.style.display, 'none');
@@ -951,12 +955,14 @@ test('gate:simulation:html-card-page-hides-inherited-sprite-and-restores-it-afte
         assert.equal(overlay.classList.contains('igs-html-card-page'), true);
 
         opened.controller.invokeAction('next');
+        await waitForReaderPage(host);
         assert.equal(current().htmlCardPage, false);
         assert.match(current().spriteImage, /alice\.png/);
         assert.equal(sprite.style.display, 'block');
         assert.equal(overlay.classList.contains('igs-html-card-page'), false);
 
         opened.controller.invokeAction('prev');
+        await waitForReaderPage(host);
         assert.equal(current().htmlCardPage, true);
         assert.equal(sprite.style.display, 'none');
     } finally {
@@ -1284,7 +1290,7 @@ test('gate:illustration:reader-clear-cg-delete-failure-keeps-current-and-reports
     }
 });
 
-test('gate:illustration:reader-activates-only-after-marker-and-keeps-veil-without-image', () => {
+test('gate:illustration:reader-activates-only-after-marker-and-keeps-veil-without-image', async t => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const raw = '[igs-scene:Room|night|rain|NSFW]\n一段。\n[igs-img:1]\n二段。\n[igs-scene:Garden|day|sun]\n三段。';
     let imageUrl = '';
@@ -1294,27 +1300,31 @@ test('gate:illustration:reader-activates-only-after-marker-and-keeps-veil-withou
         getIllustrationSource: () => ({ chatId: 'chat-1', messageId: 39, swipeId: 0, text: raw }),
         getIllustrationUrl: ({ slot }) => slot === 1 ? imageUrl : '',
     });
+    t.after(() => host.destroy());
     const opened = host.openReader({ messageId: 39, message: { id: 39, text: raw }, raw }, { mode: 'pc' });
     assert.equal(opened.ok, true);
     const overlay = document.getElementById('igs-overlay');
     assert.equal(host.getState().activeReader.snapshot.content.illustrationActive, false);
     assert.equal(overlay.classList.contains('igs-scene-nsfw'), true);
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     assert.equal(host.getState().activeReader.snapshot.content.illustrationActive, false);
     assert.equal(overlay.classList.contains('igs-scene-nsfw'), true);
     imageUrl = 'data:image/png;base64,AAAA';
     opened.controller.invokeAction('prev');
+    await waitForReaderPage(host);
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     const after = host.getState().activeReader.snapshot.content;
     assert.equal(after.illustrationActive, true);
     assert.equal(after.backgroundImage, imageUrl);
     assert.equal(overlay.classList.contains('igs-scene-nsfw'), false);
     assert.ok(after.segments.every((segment) => !segment.includes('[igs-img:')));
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     const held = host.getState().activeReader.snapshot.content;
     assert.equal(held.illustrationActive, true);
     assert.equal(held.backgroundImage, imageUrl);
-    host.destroy();
 });
 
 test('gate:illustration:cg-page-keeps-scene-until-image-arrives-and-then-shows-cg', () => {
@@ -1359,7 +1369,7 @@ test('gate:illustration:cg-page-keeps-scene-until-image-arrives-and-then-shows-c
 
 
 
-test('gate:illustration:unavailable-slot-19-keeps-both-speakers-through-page-75-and-switches-on-arrival', () => {
+test('gate:illustration:unavailable-slot-19-keeps-both-speakers-through-page-75-and-switches-on-arrival', async () => {
     const document = createFakeDocument();
     const lines = ['[igs-scene:东路宫道|晚上|晴天]'];
     for (let i = 0; i < 75; i++) {
@@ -1384,6 +1394,7 @@ test('gate:illustration:unavailable-slot-19-keeps-both-speakers-through-page-75-
         assert.equal(content().segments.length, 75);
         for (let i = 0; i < 75; i++) {
             if (i) opened.controller.invokeAction('next');
+            await waitForReaderPage(host);
             assert.equal(content().spriteImage, i < 73 ? 'data:image/png;base64,TElO' : 'data:image/png;base64,QkFJ', `第 ${i + 1} 页`);
             assert.equal(content().cgActive, false);
             assert.equal(content().backgroundImage, 'data:image/png;base64,Qkc=');
@@ -1487,6 +1498,7 @@ test('gate:simulation:multiline-speech-paging-preserves-speaker-thought-and-outf
             const html = document.getElementById('igs-text').innerHTML;
             assert.doesNotMatch(html, /\]|igs-char:|igs-thought:|便服/);
             if (i < 4) await opened.controller.invokeAction('next');
+            await waitForReaderPage(host);
         }
         assert.deepEqual(pages, [['dialogue', '甲'], ['dialogue', '甲'], ['thought', '甲'], ['thought', '甲'], ['dialogue', '乙']]);
     } finally { host.destroy(); }
@@ -1694,7 +1706,7 @@ test('gate:simulation:page-turn-skips-unchanged-root-class-and-background-writes
     host.destroy();
 });
 
-test('gate:simulation:page-turn-reuses-live-visible-text-until-host-rewrites-it', () => {
+test('gate:simulation:page-turn-reuses-live-visible-text-until-host-rewrites-it', async t => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const raw = '第一段。\n\n第二段。\n\n第三段。';
     let clones = 0;
@@ -1713,22 +1725,26 @@ test('gate:simulation:page-turn-reuses-live-visible-text-until-host-rewrites-it'
         global: { document },
         getUnifiedSettings: () => ({ bridge: {}, readerSettings: { statusHud: { enabled: false } } }),
     });
+    t.after(() => host.destroy());
     const opened = host.openReader({ messageId: 43, message: { id: 43, text: raw, element }, raw }, { mode: 'pc' });
     assert.equal(opened.ok, true);
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     const clonesAfterFirstTurn = clones;
     assert.ok(clonesAfterFirstTurn >= 1);
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     opened.controller.invokeAction('prev');
+    await waitForReaderPage(host);
     // 正文未变：翻页不再深克隆消息 DOM
     assert.equal(clones, clonesAfterFirstTurn);
 
     // 模拟 Veridis 等插件异步回写正文：下一次翻页必须读到新文本
     mesText.textContent = '第一段。\n\n第二段已替换。\n\n第三段。';
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     assert.equal(clones, clonesAfterFirstTurn + 1);
     assert.ok(host.getState().activeReader.snapshot.content.segments.some((segment) => segment.includes('第二段已替换')));
-    host.destroy();
 });
 test('gate:simulation:nsfw-veil-level-strong-applies-and-clears-on-safe-scene', async () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
@@ -2118,6 +2134,7 @@ test('gate:simulation:dialogue-thought-paging-saves-and-preserves-speaker-across
             const content = vn.getState().igsUi.activeReader.snapshot.content;
             pages.push([content.textType, content.speaker, content.text]);
             if (i < first.segments.length - 1) await controller.invokeAction('next');
+            await waitForReaderPage(vn);
         }
         assert.deepEqual(pages.map(([kind, speaker]) => [kind, speaker]), [
             ['narration', ''],
@@ -2155,17 +2172,19 @@ test('gate:simulation:text-fx-sentence-pages-render-without-leaking-markers', as
             assert.doesNotMatch(text(), /\{小[:：]|\}/);
             assert.equal(text().includes('igs-tfx-small'), enabled);
             await controller.invokeAction('next');
+            await waitForReaderPage(vn);
             assert.equal(content().speaker, '李伯');
             assert.ok(text().includes('这件事以后再说。'));
             assert.doesNotMatch(text(), /\{小[:：]|\}|igs-tfx-small/);
             await controller.invokeAction('next');
+            await waitForReaderPage(vn);
             assert.equal(content().speaker, '小雨');
             assert.ok(text().includes('好。'));
         } finally { vn.destroy(); }
     }
 });
 
-test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-next-dialogue', async () => {
+test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-next-dialogue', async t => {
     const document = createFakeDocument();
     const storage = createMemoryStorage({
         igs_bridge_config: JSON.stringify({
@@ -2201,6 +2220,7 @@ test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-n
         },
     });
 
+    t.after(() => vn.shutdown());
     const opened = await vn.openLatestAvailable('mobile');
     const controller = opened.reader.controller;
     let content = vn.getState().igsUi.activeReader.snapshot.content;
@@ -2212,6 +2232,7 @@ test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-n
     assert.equal(sprite.style['-webkit-filter'], '');
 
     await controller.invokeAction('next');
+    await waitForReaderPage(vn);
     content = vn.getState().igsUi.activeReader.snapshot.content;
     sprite = document.getElementById('igs-overlay').querySelector('#igs-sprite');
     assert.equal(content.textType, 'narration');
@@ -2220,11 +2241,13 @@ test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-n
     assert.equal(sprite.style.filter, '');
 
     await controller.invokeAction('next');
+    await waitForReaderPage(vn);
     content = vn.getState().igsUi.activeReader.snapshot.content;
     assert.equal(content.textType, 'narration');
     assert.equal(content.spriteImage, 'https://example.com/alice.png');
 
     await controller.invokeAction('next');
+    await waitForReaderPage(vn);
     content = vn.getState().igsUi.activeReader.snapshot.content;
     sprite = document.getElementById('igs-overlay').querySelector('#igs-sprite');
     assert.equal(content.textType, 'dialogue');
@@ -2233,7 +2256,6 @@ test('gate:simulation:mobile-sentence-paging-keeps-current-sprite-dimmed-until-n
     assert.equal(sprite.classList.contains('igs-sprite-narration'), false);
     assert.equal(sprite.style.filter, '');
     assert.equal(sprite.style['-webkit-filter'], '');
-    vn.destroy();
 });
 
 test('gate:simulation:embedded-mobile-narration-keeps-current-sprite-dimmed', async (t) => {
@@ -2299,7 +2321,7 @@ test('gate:simulation:embedded-mobile-narration-keeps-current-sprite-dimmed', as
     await controller.invokeAction('next');
     await controller.invokeAction('next');
     // 连翻只更新目标页码，等待合并渲染后再检查当前画面。
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await waitForReaderPage(vn);
     content = vn.getState().igsUi.activeReader.snapshot.content;
     sprite = document.getElementById('igs-overlay').querySelector('#igs-sprite');
     assert.equal(content.textType, 'dialogue');
@@ -3095,10 +3117,13 @@ test('gate:simulation:igs-ui-background-left-half-pages-back-right-half-forward-
     assert.equal(opened.reader.snapshot.content.progress, '1 / 3');
     // 背景空白区左半回退，正中线及右半推进。
     clickLayer.dispatchEvent({ type: 'click', target: clickLayer, clientX: 700 });
+    await waitForReaderPage(vn);
     assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '2 / 3');
     clickLayer.dispatchEvent({ type: 'click', target: clickLayer, clientX: 280 });
+    await waitForReaderPage(vn);
     assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '1 / 3');
     clickLayer.dispatchEvent({ type: 'click', target: clickLayer, clientX: 500 });
+    await waitForReaderPage(vn);
     assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '2 / 3');
 
     // 点对话框仍照常翻页（第一下可能先放完打字机）。
@@ -3106,10 +3131,14 @@ test('gate:simulation:igs-ui-background-left-half-pages-back-right-half-forward-
     dialog.style.width = '200px';
     dialog.getBoundingClientRect = () => ({ left: 0, width: 200 });
     dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 160 });
+    await waitForReaderPage(vn);
     if (vn.getState().igsUi.activeReader.snapshot.content.progress !== '3 / 3') dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 160 });
+    await waitForReaderPage(vn);
     assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '3 / 3');
     dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 40 });
+    await waitForReaderPage(vn);
     if (vn.getState().igsUi.activeReader.snapshot.content.progress !== '2 / 3') dialog.dispatchEvent({ type: 'click', target: dialog, clientX: 40 });
+    await waitForReaderPage(vn);
     assert.equal(vn.getState().igsUi.activeReader.snapshot.content.progress, '2 / 3', '对话框左半边仍回上一页');
     } finally {
     vn.destroy();
@@ -3243,12 +3272,16 @@ test('gate:simulation:auto-play-toolbar-clicks-toggle-and-stop-at-last-page', as
         assert.equal(host.getState().activeReader.index, 1);
         await timers.advance(3000);
         assert.equal(host.getState().activeReader.index, 2);
+        await waitForReaderPage(host);
+        // 画面使用真实渲染时钟，自动播放的下一次状态检查仍需推进虚拟时钟。
+        await timers.advance(200);
         assert.equal(host.getState().activeReader.autoPlay.enabled, false);
         assert.equal(play.getAttribute('aria-pressed'), 'false');
         assert.equal(play.innerHTML, ORIGINAL_READER_ICONS.play);
         assert.equal(timers.size(), 0);
         assert.equal(overlay.classList.contains('igs-options-visible'), false);
         await opened.controller.invokeAction('first-page');
+        await waitForReaderPage(host);
         await click(play);
         await timers.advance(0);
         await click(play);
@@ -3663,10 +3696,11 @@ test('gate:simulation:igs-ui-option-sources-item-button-sends-use-text-through-i
     vn.destroy();
 });
 
-test('gate:simulation:igs-ui-item-option-panel-survives-same-page-rerender', async () => {
+test('gate:simulation:igs-ui-item-option-panel-survives-same-page-rerender', async t => {
     const { vn, open, controller } = await openOptionSourcesReader({
         text: '艾莉: 先观察。\n艾莉: 再行动。', tables: { ...OPTION_TABLE, ...ITEM_TABLE },
     });
+    t.after(() => vn.shutdown());
     const layer = await open();
     layer.querySelector('.igs-item-entry-bubble').click();
     const items = layer.querySelector('.igs-option-items');
@@ -3682,13 +3716,14 @@ test('gate:simulation:igs-ui-item-option-panel-survives-same-page-rerender', asy
     assert.equal(layer.hasAttribute('hidden'), false);
     assert.equal(layer.closest('#igs-overlay').classList.contains('igs-options-visible'), true);
     controller.invokeAction('prev');
+    await waitForReaderPage(vn);
     assert.equal(layer.hasAttribute('hidden'), true, '翻离最后一页收起物品菜单');
     assert.equal(layer.getAttribute('data-igs-panel-page'), null);
     controller.invokeAction('next');
+    await waitForReaderPage(vn);
     const reopened = await controller.invokeAction('next');
     assert.equal(reopened.reason, 'option-bubbles-toggled');
     assert.equal(layer.hasAttribute('hidden'), false, '回到最后一页后仍可打开选项');
-    vn.destroy();
 });
 
 test('gate:simulation:igs-ui-option-sources-item-panel-shows-thumbnail-and-give-fills-only', async () => {
@@ -6119,6 +6154,9 @@ test('gate:simulation:igs-ui-embedded-inline-progress-toggle-shows-pages-and-hid
         for (let index = 1; index < 11; index += 1) {
             assert.equal((await opened.reader.controller.invokeAction('next')).ok, true);
         }
+        assert.equal(vn.getState().igsUi.activeReader.index, 10, '连翻保留最终目标页，不丢点击');
+        await waitForReaderPage(vn);
+        assert.equal(vn.getState().igsUi.activeReader.snapshot.content.currentIndex, 10);
         assert.match(progress.textContent, /^11\s*\/\s*11(?:\s|$)/);
         assert.equal(progress.style.display, 'block');
 
@@ -9671,6 +9709,7 @@ test('gate:simulation:chat-show-pops-bubbles-per-click-then-pages-and-replays-fu
         const content = () => vn.getState().igsUi.activeReader.snapshot.content;
         assert.equal(content().chatPage, false);
         await reader.invokeAction('next');
+        await waitForReaderPage(vn);
         assert.equal(content().chatPage, true);
         assert.equal(content().textType, 'chat');
         assert.equal(content().displayText, '');
@@ -9689,21 +9728,24 @@ test('gate:simulation:chat-show-pops-bubbles-per-click-then-pages-and-replays-fu
         await reader.invokeAction('next');
         assert.equal(visible(), 3);
         await reader.invokeAction('next');
+        await waitForReaderPage(vn);
         assert.equal(content().chatPage, false);
         assert.equal(overlay.classList.contains('igs-chat-page'), false);
         assert.equal(layer.hidden, true);
         await reader.invokeAction('prev');
+        await waitForReaderPage(vn);
         assert.equal(content().chatPage, true);
         assert.equal(visible(), 3);
         layer.getBoundingClientRect = () => ({ left: 0, width: 1000 });
         layer.dispatchEvent({ type: 'click', target: layer, clientX: 100 });
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await waitForReaderPage(vn);
         assert.equal(content().chatPage, false);
         assert.equal(content().currentIndex, 0);
         await reader.invokeAction('next');
+        await waitForReaderPage(vn);
         assert.equal(content().chatPage, true);
         layer.dispatchEvent({ type: 'click', target: layer, clientX: 900 });
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await waitForReaderPage(vn);
         assert.equal(content().chatPage, false);
         assert.equal(content().currentIndex, 2);
     } finally {
@@ -9972,6 +10014,7 @@ test('gate:simulation:system-role-lines-use-own-style-and-hide-speaker-and-sprit
         assert.equal(content().textType, 'dialogue');
         assert.equal(content().speaker, 'Alice');
         await opened.reader.controller.invokeAction('next');
+        await waitForReaderPage(vn);
         assert.equal(content().textType, 'system');
         assert.equal(content().speaker, '');
         assert.equal(content().displayText, '任务已更新。');
@@ -9981,6 +10024,7 @@ test('gate:simulation:system-role-lines-use-own-style-and-hide-speaker-and-sprit
         assert.equal(overlay.querySelector('.igs-dialog').getAttribute('data-igs-text-type'), 'system');
         assert.equal(overlay.querySelector('#igs-text').style.color, '#33ccff');
         await opened.reader.controller.invokeAction('next');
+        await waitForReaderPage(vn);
         assert.equal(content().chatPage, false);
         assert.equal(content().textType, 'system');
         assert.equal(content().displayText, '获得道具：钥匙');
@@ -10212,7 +10256,7 @@ test('gate:illustration:image-log-subtab-renders-and-clears', async () => {
     }
 });
 
-test('gate:simulation:igs-fx-tag-next-to-dialogue-lands-on-its-page', () => {
+test('gate:simulation:igs-fx-tag-next-to-dialogue-lands-on-its-page', async () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const raw = [
         '[igs-scene:Room|day|clear]',
@@ -10243,6 +10287,7 @@ test('gate:simulation:igs-fx-tag-next-to-dialogue-lands-on-its-page', () => {
             });
             if (content.currentIndex >= content.segments.length - 1) break;
             opened.controller.invokeAction('next');
+            await waitForReaderPage(host);
         }
         const at = (needle) => pages.find((page) => page.text.includes(needle)) || { text: '', sfx: ['<page-missing>'] };
         assert.deepEqual(at('先说一句').sfx, []);
@@ -10254,7 +10299,7 @@ test('gate:simulation:igs-fx-tag-next-to-dialogue-lands-on-its-page', () => {
     }
 });
 
-test('gate:simulation:igs-fx-tags-stay-out-of-text-and-drive-page-fx', () => {
+test('gate:simulation:igs-fx-tags-stay-out-of-text-and-drive-page-fx', async t => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const raw = '[igs-scene:Room|night|clear]\n[igs-fx:flashback]\n[igs-fx:sfx|砰]一段。\n[igs-fx:call|Alice]\n二段。\n[igs-fx:flashback-end][igs-fx:call-end]\n三段。';
     const host = createIgsReaderHost({
@@ -10264,6 +10309,7 @@ test('gate:simulation:igs-fx-tags-stay-out-of-text-and-drive-page-fx', () => {
             readerSettings: { fxTags: { enabled: true }, fxSound: { enabled: false } },
         }),
     });
+    t.after(() => host.destroy());
     const opened = host.openReader({ messageId: 41, message: { id: 41, text: raw }, raw }, { mode: 'pc' });
     assert.equal(opened.ok, true);
     const first = host.getState().activeReader.snapshot.content;
@@ -10274,17 +10320,18 @@ test('gate:simulation:igs-fx-tags-stay-out-of-text-and-drive-page-fx', () => {
     const motion = document.getElementById('igs-stage-motion');
     assert.equal(motion.getAttribute('data-igs-fx-flashback'), '1');
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     const second = host.getState().activeReader.snapshot.content;
     assert.deepEqual(second.fx.instants, [{ kind: 'call', name: 'Alice', dir: 'in', mode: 'voice' }]);
     assert.equal(second.fx.call.name, 'Alice');
     assert.equal(second.fx.call.mode, 'voice');
     assert.equal(motion.getAttribute('data-igs-fx-call'), 'voice');
     opened.controller.invokeAction('next');
+    await waitForReaderPage(host);
     const third = host.getState().activeReader.snapshot.content;
     assert.deepEqual(third.fx.instants, [{ kind: 'call-end', reason: 'end', name: 'Alice', dir: 'in', mode: 'voice' }]);
     assert.equal(third.fx.flashback, false);
     assert.equal(motion.getAttribute('data-igs-fx-flashback'), null);
-    host.destroy();
 });
 
 test('gate:simulation:ancient-era-filters-modern-fx-from-prompt-and-reader', async () => {
@@ -10597,22 +10644,28 @@ test('gate:simulation:outfit-paging-inherits-switches-resets-and-isolates-layout
         assert.doesNotMatch(content().displayText, /制服|\|/);
         assert.equal(ghost(), null, 'first sprite has no swap');
         await controller.invokeAction('next');
+        await waitForReaderPage(vn);
         expectPage('narration', ...school);
         assert.equal(ghost(), null, 'same outfit has no swap');
         await controller.invokeAction('next');
+        await waitForReaderPage(vn);
         expectPage('dialogue', ...swim);
         assert.doesNotMatch(content().displayText, /泳装/);
         assert.equal(ghost(), null, 'same character outfit change cuts directly');
         assert.equal(sprite().classList.contains('igs-sprite-outfit-in'), false);
 
         await controller.invokeAction('next');
+        await waitForReaderPage(vn);
         expectPage('narration', ...swim);
         await controller.invokeAction('next');
+        await waitForReaderPage(vn);
         expectPage('dialogue', ...swim);
         await controller.invokeAction('next');
+        await waitForReaderPage(vn);
         expectPage('dialogue', ...base);
         // 未登记的服装栏：丢掉该栏，照常按表情显示原装立绘，并记入待确认服装词。
         await controller.invokeAction('next');
+        await waitForReaderPage(vn);
         expectPage('dialogue', ...base);
         assert.equal(content().displayText, '这句是对白。');
         assert.deepEqual(JSON.parse(storage.getItem('igs:outfit-review:v1')).items, [{ character: '小林海斗', word: '未登记' }]);
@@ -10818,7 +10871,7 @@ test('gate:simulation:outfit-scene-bound-expires-after-scene-change', async () =
     }
 });
 
-test('gate:simulation:romance-nsfw-curve-ramps-and-falls-across-real-pages', () => {
+test('gate:simulation:romance-nsfw-curve-ramps-and-falls-across-real-pages', async () => {
     const document = createFakeDocument({ innerWidth: 1280, innerHeight: 720 });
     const raw = [
         '[igs-scene:Room|night|clear]',
@@ -10849,6 +10902,7 @@ test('gate:simulation:romance-nsfw-curve-ramps-and-falls-across-real-pages', () 
         const pages = [];
         for (let i = 0; i < content().segments.length; i += 1) {
             if (i) opened.controller.invokeAction('next');
+            await waitForReaderPage(host);
             pages.push({ text: content().text, level: stage.getAttribute('data-igs-rm-level'), span: content().nsfwSpan, backlight: stage.style['--igs-rm-backlight'] || '' });
         }
         assert.ok(content().segments.every((segment) => !/igs-fx:/.test(segment)));

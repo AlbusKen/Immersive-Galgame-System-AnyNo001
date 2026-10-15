@@ -104,7 +104,7 @@ function assetFolderScope(settingsState, options) {
 
 const CHARACTER_FIELDS = ['characters', 'characterOutfits', 'characterDna', 'characterAliases', 'statusAvatars'];
 const SCENE_ACTION = /^scene-(?:(?:add|remove|rename|set|toggle|pick)-(?:bg|bg-word|bg-url|time|time-url|weather|weather-url)|variant-(?:set|retry))$/;
-const CHARACTER_ACTION = /^(?:scene-(?:add|remove|rename|set|toggle|pick)-(?:char|char-alias|mood|mood-url|dna-char|outfit-mood)|status-avatar-(?:pick|clear|set-url|generate)|char-generate-sprite|outfit-generate-nude|char-expression-(?:prompt|set|retry|resume)|outfit-expression-(?:prompt|set|retry|resume))$/;
+const CHARACTER_ACTION = /^(?:scene-(?:add|remove|rename|set|toggle|pick)-(?:char|char-alias|mood|mood-url|dna-char|outfit-mood)|status-avatar-(?:pick|clear|set-url|generate)|scene-set-user-char|char-generate-sprite|outfit-generate-nude|char-expression-(?:prompt|set|retry|resume)|outfit-expression-(?:prompt|set|retry|resume))$/;
 
 // 服装的适用场景可能指向另一边的场景：场景改名、删除时全局和本卡的服装都要跟上。
 function linkedCharacterOutfits(settingsState) {
@@ -3319,6 +3319,7 @@ export async function handleSettingsAction(action, ctx) {
         }
         const notes = sceneAssets.characterSpriteNotes && typeof sceneAssets.characterSpriteNotes === 'object' ? sceneAssets.characterSpriteNotes : (sceneAssets.characterSpriteNotes = {});
         if (persona && !String(notes[name] || '').trim()) notes[name] = persona;
+        if (!String(sceneAssets.userCharacter || '').trim()) sceneAssets.userCharacter = name;
         const { storage, scope } = assetFolderScope(settingsState, options);
         let folders = loadAssetFolders(storage, scope);
         if (!folders.characters.folders.includes('主角')) folders = addAssetFolder(folders, 'characters', '主角');
@@ -3326,6 +3327,16 @@ export async function handleSettingsAction(action, ctx) {
         const persisted = persistSettingsDraft();
         if (persisted.ok === false) return persisted;
         return handleSettingsAction(`char-generate-sprite:${encodeURIComponent(name)}`, ctx);
+    }
+
+    // 指定 / 取消某角色为User立绘：同卡只能一个，再点同一人则清空。
+    if (normalizedAction.startsWith('scene-set-user-char:')) {
+        const name = decodeSeg(normalizedAction.slice('scene-set-user-char:'.length));
+        const sceneAssets = draftAssetLibrary(settingsState, editTarget);
+        sceneAssets.userCharacter = String(sceneAssets.userCharacter || '').trim() === name ? '' : name;
+        const persisted = persistSettingsDraft();
+        if (persisted.ok === false) return persisted;
+        return rerenderSettings();
     }
 
     if (normalizedAction.startsWith('scene-remove-dna-char:')) {
@@ -3391,6 +3402,7 @@ export async function handleSettingsAction(action, ctx) {
             delete settingsState.draft.bridge.sceneAssets.characterSpriteScales[name];
         }
         draftAssetLibrary(settingsState, editTarget).characterDna = removeCharacterDna(draftAssetLibrary(settingsState, editTarget).characterDna, name);
+        if (draftAssetLibrary(settingsState, editTarget).userCharacter === name) draftAssetLibrary(settingsState, editTarget).userCharacter = '';
         if (draftAssetLibrary(settingsState, editTarget).characterOutfits && typeof draftAssetLibrary(settingsState, editTarget).characterOutfits === 'object') {
             delete draftAssetLibrary(settingsState, editTarget).characterOutfits[name];
         }
@@ -3524,6 +3536,7 @@ export async function handleSettingsAction(action, ctx) {
                 return rerenderSettings();
             }
             sceneAssets.characters = reorderKey(chars, oldName, newName);
+            if (sceneAssets.userCharacter === oldName) sceneAssets.userCharacter = newName;
             sceneAssets.characterAliases = reorderKey(aliases, oldName, newName);
             if (sceneAssets.statusAvatars && typeof sceneAssets.statusAvatars === 'object') {
                 sceneAssets.statusAvatars = reorderKey(sceneAssets.statusAvatars, oldName, newName);

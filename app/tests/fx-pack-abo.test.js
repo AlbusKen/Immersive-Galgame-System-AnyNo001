@@ -84,7 +84,7 @@ test('gate:fx-pack-abo every builder returns a node in normal and reduced mode',
             const env = envOf({ reduced });
             const built = PACK.builders[kind](item(kind), env);
             assert.ok(built && built.node, `${kind} node`);
-            assert.ok(['front', 'stage'].includes(built.layer), `${kind} layer`);
+            assert.ok(['front', 'stage', 'under'].includes(built.layer), `${kind} layer`);
             assert.ok(built.life > 0, `${kind} life`);
             assert.ok(built.sounds.length > 0, `${kind} sounds`);
             for (const s of built.sounds) assert.ok(ABO_SFX_DEFS[s], `${kind} sfx ${s}`);

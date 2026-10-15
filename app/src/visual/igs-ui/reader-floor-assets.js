@@ -2,7 +2,7 @@ import { resolveSpriteAsset, resolveBackgroundAsset, resolveNudeSpriteAsset, isN
 import { resolveSpriteOutfit, outfitsOfCharacter } from '../../scene/character-outfits.js';
 import { resolveCharacterDna } from '../../scene/character-dna.js';
 import { classifySceneKey } from '../../scene/scene-directives.js';
-import { narrationCastLeft, otherNamesOf, namesOf, NARRATION_HOLD_PAGES } from '../../scene/narration-sprite.js';
+import { createCastLeftTracker, otherNamesOf, namesOf, NARRATION_HOLD_PAGES } from '../../scene/narration-sprite.js';
 import { STAGE_CAST_SCAN_LIMIT } from '../../scene/stage-cast.js';
 import { normalizeStageCastSettings } from './stage-direction-settings.js';
 import { isSystemRole } from './system-role.js';
@@ -134,6 +134,22 @@ function prepareStageIndex(floor, settings) {
         if (!namesMemo.has(key)) namesMemo.set(key, namesOf(key, castAliases[key]));
         return namesMemo.get(key).some(n => String(text || '').includes(n));
     };
+    // 同屏陪衬是否已被正文写走：每人一个增量判断，每页只喂新增的原文（他开口、或页序回退时重来）。
+    const castLeft = new Map();
+    const leftSince = (character, speech, offset, next) => {
+        let state = castLeft.get(character);
+        if (!state || state.speech !== speech || offset < state.upto) {
+            const end = floor.source.indexOf('\n', speech.offset);
+            const from = end < 0 ? speech.offset : end;
+            // 她 / 他 离场交给旁白点名的指代消解（认领到的人记在 narrationDroppedKey），陪衬各自只认写了名字的离场。
+            state = { speech, upto: from, tracker: createCastLeftTracker({ name: character, aliases: castAliases[character] || [], pronoun: false, self: floor.selfNames || [],
+                others: otherNames.filter(n => n !== character) }) };
+            castLeft.set(character, state);
+        }
+        const chunk = floor.source.slice(state.upto, offset);
+        state.upto = Math.max(state.upto, offset);
+        return state.tracker.feed(chunk, next);
+    };
     // 临时座位：旁白点名 / 感知上台、本场景还没开口的人，焦点移走后留在原座，按旁白沿用规则衰减（隔 2 页须再被写到），开口即转正。
     // soft 陪衬（同行 / 集体主语带过来的）同样衰减；宽松档不标 soft，不衰减。
     const temps = new Map(), softSeen = new Map(), softGone = new Set();
@@ -169,6 +185,9 @@ function prepareStageIndex(floor, settings) {
         }
         sceneMark = sceneHere;
         const focus = page.spriteChar ? floor.keyOf(page.spriteChar) : '';
+        // 判断离场的原文读到本页末尾：本页的「你 / 我」走开也当页作用于同屏陪衬。
+        const nextAt = floor.offsets?.[i + 1];
+        const pageEnd = offset >= 0 && page.currentOffset >= 0 ? Math.max(offset, nextAt > offset ? nextAt : i + 1 >= floor.pages.length ? floor.source.length : offset) : offset;
         const staged = !(offset >= 0) || !cast.enabled ? [] : (lastBefore(stages, offset)?.members || []).filter(m => {
             if (m.character === page.narrationDroppedKey || (gone.has(m.character) && m.at < gone.get(m.character))) return false;
             if (m.soft) {
@@ -182,10 +201,7 @@ function prepareStageIndex(floor, settings) {
             if (m.character === focus) return true;
             const speech = lastBefore(speeches.get(m.character) || [], offset);
             if (!speech) return true;
-            const end = floor.source.indexOf('\n', speech.offset);
-            // 她 / 他 离场交给旁白点名的指代消解（认领到的人记在 narrationDroppedKey），陪衬各自只认写了名字的离场。
-            return !narrationCastLeft({ name: m.character, aliases: castAliases[m.character] || [], pronoun: false,
-                others: otherNames.filter(n => n !== m.character), text: floor.source.slice(end < 0 ? speech.offset : end, offset) });
+            return !leftSince(m.character, speech, pageEnd, floor.pages[i + 1]?.segmentBody);
         });
         const seated = new Set(staged.map(m => m.character));
         for (const [key, temp] of [...temps]) {

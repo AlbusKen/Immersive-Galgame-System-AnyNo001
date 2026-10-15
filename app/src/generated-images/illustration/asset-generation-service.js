@@ -27,6 +27,8 @@ const AVATAR_NEGATIVE = BUILTIN_PROMPTS.avatar.negative;
 // review：等待楼层结束时让用户处理；chat：用户选择仅本聊天使用；
 // library：已加入素材库（由生成区条目接管）；discarded：丢弃。
 const ACTIVE_TEMP_STATUSES = new Set(['review', 'chat']);
+// 清晨、黄昏、夜晚算非白天；认不出的时间不动，保持原来的直接生成。
+const isOffDayTime = (time) => { const bucket = sceneTimeBucket(time); return Boolean(bucket) && bucket !== '白天'; };
 
 function randomSeed() {
     return Math.floor(Math.random() * 4294967295);
@@ -58,6 +60,8 @@ export function createAssetGenerationService(deps) {
     const report = deps.report || (() => {});
     const newId = deps.newId || (() => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`);
     const locks = new Map();
+    // 同一地点的白天底图只画一次：跨楼并发时后到的等先到的画完再取。
+    const dayBasePending = new Map();
     const cache = requireMediaCache(deps.mediaCache, 'asset-generation', deps.thumbStore?.mediaCache);
     const pendingImages = new Set();
     const failedImages = cache.auxiliary.createMap('asset-image-failures');
@@ -582,6 +586,14 @@ export function createAssetGenerationService(deps) {
         return records;
     }
 
+    function releaseDayBases(floorKey) {
+        for (const [dayKey, entry] of dayBasePending) {
+            if (entry.floorKey !== floorKey) continue;
+            dayBasePending.delete(dayKey);
+            entry.resolve();
+        }
+    }
+
     async function run(messageId, floor, key, s, manual) {
         // 失败或中途刷新残留的 planning 不算处理完，下次渲染时重试。
         const previous = await store.getFloor(key);
@@ -626,8 +638,39 @@ export function createAssetGenerationService(deps) {
         }
         const variantNeeds = backgroundNeeds.filter((need) => need.variantOf);
         const needs = [...backgroundNeeds.filter((need) => !need.variantOf), ...spriteNeeds];
+        // 非白天且该地点还没图：先画白天底图，再走时段差分；差分不可用（后端不能按词出图）时仍直接画。
+        const dayFirst = [];
+        if (s.auto.assets.dayFirst !== false && nai && typeof nai.generateDbgenCaption === 'function') {
+            const kept = [];
+            const dayKeyOfName = new Map();
+            for (const need of needs) {
+                if (need.type === 'background' && sceneTimeBucket(need.time) === '白天') dayKeyOfName.set(need.name, tempAssetKeyOf(floor.chatId, need));
+            }
+            for (const need of needs) {
+                if (need.type !== 'background' || !isOffDayTime(need.time)) { kept.push(need); continue; }
+                const dayNeed = { type: 'background', name: need.name, time: '白天', weather: '', nsfw: need.nsfw === true };
+                const dayKey = dayKeyOfName.get(need.name) || tempAssetKeyOf(floor.chatId, dayNeed);
+                dayFirst.push({ need, dayKey });
+                if (dayKeyOfName.has(need.name) || dayBasePending.has(dayKey)) continue;
+                // 先占位再读缓存，避免两楼同时读到「没有」后各画一遍。
+                let resolve;
+                const promise = new Promise((done) => { resolve = done; });
+                const entry = { promise, resolve, floorKey: key };
+                dayBasePending.set(dayKey, entry);
+                dayKeyOfName.set(need.name, dayKey);
+                const existing = await tempCache.read(floor.chatId, dayKey);
+                if (existing && existing.imageId && ACTIVE_TEMP_STATUSES.has(existing.status)) {
+                    if (dayBasePending.get(dayKey) === entry) dayBasePending.delete(dayKey);
+                    resolve();
+                    continue;
+                }
+                kept.push(dayNeed);
+            }
+            needs.length = 0;
+            needs.push(...kept);
+        }
         attachCharacterDna(needs, s.sceneAssets);
-        if (!needs.length && !variantNeeds.length) {
+        if (!needs.length && !variantNeeds.length && !dayFirst.length) {
             await store.putFloor(key, { status: 'done', count: 0, updatedAt: now() });
             return { ok: true, reason: 'nothing-missing' };
         }
@@ -712,6 +755,24 @@ export function createAssetGenerationService(deps) {
             if (record.status === 'review') count += 1;
             else errors.push(`「${record.name}」${record.error}`);
         }
+        releaseDayBases(key);
+        for (const { need, dayKey } of dayFirst) {
+            const pending = dayBasePending.get(dayKey);
+            if (pending) await pending.promise;
+            const base = await tempCache.read(floor.chatId, dayKey);
+            if (!base || !base.imageId || !ACTIVE_TEMP_STATUSES.has(base.status)) {
+                report('warn', `第 ${messageId} 楼「${need.name}」白天底图没画成，${need.time}差分先跳过`);
+                continue;
+            }
+            report('info', `第 ${messageId} 楼按「${need.name}」白天底图补${need.time}差分…`);
+            const variantNeed = { ...need, weather: '', variantOf: base.imageId };
+            let record = await generateTimeVariant(variantNeed, s, floor, key);
+            if (record.status === 'needs-prompt') record = await generateItem({ need, tags: '' }, s, floor, key);
+            if (record.status === 'skipped') continue;
+            attempted += 1;
+            if (record.status === 'review') count += 1;
+            else errors.push(`「${record.name}·${record.time}」${record.error}`);
+        }
         const failedCount = attempted + plan.items.length - count;
         await store.putFloor(key, { status: failedCount ? 'failed' : 'done', count, updatedAt: now() });
         if (count) report('success', `第 ${messageId} 楼已生成 ${count} 项素材，待确认`);
@@ -744,7 +805,7 @@ export function createAssetGenerationService(deps) {
                 report('error', `素材生成异常：${(error && error.message) || error}`);
                 return { ok: false, reason: 'error', error: '素材生成失败' };
             })
-            .finally(() => locks.delete(key));
+            .finally(() => { releaseDayBases(key); locks.delete(key); });
         locks.set(key, job);
         return job;
     }

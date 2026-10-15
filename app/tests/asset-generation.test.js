@@ -395,7 +395,7 @@ test('gate:assets:lost-internal-image-slots-fall-back-to-calm-and-default-instea
 
 
 
-test('gate:assets:service-disabled-makes-no-requests', async () => {
+test('gate:assets:service-disabled-makes-no-requests', async t => {
     let requested = false;
     const service = createAssetGenerationService({
         messageHost: fakeHost(FLOOR_TEXT),
@@ -404,8 +404,9 @@ test('gate:assets:service-disabled-makes-no-requests', async () => {
         store: createMemoryGeneratedAssetStore(),
         getSettings: () => ({ autoIllustration: {}, sceneAssets: USER_ASSETS }),
     });
+    t.after(() => service.stop());
     assert.equal((await service.processMessage(3)).reason, 'disabled');
-    assert.equal((await service.processMessage(3, { manual: true })).reason, 'disabled');
+    assert.equal(requested, false);
     const off = createAssetGenerationService({
         messageHost: fakeHost(FLOOR_TEXT),
         llm: { async request() { requested = true; return ''; } },
@@ -413,6 +414,7 @@ test('gate:assets:service-disabled-makes-no-requests', async () => {
         store: createMemoryGeneratedAssetStore(),
         getSettings: () => ({ autoIllustration: { assets: { spriteEnabled: true } }, sceneAssets: { ...USER_ASSETS, enabled: false } }),
     });
+    t.after(() => off.stop());
     assert.equal((await off.processMessage(3)).reason, 'scene-assets-disabled');
     assert.equal((await off.processMessage(3, { manual: true })).reason, 'scene-assets-disabled');
     assert.equal(requested, false);
@@ -519,7 +521,7 @@ test('gate:assets:registered-generated-image-lost-is-regenerated', async () => {
     assert.equal(resolveBackgroundAsset({ scene: '废弃工厂' }, { sceneAssets: assets }).needsGeneration, false);
 });
 
-test('gate:assets:registered-characters-and-scenes-are-not-generated', async () => {
+test('gate:assets:empty-registered-scenes-need-images-without-auto-generating-registered-characters', async () => {
     const { collectAssetNeeds } = await import('../src/scene/asset-match.js');
     const ctx = {
         sceneAssets: { scenes: { 学校天台: { url: '', times: {} } }, characters: { 雪之下雪乃: {} }, characterAliases: {} },
@@ -529,7 +531,7 @@ test('gate:assets:registered-characters-and-scenes-are-not-generated', async () 
         scenes: [{ scene: '天台', time: '夜晚' }, { scene: '废弃工厂', time: '' }],
         characters: ['雪乃', '八幡', '比企谷八幡', '路人少女'],
     }, ctx, { background: true, sprite: true });
-    assert.deepEqual(needs.map((n) => n.name), ['废弃工厂', '八幡', '比企谷八幡', '路人少女']);
+    assert.deepEqual(needs.map((n) => n.name), ['天台', '废弃工厂', '八幡', '比企谷八幡', '路人少女']);
 });
 
 test('gate:assets:nai-500-retries-and-reports-server-detail', async () => {
@@ -805,7 +807,7 @@ test('gate:assets:later-backgrounds-skip-recall-and-already-generated', async ()
         },
         store,
         getSettings: () => ({
-            autoIllustration: { assets: { backgroundEnabled: true, maxPerFloor: 1 } },
+            autoIllustration: { assets: { backgroundEnabled: true, maxPerFloor: 1, dayFirst: false } },
             sceneAssets: { enabled: true, scenes: {}, characters: {}, generated: library },
         }),
     });

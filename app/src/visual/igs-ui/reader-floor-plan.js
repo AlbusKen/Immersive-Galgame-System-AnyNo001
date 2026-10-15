@@ -148,11 +148,15 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
     const generatedLib = sceneAssets?.generated && typeof sceneAssets.generated === 'object' ? sceneAssets.generated : {};
     const castCharacters = { ...(generatedLib.characters || {}), ...(sceneAssets?.characters || {}) };
     const castAliases = {};
+    // 手动指定的 USER 立绘角色（须在名单里）：酒馆用户名在本次解析中归到它名下，只改这份新拼的别名表，不碰存储。
+    const userCharacter = String(sceneAssets?.userCharacter || '').trim();
+    const userCharKey = userCharacter && Object.hasOwn(castCharacters, userCharacter) ? userCharacter : '';
     for (const map of [generatedLib.characterAliases, sceneAssets?.characterAliases]) {
         for (const [key, list] of Object.entries(map && typeof map === 'object' ? map : {})) {
             if (Array.isArray(list)) castAliases[key] = [...(castAliases[key] || []), ...list];
         }
     }
+    if (userCharKey && userName && !castAliases[userCharKey]?.includes(userName)) castAliases[userCharKey] = [...(castAliases[userCharKey] || []), userName];
     const castKeyMemo = new Map();
     const castKeyOf = name => {
         if (!castKeyMemo.has(name)) castKeyMemo.set(name, resolveCharacterKey(castCharacters, castAliases, name) || name);
@@ -169,8 +173,10 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         if (!othersMemo.has(key)) othersMemo.set(key, otherNamesOf(castCharacters, castAliases, key, [userName]));
         return othersMemo.get(key);
     };
-    const userKey = userName ? castKeyOf(userName) : '';
-    const selfNames = userName ? [userName, ...(castAliases[userKey] || [])] : [];
+    const userKey = userCharKey || (userName ? castKeyOf(userName) : '');
+    const selfNames = userKey ? [...new Set([userName, ...(castAliases[userKey] || [])].filter(Boolean))] : [];
+    // 换场景判断同行 / 留下时的「主角」：酒馆用户名（没对应角色时也算）加上 User 立绘的别名。
+    const selfAll = [...new Set([userName, ...selfNames].filter(Boolean))];
     const genderMemo = new Map();
     const genderOf = key => {
         if (!genderMemo.has(key)) genderMemo.set(key, detectVoiceGender(characterDnaText(sceneAssets, key)));
@@ -178,8 +184,18 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
     };
     const hasSprites = key => Object.keys(castCharacters[key] || {}).length > 0;
     // 旁白点名：主角要有素材才上；其他人要在名单里且本楼或前 3 个 AI 楼露过面（宿主没给前楼名单时不拦）。
-    const namer = createNarrationNamer({ characters: castCharacters, aliases: castAliases, userKey, userNames: selfNames, genderOf,
-        allow: key => key === userKey ? hasSprites(key) : Object.hasOwn(castCharacters, key) && (castNearby === null || castNearby.has(key)) });
+    // 指定了 User 立绘时，「你」开头的旁白页也换成主角（第二人称故事）。
+    // 已离场、还没被写回来的人：旁白再提他的名字也不上立绘（开口，或这一页正文写他回来了才解除）。
+    const goneKeys = new Set();
+    let pageText = '';
+    // 这一页正文有没有把他写回来。
+    const wroteBack = key => {
+        const probe = createNarrationSpriteTracker({ name: key, aliases: castAliases[key] || [], others: othersFor(key), gender: genderOf(key), gone: true });
+        probe(pageText);
+        return !probe.gone;
+    };
+    const namer = createNarrationNamer({ characters: castCharacters, aliases: castAliases, userKey, userNames: selfNames, genderOf, youLead: Boolean(userCharKey),
+        allow: key => (!goneKeys.has(key) || wroteBack(key)) && (key === userKey ? hasSprites(key) : Object.hasOwn(castCharacters, key) && (castNearby === null || castNearby.has(key))) });
     // 换场景时谁跟过来（见 carriesAcrossScene）：每个场景标签、每个人只判一次，主立绘与同屏陪衬共用结果。
     const carryMode = ['strict', 'smart', 'loose'].includes(sceneAssets?.sceneCarryMode) ? sceneAssets.sceneCarryMode : 'smart';
     const sceneOfPage = offsets.map(offset => offset >= 0 ? lastBefore(scenes, offset, false) : null);
@@ -222,7 +238,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
                     const speaker = segmentSpeaker(segments[j]);
                     ahead.push({ text: segments[j], by: !speaker ? '' : castKeyOf(speaker) === key ? 'own' : 'other' });
                 }
-                keep = sceneCarryOf({ name: key, aliases: castAliases[key] || [], others: othersFor(key), self: selfNames,
+                keep = sceneCarryOf({ name: key, aliases: castAliases[key] || [], others: othersFor(key), self: selfAll,
                     lead: sceneLeads.get(d.offset) === key, gender: genderOf(key), ...edgeOf(d), ahead, mode: carryMode });
             }
             carryMemo.set(memoKey, keep);
@@ -278,6 +294,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
             } else lastBubble = null;
             speechFloor = normalizedIndex;
             narrationTracker = null;
+            goneKeys.clear();
             namer.cross(key => carriesAt(sceneHere, key));
         }
         let textType = 'narration', bubbleSpeaker = '', bubbleMood = '', segmentBody = currentText;
@@ -382,6 +399,11 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         // 点名页自己也做离场判断（「小雪转身离开」当页就收），后面的旁白接着沿用。
         // 情绪：旁白里的情绪词 → 这个人本楼上次的情绪 → 默认。
         let inheritFrom = null, inheritHold = NARRATION_HOLD_PAGES;
+        if (textType === 'narration') {
+            // 已离场的人这一页正文写他回来了（名字不在句首也算），先解除，再走旁白点名。
+            pageText = currentText;
+            for (const key of [...goneKeys]) if (wroteBack(key)) goneKeys.delete(key);
+        }
         if (textType === 'narration' && !spriteChar && sceneAssets.narrationNameSwitch !== false) {
             const focus = normalizedIndex > 0 && pages[normalizedIndex - 1].spriteChar ? castKeyOf(pages[normalizedIndex - 1].spriteChar) : '';
             const named = namer.read(currentText, { focus });
@@ -392,7 +414,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
                 inheritFrom = lastBubble.index;
                 inheritHold = lastBubble.hold;
             }
-        } else if (bubbleSpeaker) namer.note(castKeyOf(bubbleSpeaker));
+        } else if (bubbleSpeaker) { namer.note(castKeyOf(bubbleSpeaker)); goneKeys.delete(castKeyOf(bubbleSpeaker)); }
         // 旁白直接继承已准备的最近说话页，不再回扫前面的所有页。
         if (!spriteChar && lastBubble) {
             spriteChar = lastBubble.speaker;
@@ -415,21 +437,23 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         let narrationDroppedKey = '';
         if (spriteChar && inheritFrom !== null) {
             const key = keyOf(spriteChar);
-            const pov = (userName && userKey === key)
+            const pov = (userKey && userKey === key)
                 || thoughtCharacters.has(key);
             if (!narrationTracker || narrationTracker.key !== key || narrationTracker.anchor !== inheritFrom || narrationTracker.index !== normalizedIndex - 1) {
                 narrationTracker = { key, anchor: inheritFrom, index: inheritFrom,
-                    push: createNarrationSpriteTracker({ name: spriteChar, aliases: [key, ...(castAliases[key] || [])], others: othersFor(key), pov, gender: genderOf(key), hold: inheritHold }) };
-                for (let i = inheritFrom + 1; i < normalizedIndex; i++) narrationTracker.push(segments[i]);
+                    push: createNarrationSpriteTracker({ name: spriteChar, aliases: [key, ...(castAliases[key] || [])], others: othersFor(key), pov, gender: genderOf(key), hold: inheritHold, self: selfAll }) };
+                for (let i = inheritFrom + 1; i < normalizedIndex; i++) narrationTracker.push(segments[i], segments[i + 1]);
             }
-            const keep = narrationTracker.push(currentText);
+            const keep = narrationTracker.push(currentText, segments[normalizedIndex + 1]);
+            // 真离场记下来；沿用到期只是不再显示，不算离场。
+            if (narrationTracker.push.gone) goneKeys.add(key); else goneKeys.delete(key);
             narrationTracker.index = normalizedIndex;
             if (!keep) {
                 spriteChar = '';
                 spriteMood = '';
                 narrationDropped = true;
                 spriteLeft = true;
-                narrationDroppedKey = key;
+                if (narrationTracker.push.gone || narrationTracker.push.soft) narrationDroppedKey = key;
             }
         }
         if (!spriteChar && !narrationDropped && sceneStateForBg && sceneStateForBg.character) {
@@ -495,6 +519,6 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         return itemTargets.get(name);
     };
     return { text, segments, source, sceneDirectives, outfitDirectives, inheritedSceneState, pages, offsets,
-        sceneAt, locator, keyOf, castCharacters, castAliases, carriesAcross: carriesAt, carryOf, sceneOfPage, sceneLeads, presentOf, genderOf, userName, sceneSpeaker: scene.speaker, latestSpeechByPage, fxDirectives, illustrations, eventCgs,
+        sceneAt, locator, keyOf, castCharacters, castAliases, selfNames: selfAll, carriesAcross: carriesAt, carryOf, sceneOfPage, sceneLeads, presentOf, genderOf, userName, sceneSpeaker: scene.speaker, latestSpeechByPage, fxDirectives, illustrations, eventCgs,
         tagItems, tagNames: new Set(tagItems.map(item => normalizeItemName(item.name))), itemPageFor, assets: null, tablesRevision: -1 };
 }

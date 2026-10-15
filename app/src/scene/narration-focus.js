@@ -1,8 +1,8 @@
-import { namesOf, QUOTE_RE, ABSENT_RE, MEDIA_RE, MEDIA_AFTER_RE } from './narration-sprite.js';
+import { namesOf, QUOTE_RE, ABSENT_RE, MEDIA_RE, MEDIA_AFTER_RE, mentionIsAbsent } from './narration-sprite.js';
 
 // 旁白页立绘给谁（每楼一个，按页序调用）：
 // - 感知句「你听见小雪在哭」「严尚义盯着白墨看」给被感知的人（宾语）；「白墨被严尚义看到」给被字前的主语；
-// - 否则看开头三个字内（标点不算）的名字；
+// - 否则看开头三个字内（标点不算）的名字；youLead 时「你」开头给主角（「你的」「你身后」等修饰不算）；
 // - 否则开头的她 / 他：先归话题主语（topic，最近一句旁白的施事者），性别冲突再归画面上的人或上一句宾语，都对不上不猜。
 // 名字含别名与三四字名的后两字；同一位置取最长的（尚义嬷嬷 先于 尚义），都换回主名。
 // read 返回主名，'' 表示这一页不点名（沿用照旧）。allow(key) 决定能不能上立绘（主角须有素材、其他人须近期露面）。
@@ -17,10 +17,13 @@ const SENTENCE_RE = /[。！？!?…\n]/;
 // 宾语前可跳过的修饰（不远处的、站在门口的）最多几个字。
 const OBJECT_REACH = 8;
 const LEAD_REACH = 3;
+// 名字是常用词的子串（下小雨了、小雨点、小雨过后）：前后文像天气 / 量词时不当人名。
+const NAME_BEFORE_RE = /(?:下|场|阵|细|飘|毛毛)$/;
+const NAME_AFTER_RE = /^(?:点(?![头了点着击开亮燃])|滴|天|过(?![来去头身])|后(?![退仰撤背来方面排])|季)/;
 
 const probeOf = (name) => String(name || '').replace(/[\s\p{P}\p{S}]/gu, '');
 
-export function createNarrationNamer({ characters = {}, aliases = {}, userKey = '', userNames = [], allow = () => true, genderOf = () => '' } = {}) {
+export function createNarrationNamer({ characters = {}, aliases = {}, userKey = '', userNames = [], allow = () => true, genderOf = () => '', youLead = false } = {}) {
     const aliasMap = aliases && typeof aliases === 'object' ? aliases : {};
     const keys = Object.keys(characters && typeof characters === 'object' ? characters : {});
     if (userKey && !keys.includes(userKey)) keys.push(userKey);
@@ -103,8 +106,9 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         const body = String(text || '').replace(QUOTE_RE, '');
         const sentences = body.split(SENTENCE_RE).filter((s) => s.trim());
         let pick = null;
-        for (const s of sentences) {
-            const p = perceive(s);
+        // 每句只算一次感知，选人和推进话题共用。
+        const perceived = sentences.map((s) => perceive(s));
+        for (const p of perceived) {
             if (!p) continue;
             // 宾语是代词、泛指或反身时不猜，这一页不点名。
             pick = p.seen.kind === 'name' || p.seen.kind === 'you' ? p.seen.key || '' : '';
@@ -116,16 +120,25 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
             for (const e of entries) {
                 const at = plain.indexOf(e.probe);
                 if (at < 0 || at >= bestAt || numbered(e.probe, plain.slice(at + e.probe.length))) continue;
+                if (NAME_BEFORE_RE.test(plain.slice(Math.max(0, at - 2), at)) || NAME_AFTER_RE.test(plain.slice(at + e.probe.length))) continue;
+                // 「小雪的照片」「白墨还没来」「听说小雪……」：写到了，人不在眼前。
+                const first = sentences[0] || '';
+                const written = first.indexOf(e.name);
+                if (written >= 0 && mentionIsAbsent(first, written, written + e.name.length)) continue;
                 pick = e.key; bestAt = at;
             }
+        }
+        if (pick === null && youLead && userKey) {
+            const lead = (sentences[0] || '').replace(/^[\s\p{P}\p{S}]+/u, '');
+            if (lead[0] === '你' && !YOU_MODIFIER_RE.test(lead)) pick = userKey;
         }
         if (pick === null) {
             const head = (sentences[0] || '').trimStart().match(PRONOUN_HEAD_RE);
             if (head) pick = resolvePronoun(head[0], focus);
         }
         // 话题主语按句推进：感知句记感知者与宾语（被动句的主语是被感知者），其余记句首的人；「你」打头不改话题。
-        for (const s of sentences) {
-            const p = perceive(s);
+        for (let n = 0; n < sentences.length; n++) {
+            const s = sentences[n], p = perceived[n];
             if (p) {
                 const [doer, done] = p.passive ? [p.seen, p.by] : [p.by, p.seen];
                 const doerKey = doer && doer.kind !== 'you' ? keyOf(doer, focus) : '';

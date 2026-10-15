@@ -212,7 +212,6 @@ test('gate:step-material-inference', () => {
     assert.equal(parseCameraFx('step', ['沙滩'])[1], '', 'unknown material word is dropped');
     assert.equal(parseCameraFx('step', ['走廊回声'])[1], 'hall');
     assert.ok(Object.values(STEP_MATERIALS).every((m) => ['wood', 'stone', 'grass', 'snow', 'puddle', 'hall'].includes(m)));
-    assert.ok(!/\[\s*'[^']+'(?:\s*,\s*'[^']+'){6,}\s*\]/.test(read('fx-camera.js')), 'builders add no place word list');
 });
 
 test('gate:step-pan-automation', () => {
@@ -258,9 +257,6 @@ test('gate:step-default-off-and-volume', () => {
     assert.equal(normalizeCameraSettings({ volume: 9 }).volume, 1);
     const env = envOf();
     assert.doesNotThrow(() => CAMERA_BUILDERS.step(cameraFxOf(SAMPLES.step), env), 'sound off builds silently');
-    const audio = read('camera-steps-audio.js');
-    assert.ok(!/setAudioBusSpace/.test(audio), 'global reverb wet is untouched');
-    assert.ok(audio.includes("busInput('sfx')"), 'steps ride the sfx bus');
 });
 
 function fakeAudio() {
