@@ -28,6 +28,7 @@
 - 背景匹配属于 `backgrounds` / `scene`。
 - 角色匹配属于 `characters` / `scene`。
 - 生图请求、轮询和 provider 适配属于 `generated-images`。
+- `png-validation.js` 对重绘原图／蒙版采用完整容器 16 MiB 应用输入上限，在 base64 切片、解码和 CRC 遍历前核验编码长度与 padding 推导字节数；超限返回 `png-input-limit`。校验签名、chunk 边界／顺序／CRC、IHDR 格式、请求尺寸与像素上限；支持合法 Adam7 和连续分块 IDAT。解压输出受 IHDR 各 pass 推导的精确扫描行长度约束，并检查 zlib、过滤器与调色板索引。输入上限不是 PNG 理论极限，冗余 chunk／元数据编码仍可能被拒绝；不假设压缩输入必然小于原始扫描行，不记录图像载荷。
 - 用户上传字体（`custom-fonts.js`）：文件存酒馆 `user/files/igs-font-*`，清单存 localStorage `igs-custom-fonts-v1`（随全局配置同步）；用 FontFace 注册到宿主 document，渲染只读 font-family 栈。
 - 酒馆图片搬家（`tavern-image-files.js`）只在整条记录未被改写时落盘，避免用旧记录覆盖期间保存的提示词等字段。
 - 一致性工作画布（`cg-reference-canvas.js`）以冻结 plan 保留原图 `rect` 支持区、`crop`、统一 `scale`、工作/参考布局及独立 `uploadMask`。上下文仍为原图短边 10%，工作/参考分配仍为 75/25，参考缺省取立绘上部 40%（几何裁图，不是脸部识别）；请求尺寸保持 64 步长及 1024² 像素上限。RGB、人物中心和回贴沿同一比例映射；工作内容及蒙版下保留原 CG 像素，边缘延续 crop 样本，参考只绘入辅助区。上传蒙版在最终工作尺寸覆盖必要完整 8 像素网格，RGB 仅黑白、alpha 恒 255；参考区及网格范围外为黑色，保护留白不开放。网格的小幅扩张不扩大原图回贴范围。回贴保留原圆角支持区，采用 `max(1,min(12,side*0.02))` 原图像素内侧 smoothstep 窄带，同时约束原坐标与采样点，内区完整采用结果、原 alpha 和支持区外 RGBA 保持，不按生成强度再次整体混合。最小窄带经栅格采样可能直接过渡；缩放往返存在取整误差。粗区域不是分割，离线几何验证不保证模型保姿、真实接缝或身份效果，候选仍需用户复验。

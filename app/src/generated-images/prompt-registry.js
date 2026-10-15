@@ -1,17 +1,19 @@
 // IGS 自带生图词库：各类图片的内置标签、给写词 AI 的规则句、场景词典都集中在这里，别处只引用不写字面量。
 // 结构按「内容类别」分：立绘 / 表情差分 / Q 版头像 / 衣柜 / 背景 / 物品 / NSFW / 底色 / 变身 / 场景词典。
 
+export const SPRITE_HALF_BODY_RULE = '立绘、换装和表情的 half_body 使用正常上半身取景：从完整头顶到腰胯，完整保留头发、双肩和躯干，手势在画面内，头顶及身体两侧留少量余白。Scene 明写 framed from the top of the head to the hips，不能只写 half-body；不裁成胸像或脸部特写，不使用 cowboy shot，不画全身或脚。明确指定 full_body 或 portrait 时按该景别，不套用本条；普通 CG 和局部一致性沿各自镜头。';
+
 export const BUILTIN_PROMPTS = Object.freeze({
     sprite: Object.freeze({
         // {tags} = DNA 组成的角色词与当次表情／动作；无 DNA 时使用写词结果。{matte} = 底色词。
-        positive: '{tags}, solo, cowboy shot, standing, facing viewer, looking at viewer, straight-on, centered, {matte}',
-        negative: 'multiple views, 2girls, 2boys, multiple girls, multiple boys, crowd, close-up, portrait, upper body, full body, feet, head out of frame, cropped arms, scenery, detailed background, white background, gradient background, patterned background, drop shadow, floor, furniture, holding weapon, text, speech bubble, watermark, signature, frame, border',
+        positive: '{tags}, solo, upper body, framed from the top of the head to the hips, standing, facing viewer, looking at viewer, straight-on, centered, {matte}',
+        negative: 'multiple views, 2girls, 2boys, multiple girls, multiple boys, crowd, close-up, portrait, full body, feet, head out of frame, cropped arms, scenery, detailed background, white background, gradient background, patterned background, drop shadow, floor, furniture, holding weapon, text, speech bubble, watermark, signature, frame, border',
         // 立绘站得太板正：要一个不挡身体的日常小动作。
         poseRule: '姿势带一个轻量的日常小动作（如一只手拨头发、手背在身后、手插口袋、轻抓衣角），不要双手僵直下垂，也不要大幅动作或拿道具挡住身体。',
     }),
     expression: Object.freeze({
-        // 写词结果补上大腿以上和正面，负面排除全身和脚。
-        positive: 'cowboy shot, standing, facing viewer, straight-on',
+        // 旧组合路径使用腰胯以上的正常上半身，负面不排除 upper body。
+        positive: 'upper body, framed from the top of the head to the hips, standing, facing viewer, straight-on',
         negative: 'dutch angle, from side, profile, full body, feet',
         // 只拿掉双手下垂，避免表情动作被锁死。
         dropPositive: 'arms at sides',
@@ -124,7 +126,8 @@ export const SCENE_DICTIONARY = Object.freeze({
 // 新模板写词协议的稳定前缀；任务、角色资料与用户约束放入当次 user。
 export const DNA_TEMPLATE_WRITER_SYSTEM = [
     '你为虚构视觉小说撰写 NovelAI 动态提示模板。只处理用户提供的任务，不续写剧情、不重新选择生成点。',
-    '每份以独立一行的 slotid: 输入正整数开始，字段名必须位于行首，份间以单独一行 --- 分隔。直接输出扁平字段，不输出思考标签、推理正文、开场说明、JSON、标题、代码围栏、画师串或 caption 树。',
+    '每图第一行独立写 slotid: 本轮输入正整数，编号恰好一次；表情名、服装名、#编号或 slot 不代替 slotid。每图写完全部 scene、char、char_uc 和 meta 字段后才用独立一行 --- 分隔下一图，之后下一非空行必须是新的 slotid；单图不写 ---，同图内部不分段。直接输出扁平字段，不输出思考标签、推理正文、开场说明、JSON、标题、代码围栏、画师串或 caption 树。',
+    SPRITE_HALF_BODY_RULE,
     '每份必须写 prompt_mode: dna_template。可用 size、analysis、scene、scene_uc、char、char_uc；每个 char 后紧接自身 char_uc，UC 允许为空。',
     '任务 outfitMode 为 template 时，每份另写 outfit_mode: template；每个 named Char 恰写本人的 <<outfit:token>> 一次，与身份使用同一 token。衣装占位只能在本人的正向 char，不在 scene、reference 或任何 UC 中出现。',
     '任务若提供 slots，每个 slotid 只绑定该项 tokens 指定的全部角色，不带入其他 slot 的人物；没有 slots 时 sprite/derived 每图绑定全部任务角色，CG 按实际出镜取允许池子集。',
@@ -133,18 +136,26 @@ export const DNA_TEMPLATE_WRITER_SYSTEM = [
     '衣装名与英文穿着谓语作为独立服装 DNA 写入 meta_outfit_name、meta_outfit_description。已有当次衣装说明或角色 outfits 按保存值原样引用，不改写、翻译或补全；缺服装 DNA 的新装在同次回复提供有依据的名称和说明，不新增请求。Char 保持角色占位符、服装占位符与当次表情动作的模板结构，不重写完整外貌或衣装正文。裸体仍写裸体状态说明，form 保留形态语义；固定外貌、表情和动作不进入服装 DNA。一致性任务只用原 CG outfit 快照，不用衣柜、默认外观或参照图替换。',
     'char 可写 x,y | 正文，坐标在 0 到 1；自身身份 UC 可用 <<dna_uc:token>> 一次，其余负面要求在当次正文中完成。',
     '每个 Char 以本图实际 char 出现顺序从 0 连续编号，单行绑定 meta_kind: 索引 | named/generic/object/reference。named/reference 还须各写 meta_key、meta_token、meta_frame、meta_outfit_name、meta_outfit_description；每个索引的每个字段恰好一次，不在末尾重复汇总。slotid、原图角色序号和 token 中数字都不是本图索引。',
+    '所有 meta_* 都以本图 Char 索引 | 开始，meta_key、meta_token、meta_frame 也不能省略索引。清单提供 captionIndex 时使用它，例如 meta_key: 0 | 输入角色键、meta_token: 0 | 输入token、meta_frame: 0 | 输入景别；reference 使用自己的索引。reference 是 meta_kind 的取值，不输出 reference:、reference_uc: 或独立 reference inset 行。',
     '新任务 meta_frame 选 full_body、half_body、portrait；partial 仅在输入明确指定的历史任务中兼容引用。generic/object 只写 meta_kind，直接描写，不编造角色键；reference 仅 consistency 可用输入独立参考 token，不登记为正式人物。',
     '同一 characterKey 的 named 与 reference 是两个独立 Char，分别使用自己的索引和 token。reference 只表达身份和简洁可见状态；其 meta_outfit_name 与 meta_outfit_description 在自己的索引各写一次空值，不复制 named 衣装、不复用 named 索引。',
     '可选 meta_region: 索引 | x,y,width,height 是规划范围，不是成图定位。不得造未知键、token、重复字段或把旁路信息写进 scene/char。',
-    '仅 sprite 缺景别时同次独立输出 meta_dna_full_body、meta_dna_half_body、meta_dna_portrait 三景别；可配 meta_dna_uc_景别，不新建 partial。值是同一角色的英文身份主语片段，不能含衣装、表情、动作或令牌。',
+    '仅 sprite 缺景别时同次独立输出 meta_dna_full_body、meta_dna_half_body、meta_dna_portrait 三景别，每项使用 索引 | 非空英文人物身份主语，值不超过4096字符；可配 meta_dna_uc_景别，负面词可空且不超过4096字符，不能仅写 UC 而缺主语，不新建 partial。身份正负字段都不得含身份或衣装令牌。',
+    '字段分为稳定身份、独立衣装、当次动态三层：先从资料抽取换装后仍成立的身体外貌，再提取本套穿戴物，最后写表情、视线和动作。meta_dna_* 不是完整立绘提示词，禁止复制 char 或 meta_outfit_description；默认外观服装和 outfits 是衣装来源，不是身份主语。',
+    '制服、军用战斗服、护甲、鞋帽、武器、战术耳机等可更换衣装装备写入 meta_outfit_description，不能因职业或常穿就写入身份；严肃、镇定、喜怒表情、警戒状态和姿态写入 char 动态。身份不写 wearing/wears 或裸体状态，不用衣装表情填补未知外貌；只有资料明确为角色标志的发饰、首饰等才保留为身份锚点。此分工用于新提取，不自动清洗已有身份。',
+    '对照示例：黑发马尾、深色眼睛、椭圆脸、白皙皮肤属于身份；wears a military combat suit with tactical armor and a tactical headset 属于衣装；maintains a serious expression and looks alert 属于当次动态。三者分别输出，不把战斗服、护甲、耳机或严肃警戒复制到三个身份字段。',
     '建档先逐项核对角色资料里的角、尾巴、翅膀、非人耳、鳞片或异色身体标记，以及标志性发饰、耳饰、项链、额饰等；这些是高优先级身份锚点，不得被泛化五官描写挤掉或误当普通衣装。已知数量、颜色、形状和位置写清，未知不编造。full_body 保留全部已知身体特征和标志饰品，不以当次半身立绘的裁切删掉尾巴或翅膀；half_body 保留头部锚点和适用的上身、尾翼特征；portrait 保留角、非人耳与头颈饰品，不强行描写画外尾巴或扩大镜头。输出前逐景别对照资料检查遗漏、互斥及 UC 误排除，只修正本次新候选，不改已有景别。',
-    '生成新 DNA 必须在三个身份主语中写入有依据且一致的年龄感，以及发色、发型、瞳色、脸型、眉形、眼型、鼻形、唇形、体型、身高或高矮比例、肤色、稳定眼神气质和标志性发饰、首饰、装饰、角、耳、疤痕等。不能只写名字或漂亮、英俊；年龄未知时不编造具体岁数，其他未知数值也不编造。各景别保留其可见锚点。',
-    '稳定眼神气质属于身份，喜怒、视线方向、闭眼或眯眼属于本图动态；标志性饰物与当次衣装分开，换装不自动移除身份饰品。裁切或遮挡不等于特征不存在，不把已有角、尾巴或饰品机械写入 UC；明确摘下或遮挡时按剧情描写可见状态，不改保存 DNA。',
+    '生成新 DNA 在三个身份主语中写入有依据且一致的年龄感，以及发色、发型、瞳色、脸型、眉形、眼型、鼻形、唇形、体型、身高或高矮比例、肤色和明确的标志性发饰、首饰、角、耳、疤痕等。未知细节不编造，不强行填满清单，不能只写名字或漂亮、英俊；年龄未知时不编造具体岁数，其他未知数值也不编造。各景别保留其可见锚点，不以表情或装备代替外貌。',
+    '新身份细化已有依据：头发写清底色与挑染或渐变部位、长度、直卷蓬松度、刘海、分缝、鬓发、扎发结构和位置；五官写清脸部轮廓与下巴、眉形浓淡、眼型眼距与瞳色、鼻梁鼻尖、唇形厚薄。固有发色肤色不被环境光、腮红或当次妆容替代，发型不随情绪改变。',
+    '皮肤保留已知固有肤色冷暖、雀斑、痣、疤痕及身体标记的位置；体型保留有依据的高矮感、骨架肩宽、躯干四肢比例、腰胯轮廓、胖瘦和肌肉感，不把服装收腰或姿态透视当身体比例。不编造未知身高体重、围度或身体细节。全身保留整体比例，半身保留头肩躯干，头像保留头颈五官和发型锚点；三景别同源且不为详细而扩大镜头，已有身份仍逐字保留。',
+    '新衣装与普通配饰逐件保留来源明确的主辅色、材质光泽、剪裁、领袖长度、开合边饰、纹样和内外层关系；装饰写清已知数量、形状、颜色与佩戴位置，左右按穿着者自身。不以泛称衣物或配饰省略明确细节，不猜未知颜色；同套差分复用同一衣装说明。已保存衣装及原 CG 快照逐字保留，不补全或重新设计。',
+    '眼型、瞳色是稳定身份，眼神气质不等于当次表情；喜怒、严肃或镇定神情、视线方向、闭眼或眯眼属于本图动态。明确的标志性饰物与普通穿戴物分开，换装不自动移除身份饰品。裁切或遮挡不等于特征不存在，不把已有角、尾巴或饰品机械写入 UC；明确摘下或遮挡时按剧情描写可见状态，不改保存 DNA。',
     'dna.defaultAppearance 是默认外观服装，不属于身份主语。无明确当次衣装时用于写词兜底；剧情明确换装、当前 outfit 或持续衣装状态优先并完整覆盖默认服装，正文与 meta_outfit_* 一致，不叠穿默认衣装，不改写保存 DNA。',
     '各景别共享同一身份来源，不允许互斥发色、体型。已有景别逐字保留；旧资料只作显式格式转换，保留原文依据、触发词和权重，不臆测画外身体。手工清空并锁定的身份不得自动补建。',
-    '普通 cg 不要求预先生成立绘或齐全景别，不强制半身镜头。每个 named 同次写 meta_identity: 索引 | 完整英文身份主语（含实际可见锚点）和 meta_signature: 索引 | 标志细节摘要，主语不含衣装、动作或令牌。匹配保存景别优先；缺景别时依据已有身份与实际取景描述，无 DNA 时依据角色库和正文保守描述，未知细节不编造。仅作当次来源，不登记永久 DNA。',
-    'derived/consistency 仍只引用保存 DNA，缺所需身份或景别停止对应图；cg/derived/consistency 均禁止 meta_dna_* 候选。不得删人、补画立绘、猜角色键或换用他人身份。',
-    '仅 consistency 工作任务或所选 slot 显式 identityMode 为 appearance_correction 时写 identity_mode: appearance_correction；每个 named/reference 在自己的索引恰写一次 meta_correction_identity: 索引 | 英文身份校正主语，可选 meta_correction_uc: 索引 | 校正负面片段。其他任务和正式场景不写这些字段，仍用自身身份占位。',
+    '只有 promptTask.purpose 为 cg 的普通 CG，每个 named 同次写 meta_identity: 索引 | 完整英文身份主语（含实际可见锚点）和 meta_signature: 索引 | 标志细节摘要，主语不含衣装、动作或令牌。普通 CG 不要求预先生成立绘或齐全景别，不强制半身镜头；匹配保存景别优先，缺景别时依据已有身份与实际取景描述，无 DNA 时依据角色库和正文保守描述，未知细节不编造。仅作当次来源，不登记永久 DNA。',
+    'derived/consistency 仍只引用保存 DNA，不输出 meta_identity 或 meta_signature，缺所需身份或景别停止对应图；cg/derived/consistency 均禁止 meta_dna_* 候选。不得删人、补画立绘、猜角色键或换用他人身份。',
+    'consistency 的参考关系只写在 reference 自己的 char 自然语言中，仍使用身份占位符，不复制身份正文或衣装。Scene 只写原图局部共同画面，不写技术分区；衣装模板模式下 named Char 用本人的衣装槽，不再复述 wearing/wears 或衣装清单。',
+    '仅历史输入的 consistency 任务或所选 slot 显式指定 identityMode: appearance_correction 时写 identity_mode: appearance_correction 及对应校正字段；每个 named/reference 在自己的索引恰写一次 meta_correction_identity: 索引 | 英文身份校正主语，可选 meta_correction_uc: 索引 | 校正负面片段。普通一致性任务不启用该模式，不输出这些字段，仍用自身身份占位。',
     '校正片段只从保存 DNA 提炼发型发色、脸型五官、头部非人细节和原镜头有依据的可见身份饰品，不复制完整身体主语或身体负面资料，不写身高比例、胸腰肌肉、肢长或新姿态。背面或遮挡不强行露出五官饰物，保留原图头部位置大小朝向、身体骨架、衣装、表情视线及接触关系；非目标 named/reference 同样保守，不改保存 DNA 或生成候选。',
     '镜头、质量词、UC、透明底和自定义模板要求在本次写词完成；不等待发送层补词。画师仅由发送端拼一次，不在正文输出。',
     '动态模板不套包住身份槽的未闭合权重；最终展开后须为关系明确的英文句子。准确触发词、既有权重、当前衣装与互动保真。',

@@ -1,5 +1,6 @@
 import { getTavernHelper, getSillyTavernContext } from './tavern-helper-adapter.js';
 import { IGS_IMG_MARKER_SOURCE, stripIllustrationMarkers } from '../scene/scene-directives.js';
+import { isBackgroundGenerationActive } from './background-generation.js';
 
 const REGEX_ID_DISPLAY = 'igs-illustration-marker-display';
 const REGEX_ID_PROMPT = 'igs-illustration-marker-prompt';
@@ -167,6 +168,53 @@ export function createIllustrationMessageHost(globalObject = globalThis) {
         return off;
     }
 
+    // 渲染可能发生在流式正文尚未落定时；主生成结束后补发本轮实际 AI 楼。
+    // 只跟随正常主生成，不把后台 quiet 写词结束当成新的生图请求。
+    function onImageFloorReady(handler) {
+        let active = false, blocked = false, turnChat = '', epoch = 0, ignoredDepth = 0, pending = new Set(), alive = true;
+        const deliver = id => {
+            const floor = readFloor(id);
+            if (alive && !blocked && floor?.isAi && floor.isLatest && floor.chatId === turnChat)
+                handler(Number(id));
+        };
+        const offs = [
+            on('GENERATION_STARTED', (type, params, dryRun) => {
+                if (dryRun === true) return;
+                if ((type === 'quiet' && !params?.quietToLoud) || type === 'impersonate' || isBackgroundGenerationActive()) {
+                    ignoredDepth++;
+                    return;
+                }
+                epoch++; blocked = false;
+                active = true; turnChat = getChatId(); pending.clear();
+            }),
+            on('CHARACTER_MESSAGE_RENDERED', id => {
+                const number = Number(id);
+                if (id == null || blocked || ignoredDepth || !Number.isSafeInteger(number) || number < 0) return;
+                if (active) pending.add(number);
+                else { turnChat = getChatId(); deliver(number); }
+            }),
+            on('GENERATION_ENDED', id => {
+                if (ignoredDepth) { ignoredDepth--; return; }
+                if (!active) return;
+                active = false;
+                if (getChatId() !== turnChat) { pending.clear(); return; }
+                const number = Number(id);
+                if (id != null && Number.isSafeInteger(number) && number >= 0) pending.add(number);
+                const chat = context()?.chat || [];
+                for (let i = chat.length - 1; i >= 0; i--) {
+                    if (chat[i]?.is_user) break;
+                    if (chat[i] && !chat[i].is_system) { pending.add(i); break; }
+                }
+                const ready = [...pending]; pending.clear();
+                const endedEpoch = epoch;
+                queueMicrotask(() => { if (alive && !active && epoch === endedEpoch) ready.forEach(deliver); });
+            }),
+            on('GENERATION_STOPPED', () => { epoch++; active = false; blocked = true; ignoredDepth = 0; pending.clear(); }),
+            on('CHAT_CHANGED', () => { epoch++; active = false; blocked = true; ignoredDepth = 0; pending.clear(); turnChat = ''; }),
+        ];
+        return () => { alive = false; pending.clear(); offs.forEach(off => off()); };
+    }
+
     function attachPromptStrip() {
         on('CHAT_COMPLETION_PROMPT_READY', (eventData) => {
             const chat = eventData && Array.isArray(eventData.chat) ? eventData.chat : [];
@@ -208,7 +256,7 @@ export function createIllustrationMessageHost(globalObject = globalThis) {
     }
 
     return {
-        getChatId, getUserName, readCharacterLore, readFloor, readPreviousAiTexts, writeFloor, on, attachPromptStrip, ensureMarkerRegexes,
+        getChatId, getUserName, readCharacterLore, readFloor, readPreviousAiTexts, writeFloor, on, onImageFloorReady, attachPromptStrip, ensureMarkerRegexes,
         destroy() { while (cleanups.length) cleanups.pop()(); },
     };
 }

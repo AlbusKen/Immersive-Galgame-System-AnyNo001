@@ -10,17 +10,38 @@ export const CHARACTER_DNA_EDIT_FIELDS = Object.freeze([...CHARACTER_DNA_FIELDS,
 
 // 景别资料是同一身份的不同取景文本，不从旧自由文本自动推导。
 export function checkDnaViews(raw, { complete = false, allowEmpty = false } = {}) {
-    const fail = () => ({ ok: false, reason: 'DNA_VIEW_INVALID', error: '景别 DNA 格式无效' });
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
-        || Object.keys(raw).some((key) => !CHARACTER_DNA_VIEWS.includes(key))) return fail();
+    // 只输出程序定义的字段和原因，不携带身份正文或未知键。
+    const fail = (field, issue, detail) => {
+        const labels = { 'object-required': '必须是景别对象', 'unknown-view': '包含未知景别',
+            'view-required': '缺少必需景别', 'subject-required': '缺少身份主语',
+            'string-required': '必须是文本', 'empty-subject': '身份主语为空',
+            'text-too-long': '文本超过4096字符', 'recursive-placeholder': '身份资料含递归占位符' };
+        return { ok: false, reason: 'DNA_VIEW_INVALID',
+            error: `景别 DNA 格式无效 [字段=${field}；原因=${labels[detail]}]`,
+            diagnostic: { code: 'DNA_VIEW_INVALID', field, issue, detail } };
+    };
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        return fail('dna.views', 'invalid', 'object-required');
+    if (Object.keys(raw).some((key) => !CHARACTER_DNA_VIEWS.includes(key)))
+        return fail('dna.views', 'invalid', 'unknown-view');
     const value = {};
     for (const view of CHARACTER_DNA_VIEWS) {
-        const item = raw[view];
+        const item = raw[view], field = `dna.views.${view}`;
         if (item === undefined && (!complete || !CHARACTER_DNA_REQUIRED_VIEWS.includes(view))) continue;
-        if (!item || typeof item !== 'object' || Array.isArray(item)
-            || typeof item.subject !== 'string' || (!allowEmpty && !item.subject.trim()) || item.subject.length > 4096
-            || (item.negative !== undefined && (typeof item.negative !== 'string' || item.negative.length > 4096))
-            || /<<dna(?:_uc)?:/i.test(item.subject + (item.negative || ''))) return fail();
+        if (item === undefined) return fail(field, 'missing', 'view-required');
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return fail(field, 'invalid', 'object-required');
+        if (item.subject === undefined) return fail(`${field}.subject`, 'missing', 'subject-required');
+        if (typeof item.subject !== 'string') return fail(`${field}.subject`, 'invalid', 'string-required');
+        if (!allowEmpty && !item.subject.trim()) return fail(`${field}.subject`, 'invalid', 'empty-subject');
+        if (item.subject.length > 4096) return fail(`${field}.subject`, 'invalid', 'text-too-long');
+        if (item.negative !== undefined && typeof item.negative !== 'string')
+            return fail(`${field}.negative`, 'invalid', 'string-required');
+        if (item.negative?.length > 4096) return fail(`${field}.negative`, 'invalid', 'text-too-long');
+        if (/<<dna(?:_uc)?:/i.test(item.subject + (item.negative || ''))) {
+            const part = /<<dna(?:_uc)?:/i.test(item.subject) ? '.subject'
+                : /<<dna(?:_uc)?:/i.test(item.negative || '') ? '.negative' : '';
+            return fail(field + part, 'placeholder', 'recursive-placeholder');
+        }
         value[view] = { subject: cleanText(item.subject), negative: cleanText(item.negative) };
     }
     return { ok: true, value };

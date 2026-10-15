@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { pngFixture } from './helpers/png-fixture.js';
+
 
 import { createImageBackend } from '../src/generated-images/image-backend.js';
 import { parseCaptionSlots } from '../src/generated-images/illustration/caption-writer.js';
@@ -83,6 +85,19 @@ test('gate:caption-writer:parses-numbered-slots', () => {
     assert.equal(parsed.captions[0].caption.v4_negative_prompt.caption.base_caption, 'lowres');
     const clothes = parseCaptionSlots('scene: school uniform, pleated skirt\nchar:');
     assert.deepEqual(clothes.captions[0].caption.v4_prompt.caption.char_captions, []);
+    for (const newline of ['\n', '\r\n']) {
+        const empty = parseCaptionSlots(['#1', 'scene: wears a blue coat', 'char: ', 'uc: text',
+            '#2', '\tscene：\t', 'char: smiles.', 'uc:'].join(newline));
+        assert.equal(empty.ok, true);
+        assert.deepEqual(empty.captions.map(item => item.slotId), [1, 2]);
+        const [first, second] = empty.captions;
+        assert.equal(first.caption.v4_prompt.caption.base_caption, 'wears a blue coat');
+        assert.deepEqual(first.caption.v4_prompt.caption.char_captions, []);
+        assert.equal(first.caption.v4_negative_prompt.caption.base_caption, 'text');
+        assert.equal(second.caption.v4_prompt.caption.base_caption, '');
+        assert.equal(second.caption.v4_prompt.caption.char_captions[0].char_caption, 'smiles.');
+        assert.equal(second.caption.v4_negative_prompt.caption.base_caption, '');
+    }
 });
 
 test('gate:caption-writer:non-dbgen-writes-with-llm-and-paints-with-source', async () => {
@@ -444,7 +459,8 @@ test('gate:dna-template:内置 NAI 最终 wire 仅展开加画师且快照同源
         assert.deepEqual(result.sentPrompt.caption.v4_negative_prompt.caption, wire.parameters.v4_negative_prompt.caption);
         assert.deepEqual(wire.parameters.v4_prompt.caption.char_captions[0].centers, [{ x: 0.23, y: 0.51 }]);
         assert.equal(wire.parameters.qualityToggle, false);
-        assert.equal(wire.parameters.tag_hint_uc_preset, false);
+        assert.equal(wire.parameters.tag_hint_qt, 0);
+        assert.equal(wire.parameters.tag_hint_uc_preset, 0);
         assert.equal(JSON.stringify(result.sentPrompt).includes('fake-key'), false);
         assert.equal(JSON.stringify(wire).includes('<<dna:'), false);
         assert.equal(result.prompt.caption.v4_prompt.caption.base_caption, fixture.caption.v4_prompt.caption.base_caption);
@@ -466,8 +482,9 @@ test('gate:dna-template:内置局部重绘定稿 wire 和取消与快照同源',
     } });
     const backend = createImageBackend({ nai, getBridge: () => ({ imageApi: { mode: 'nai' },
         autoIllustration: { nai: { apiKey: 'fake-key', model: 'nai-diffusion-4-5-full', artistPrefix: 'artist:global' } } }) });
-    const request = { ...dnaTemplateFixture(), sourceDataUrl: 'data:image/png;base64,SOURCE',
-        maskDataUrl: 'data:image/png;base64,MASK', width: 64, height: 128 };
+    const png = pngFixture(64, 128);
+    const request = { ...dnaTemplateFixture(), sourceDataUrl: png.dataUrl,
+        maskDataUrl: png.dataUrl, width: 64, height: 128 };
     const before = structuredClone(request);
     for (const artist of [undefined, null, { positivePrompt: 'artist:local', negativePrompt: 'local-uc' }]) {
         const result = await backend.edit({ ...request, ...(artist !== undefined && { artist }) });
@@ -480,11 +497,11 @@ test('gate:dna-template:内置局部重绘定稿 wire 和取消与快照同源',
         assert.deepEqual(result.sentPrompt.caption.v4_negative_prompt.caption, wire.parameters.v4_negative_prompt.caption);
         assert.equal(result.sentPrompt.action, 'infill');
         assert.equal(result.sentPrompt.model, wire.model);
-        assert.equal(wire.parameters.image, 'SOURCE');
-        assert.equal(wire.parameters.mask, 'MASK');
+        assert.equal(wire.parameters.image, png.base64);
+        assert.equal(wire.parameters.mask, png.base64);
         assert.equal(wire.parameters.qualityToggle, false);
         assert.equal(wire.parameters.ucPreset, 4);
-        assert.equal(JSON.stringify(result.sentPrompt).includes('SOURCE'), false);
+        assert.equal(JSON.stringify(result.sentPrompt).includes(png.base64), false);
     }
     const count = wires.length;
     for (const extra of [{ signal: AbortSignal.abort() }, { shouldStart: () => false }, { promptRecipe: undefined, promptTask: { version: 1 } }]) {
@@ -566,11 +583,7 @@ test('gate:dna-template:IGS 到 DBGen 直连、阅读器和局部重绘使用实
         checkWire(reader, 'generate');
         assert.match(reader.url, /^data:image\/png;base64,/);
         assert.equal(reader.providerId, 'vn.provider.dbgen');
-        const bytes = new Uint8Array(36);
-        bytes.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
-        const header = new DataView(bytes.buffer);
-        header.setUint32(16, 64); header.setUint32(20, 128);
-        const png = 'data:image/png;base64,' + btoa(String.fromCharCode(...bytes));
+        const png = pngFixture(64, 128).dataUrl;
         checkWire(await backend.edit({ ...fixture, sourceDataUrl: png, maskDataUrl: png, width: 64, height: 128 }), 'infill');
         const count = wires.length;
         const missing = dnaTemplateFixture(); missing.characterContext[0].dna = {};
@@ -609,6 +622,45 @@ function templateWritingFixture(candidate = false) {
     return { reply, promptTask, characterContext, subject };
 }
 
+test('gate:dna-template:拒绝诊断只含字段原因和位置且不回显模型正文', async () => {
+    const { parseTemplateCaptionSlots } = await import('../src/generated-images/illustration/template-caption-parser.js');
+    const fixture = templateWritingFixture();
+    const before = structuredClone(fixture);
+    const cases = [
+        ['```text\n' + fixture.reply + '\n```', 'response_format', 'invalid', 1],
+        ['~~~\n' + fixture.reply + '\n~~~', 'response_format', 'invalid', 1],
+        ['secret response text\n' + fixture.reply, 'meta_fields', 'invalid', 1],
+        [fixture.reply + '\nsecret_key: private content', 'meta_fields', 'invalid'],
+        [fixture.reply.replace('meta_key: 0 | Alice', 'meta_key: Alice'), 'meta_key', 'invalid'],
+        [fixture.reply.replace('meta_token: 0 | rA7', 'meta_token: rA7'), 'meta_token', 'invalid'],
+        [fixture.reply.replace('meta_frame: 0 | half_body', 'meta_frame: half_body'), 'meta_frame', 'invalid'],
+        [fixture.reply + '\nreference: private content', 'meta_fields', 'invalid'],
+        [fixture.reply + '\nreference_uc:', 'meta_fields', 'invalid'],
+        [fixture.reply + '\nreference inset', 'meta_fields', 'invalid'],
+        [fixture.reply + '\n---\nscene: private content', 'slotid', 'missing'],
+        [fixture.reply + '\nmeta_token: 0 | secret-token', 'meta_token', 'duplicate'],
+        [fixture.reply.replace(/^meta_outfit_description:.*(?:\n|$)/m, ''), 'meta_outfit_description', 'missing'],
+        [fixture.reply.replace('char_uc: <<dna_uc:rA7>>, closed eyes\n', ''), 'char_uc', 'mismatch'],
+        [fixture.reply.replace('meta_kind: 0 | named', 'meta_kind: 1 | named')
+            .replaceAll(': 0 |', ': 1 |'), 'meta_rows', 'missing'],
+        [fixture.reply.replace('0.23,0.51 |', 'Alice | 0.23,0.51 |'), 'char', 'invalid'],
+        [fixture.reply.replace('832x1216', '833x1216'), 'size', 'invalid'],
+        [fixture.reply + '\nslotid: 6', 'slotid', 'duplicate'],
+    ];
+    for (const [reply, field, issue, lineNumber] of cases) {
+        const result = parseTemplateCaptionSlots(reply, fixture);
+        assert.equal(result.ok, false, field);
+        assert.equal(result.diagnostic.stage, 'prompt-parse');
+        assert.equal(result.diagnostic.field, field);
+        assert.equal(result.diagnostic.issue, issue);
+        if (lineNumber) assert.equal(result.diagnostic.lineNumber, lineNumber);
+        assert.match(result.error, /已停止写词交接.*字段=/);
+        assert.doesNotMatch(JSON.stringify(result), /secret|private content|rA7|Alice|blue coat/);
+    }
+    assert.deepEqual(fixture, before);
+    assert.equal(parseTemplateCaptionSlots(fixture.reply, fixture).ok, true);
+});
+
 test('gate:dna-template:内置单次写词经真实解析和发送保留正文与候选', async () => {
     const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
     for (const candidate of [false, true]) {
@@ -631,6 +683,10 @@ test('gate:dna-template:内置单次写词经真实解析和发送保留正文�
         assert.equal(calls.length, 1);
         assert.equal(wires.length, 0);
         assert.match(calls[0].system, /不等待发送层补词/);
+        assert.match(calls[0].system, /字段分为稳定身份、独立衣装、当次动态三层/);
+        assert.match(calls[0].system, /制服、军用战斗服、护甲、鞋帽、武器、战术耳机/);
+        assert.match(calls[0].system, /meta_dna_\* 不是完整立绘提示词/);
+
         assert.match(calls[0].user, /writingRequirements/);
         assert.match(calls[0].user, /rA7/);
         assert.equal(written.captions[0].slotId, 6);
@@ -825,6 +881,37 @@ test('gate:dna-template:普通 CG 写词诊断区分 DBGen 和 IGS 拒绝且只�
     }
 });
 
+test('gate:dna-template:景别诊断双入口白名单透传且不回显上游正文', async () => {
+    const secret = 'private identity <<dna:private_token>>';
+    for (const method of ['writePrompt', 'writeFloorPrompts']) {
+        for (const safe of [true, false]) {
+            let calls = 0;
+            const backend = createImageBackend({ getBridge: () => ({ imageApi: { mode: 'dbgen' } }),
+                global: { NaiDbGen: {
+                    async generate() { assert.fail('诊断失败不得绘图'); },
+                    async generateSinglePrompt() {
+                        calls++;
+                        return { ok: false, reason: 'DNA_VIEW_INVALID', error: secret,
+                            diagnostic: { stage: 'prompt-parse', slotId: 6, captionIndex: 0,
+                                field: safe ? 'dna.views.portrait.subject' : secret,
+                                issue: 'invalid', detail: safe ? 'empty-subject' : secret,
+                                lineNumber: safe ? 14 : -1, rawText: secret, subject: secret } };
+                    },
+                } } });
+            const result = await backend[method]({ description: 'Fixture sprite' });
+            assert.equal(result.ok, false);
+            assert.equal(result.reason, 'DNA_VIEW_INVALID');
+            assert.deepEqual(result.diagnostic, { code: 'DNA_VIEW_INVALID', stage: 'prompt-parse',
+                ...(safe && { field: 'dna.views.portrait.subject', detail: 'empty-subject', lineNumber: 14 }),
+                issue: 'invalid', slotId: 6, captionIndex: 0 });
+            if (safe) assert.match(result.error, /dna.views.portrait.subject.*empty-subject.*lineNumber=14/);
+            assert.doesNotMatch(JSON.stringify(result), /private|<<dna|rawText|"subject"/);
+            assert.equal(calls, 1);
+        }
+    }
+});
+
+
 test('gate:scene-only:DBGen 双入口接受无人场景及非身份主体，不放过人物或身份槽', async () => {
     const { buildPipeline } = await import('../../../nai-dbgen/tests/application/_fakes.js');
     const { Ok } = await import('../../../nai-dbgen/src/infra/result.js');
@@ -904,3 +991,895 @@ for (const method of ['writeDbgenPrompt', 'writeDbgenFloorPrompts']) {
         }
     });
 }
+
+
+test('gate:image-backend:来源中立入口与旧名称同源，内置生成不探测 DBG', async () => {
+    const calls = [], input = { description: '画一间安静的咖啡馆。' };
+    const globalObject = {};
+    Object.defineProperty(globalObject, 'NaiDbGen', { get() { throw new Error('不应探测 DBG'); } });
+    const backend = createImageBackend({
+        global: globalObject,
+        getBridge: () => ({ imageApi: { mode: 'nai' }, autoIllustration: { nai: { apiKey: 'fake' } } }),
+        llm: { async request(request) { calls.push(request); return '#1\nscene: A quiet cafe.\nuc: blurry'; } },
+        nai: { async generate() { return { ok: true, dataUrl: 'data:image/png;base64,FAKE' }; } },
+    });
+    for (const [name, legacy] of [['writePrompt', 'writeDbgenPrompt'], ['writeFloorPrompts', 'writeDbgenFloorPrompts'],
+        ['generateCaption', 'generateDbgenCaption']]) assert.equal(backend[name], backend[legacy]);
+    const written = await backend.writePrompt(input);
+    assert.equal(written.ok, true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(input, { description: '画一间安静的咖啡馆。' });
+    assert.equal((await backend.generateCaption({ caption: written.caption })).ok, true);
+});
+
+test('gate:image-backend:旧注入后端转发保留接收者和参数，新入口优先', async () => {
+    const { imageBackendMethod } = await import('../src/generated-images/backend-methods.js');
+    const input = { description: 'fixture' }, extra = {}, result = { ok: true }, calls = [];
+    for (const [name, legacy] of [['writePrompt', 'writeDbgenPrompt'], ['writeFloorPrompts', 'writeDbgenFloorPrompts'],
+        ['generateCaption', 'generateDbgenCaption']]) {
+        const backend = { [legacy](...args) { assert.equal(this, backend); calls.push(args); return result; } };
+        assert.equal(await imageBackendMethod(backend, name)(input, extra), result);
+        assert.equal(calls.at(-1)[0], input);
+        assert.equal(calls.at(-1)[1], extra);
+        backend[name] = function (...args) { assert.equal(this, backend); assert.deepEqual(args, [input]); return 'neutral'; };
+        assert.equal(imageBackendMethod(backend, name)(input), 'neutral');
+        assert.equal(imageBackendMethod({}, name), null);
+        assert.equal(imageBackendMethod(null, name), null);
+    }
+});
+
+
+
+test('gate:image-preset:内置楼层写词保留挂载编号且从不探测DBG', async () => {
+    const { createPresetRegistry } = await import('../src/presets/preset-registry.js');
+    const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
+    const calls = [], globalObject = {};
+    Object.defineProperty(globalObject, 'NaiDbGen', { get() { assert.fail('内置楼层写词不能探测 DBG'); } });
+    const llm = createImagePromptLlm({ async request(request) {
+        calls.push(structuredClone(request));
+        return 'slotid: 1\nprompt_mode: dna_template\nat: 2\nscene: A quiet cafe.\nscene_uc: text';
+    } }, createPresetRegistry());
+    const backend = createImageBackend({ llm, global: globalObject,
+        getBridge: () => ({ imageApi: { mode: 'nai' }, autoIllustration: { nai: { apiKey: 'fake' } } }) });
+    const input = { description: '1. 清晨。\n2. 咖啡馆。', imagePromptTask: 'cg',
+        promptTask: { version: 1, mode: 'dna_template', purpose: 'cg', characters: [] },
+        characterContext: [], outputs: { maxSlots: 1, paragraphCount: 2 } };
+    const before = structuredClone(input);
+    const result = await backend.writeFloorPrompts(input);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.captions[0].at, 2);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(Object.keys(calls[0]), ['messages']);
+    const data = JSON.parse(calls[0].messages[2].content);
+    assert.equal(data.outputs.format, 'dna-template');
+    assert.equal(data.outputs.selection, 'numbered-text');
+    assert.equal(data.outputs.paragraphCount, 2);
+    assert.deepEqual(data.promptTask, input.promptTask);
+    assert.deepEqual(input, before);
+    const invalid = await backend.writeFloorPrompts({ description: '未声明任务' });
+    assert.equal(invalid.reason, 'PROMPT_MODE_CONFLICT');
+    assert.equal(calls.length, 1);
+});
+
+// S6：只用隔离传输，计数不记录凭据或图像载荷。
+const imageTick = () => new Promise(resolve => setImmediate(resolve));
+const imageDeferred = () => {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return {promise, resolve, reject };
+};
+const imageResponse = () => new Response(JSON.stringify({ image: 'data:image/png;base64,AAAA' }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+ test('gate:image-runtime:普通生成与infill同凭据串行，异凭据并行', { timeout: 3000 }, async () => {
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    const queue = createNaiRequestQueue(), releases = [], actions = [];
+    let active = 0, peak = 0;
+    const client = createNaiOfficialClient({ queue, fetch: async (_, init) => {
+        actions.push(JSON.parse(init.body).action);
+        active++; peak = Math.max(peak, active);
+        const gate = imageDeferred(); releases.push(gate);
+        await gate.promise; active--; return imageResponse();
+    } });
+    const png = pngFixture(64, 128).dataUrl;
+    const edit = { prompt: 'A quiet room.', sourceDataUrl: png, maskDataUrl: png, width: 64, height: 128 };
+    const first = client.generate({ scene: 'room' }, { apiKey: 'fixture-a' });
+    const second = client.edit(edit, { apiKey: 'fixture-a' });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.equal(releases.length, 1);
+    releases[0].resolve(); assert.equal((await first).ok, true);
+    await imageTick();
+    assert.equal(releases.length, 2); releases[1].resolve();
+    assert.equal((await second).ok, true); assert.equal(peak, 1);
+    assert.deepEqual(actions, ['generate', 'infill']);
+    const third = client.generate({ scene: 'room' }, { apiKey: 'fixture-a' });
+    const fourth = client.generate({ scene: 'room' }, { apiKey: 'fixture-b' });
+    await imageTick(); assert.equal(releases.length, 4); assert.equal(peak, 2);
+    releases[2].resolve(); releases[3].resolve();
+    assert.equal((await third).ok, true); assert.equal((await fourth).ok, true);
+});
+
+
+test('gate:image-runtime:排队取消零发送，在途取消拒收且实际结束前保留凭据锁', { timeout: 3000 }, async () => {
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    const gates = [], signals = [];
+    const client = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async (_, init) => {
+        signals.push(init.signal);
+        const gate = imageDeferred(); gates.push(gate);
+        await gate.promise; return imageResponse();
+    } });
+    const running = new AbortController(), queued = new AbortController();
+    const first = client.generate({ scene: 'room' }, { apiKey: 'fixture-a', signal: running.signal });
+    await imageTick();
+    const second = client.generate({ scene: 'room' }, { apiKey: 'fixture-a', signal: queued.signal });
+    queued.abort(); assert.equal((await second).reason, 'request-stale');
+    running.abort(); assert.equal((await first).reason, 'request-stale');
+    assert.equal(signals[0].aborted, true);
+    const third = client.generate({ scene: 'room' }, { apiKey: 'fixture-a' });
+    await imageTick(); assert.equal(gates.length, 1, '忽略 abort 的传输尚未结束，不得双发');
+    gates[0].resolve(); await imageTick();
+    assert.equal(gates.length, 2); gates[1].resolve();
+    assert.equal((await third).ok, true);
+});
+
+test('gate:image-runtime:异常释放队列且错误不回显载荷', { timeout: 3000 }, async () => {
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    let sends = 0;
+    const client = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async () => {
+        if (++sends === 1) throw new Error('fixture-a SECRET PAYLOAD');
+        return imageResponse();
+    } });
+    const results = await Promise.all([1, 2].map(() => client.generate({ scene: 'room' }, { apiKey: 'fixture-a' })));
+    assert.equal(results[0].reason, 'nai-transport-unknown');
+    assert.equal(results[1].ok, true); assert.equal(sends, 2);
+    assert.equal(JSON.stringify(results[0]).includes('SECRET'), false);
+    assert.equal(JSON.stringify(results[0]).includes('fixture-a'), false);
+});
+
+test('gate:image-runtime:429遵守Retry-After且每次重试复核守卫', { timeout: 3000 }, async () => {
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    for (const invalidate of [false, true]) {
+        let sends = 0, current = true, checks = 0;
+        const waits = [];
+        const client = createNaiOfficialClient({ queue: createNaiRequestQueue(),
+            fetch: async () => ++sends === 1 ? new Response('', { status: 429,
+                headers: { 'Retry-After': '7' } }) : imageResponse(),
+            sleep: async ms => { waits.push(ms); if (invalidate) current = false; } });
+        const result = await client.generate({ scene: 'room' }, { apiKey: 'fixture-a',
+            shouldStart: () => { checks++; return current; } });
+        assert.deepEqual(waits, [7000]);
+        assert.equal(sends, invalidate ? 1 : 2);
+        assert.equal(result.ok, !invalidate); assert.ok(checks >= 5);
+    }
+    for (const [status, retryAfter, expected, count] of [
+        [429, '0', 'nai-rate-limited', 3], [429, '31', 'nai-retry-budget-exhausted', 1],
+        [408, null, 'nai-http-failed', 1], [500, null, 'nai-http-failed', 1],
+        [504, null, 'nai-http-failed', 1],
+    ]) {
+        let sends = 0;
+        const client = createNaiOfficialClient({ queue: createNaiRequestQueue(), sleep: async () => {},
+            fetch: async () => { sends++; return new Response('', { status,
+                ...(retryAfter !== null && { headers: { 'Retry-After': retryAfter } }) }); } });
+        const result = await client.generate({ scene: 'room' }, { apiKey: 'fixture-a' });
+        assert.equal(result.reason, expected); assert.equal(sends, count);
+    }
+});
+
+test('gate:image-runtime:超时未知不补发，迟到响应不释放前序锁之外的任务', { timeout: 3000 }, async () => {
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    const gates = [];
+    const client = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async () => {
+        const gate = imageDeferred(); gates.push(gate); await gate.promise; return imageResponse();
+    } });
+    const first = await client.generate({ scene: 'room' }, { apiKey: 'fixture-a', timeoutMs: 15 });
+    assert.equal(first.reason, 'request-timeout'); assert.equal(gates.length, 1);
+    const second = client.generate({ scene: 'room' }, { apiKey: 'fixture-a' });
+    await imageTick(); assert.equal(gates.length, 1);
+    gates[0].resolve(); await imageTick(); assert.equal(gates.length, 2);
+    gates[1].resolve(); assert.equal((await second).ok, true); assert.equal(first.ok, false);
+});
+
+async function committedImageHarness() {
+    const { bootstrapIGS, createMemoryStorage, createPresetRegistry } = await import('../src/index.js');
+    const { createEventBus } = await import('../src/core/event-bus.js');
+    const { createBuiltinImageTaskRuntime } = await import('../src/generated-images/builtin-image-task-runtime.js');
+    const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    const storage = createMemoryStorage({ igs_bridge_config: JSON.stringify({ imageApi: { mode: 'nai' },
+        autoIllustration: { nai: { apiKey: 'fixture-a', model: 'nai-diffusion-4-5-full' } } }) });
+    const events = createEventBus(), registry = createPresetRegistry({ storage });
+    const app = bootstrapIGS({ global: { localStorage: storage }, events, presetRegistry: registry, autoAttachMagicWand: false,
+        hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
+    let runtime;
+    try {
+    const readBridge = () => app.getUnifiedSettings().bridge;
+    const save = ({ bridge }) => {
+        const opened = app.openSettings({ tab: 'image' });
+        if (!opened.ok) return opened;
+        for (const [key, value] of Object.entries(bridge)) {
+            const updated = opened.controller.setValue(`bridge.${key}`, value);
+            if (!updated.ok) return updated;
+        }
+        return opened.controller.close();
+    };
+    runtime = createBuiltinImageTaskRuntime({ readBridge, registry,
+        subscribeSettings: handler => events.on('igs:legacy-settings-updated', handler) });
+    const calls = [], gates = [];
+    let waitImages = false, waitWriting = false;
+    const llm = createImagePromptLlm({ async request() {
+        if (waitWriting) { const gate = imageDeferred(); gates.push(gate); await gate.promise; }
+        return '#1\nscene: A quiet room.\nchar:\nuc: text';
+    } }, registry, runtime);
+    const nai = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async (_url, init) => {
+        calls.push({ action: JSON.parse(init.body).action, signal: init.signal });
+        if (waitImages) { const gate = imageDeferred(); gates.push(gate); await gate.promise; }
+        return imageResponse();
+    } });
+    const backend = createImageBackend({ nai, llm, taskRuntime: runtime, getBridge: readBridge, global: {} });
+    return { app, registry, runtime, backend, storage, calls, gates, readBridge, save,
+        waitImages: () => { waitImages = true; }, waitWriting: () => { waitWriting = true; },
+        close() { gates.forEach(gate => gate.resolve()); runtime.dispose(); app.destroy(); } };
+    } catch (error) {
+        runtime?.dispose(); app.destroy(); throw error;
+    }
+}
+
+// S9：来源切换必须失效旧任务；DBG 的配置 token 不属于 IGS。
+for (const method of ['writePrompt', 'writeFloorPrompts', 'generateCaption', 'generate', 'edit', 'generateForReader', 'testForReader']) {
+    test(`gate:source-switch:DBG-${method}在途切换并切回拒收`, { timeout: 5000 }, async () => {
+        const h = await committedImageHarness(), gate = imageDeferred(), requests = [];
+        const caption = { v4_prompt: { caption: { base_caption: 'A quiet room.', char_captions: [] } },
+            v4_negative_prompt: { caption: { base_caption: 'text', char_captions: [] } } };
+        const api = {
+            getPromptCapabilities: () => ({ generationConfig: 1, generationConfigLease: 1 }),
+            getGenerationConfig: async () => ({ ok: true, value: { version: 1, configToken: 'dbg-token', artist: null } }),
+            isGenerationConfigCurrent: token => token === 'dbg-token',
+            describeInfill: () => ({ supported: true }),
+            async generateSinglePrompt(request) {
+                requests.push(request); await gate.promise;
+                return { ok: true, value: { caption, captions: [{ slotId: 1, caption }] } };
+            },
+            async generate(request) {
+                requests.push(request); await gate.promise;
+                return { ok: true, value: [{ blob: 'data:image/png;base64,QQ==' }] };
+            },
+        };
+        const backend = createImageBackend({ global: { NaiDbGen: api }, getBridge: h.readBridge, taskRuntime: h.runtime });
+        try {
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'dbgen' } } }).ok, true);
+            const baseline = structuredClone(h.readBridge());
+            const config = await backend.getEditConfig();
+            assert.equal(config.ok, true); assert.equal(config.configToken, 'dbg-token');
+            const png = pngFixture(64, 128).dataUrl;
+            const pending = method === 'generate' ? backend.generate({}, {}, { description: 'room' })
+                : ['generateForReader', 'testForReader'].includes(method)
+                    ? backend[method]({ prompt: 'room' }, { imageApi: { mode: 'dbgen' } })
+                : method === 'edit' ? backend.edit({ caption, sourceDataUrl: png, maskDataUrl: png,
+                    width: 64, height: 128, expectedConfigToken: config.configToken })
+                : backend[method](method === 'generateCaption' ? { caption } : { description: 'room' });
+            await imageTick(); assert.equal(requests.length, 1);
+            if (method === 'edit') assert.equal(requests[0].expectedConfigToken, 'dbg-token', '插件令牌原样传递');
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'nai' } } }).ok, true);
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'dbgen' } } }).ok, true);
+            assert.equal(config.isCurrent(), false, '切回不得复活 DBG 编辑租约');
+            const result = await pending;
+            assert.equal(result.ok, false); assert.equal(result.reason, 'stale-config');
+            assert.equal(result.stopGeneration, true, '上游未结束也停止等待');
+            gate.resolve(); await imageTick(); await imageTick();
+            assert.equal(requests.length, 1); assert.equal(h.calls.length, 0);
+            assert.equal(requests[0].signal.aborted, true);
+            assert.deepEqual(h.readBridge().autoIllustration, baseline.autoIllustration, '不互写配置');
+        } finally { gate.resolve(); h.close(); }
+    });
+}
+
+for (const phase of ['writing', 'painting', 'handoff']) {
+    test(`gate:source-switch:NAI-${phase}切到DBG再切回不复活`, { timeout: 5000 }, async () => {
+        const h = await committedImageHarness();
+        try {
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'nai' } } }).ok, true);
+            const baseline = structuredClone(h.readBridge());
+            const config = await h.backend.getEditConfig();
+            let pending, queued, written;
+            if (phase === 'painting') {
+                h.waitImages();
+                pending = h.backend.generate({ scene: 'room' }, baseline.autoIllustration.nai);
+                await imageTick();
+                queued = h.backend.generate({ scene: 'room' }, baseline.autoIllustration.nai);
+            } else {
+                if (phase === 'writing') h.waitWriting();
+                pending = h.backend.writePrompt({ description: '画无人房间', imagePromptTask: 'background' });
+                if (phase === 'handoff') { written = await pending; assert.equal(written.ok, true); }
+            }
+            await imageTick();
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'dbgen' } } }).ok, true);
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'nai' } } }).ok, true);
+            assert.equal(config.isCurrent(), false);
+            const result = phase === 'handoff'
+                ? await h.backend.generateCaption({ caption: written.caption, imageKind: 'background' })
+                : await pending;
+            assert.equal(result.reason, 'stale-config'); assert.equal(result.stopGeneration, true);
+            if (queued) assert.equal((await queued).reason, 'stale-config');
+            h.gates.forEach(gate => gate.resolve()); await imageTick(); await imageTick();
+            assert.equal(h.calls.length, phase === 'painting' ? 1 : 0, '切换后不补发或双发');
+            if (phase === 'painting') assert.equal(h.calls[0].signal.aborted, true);
+            assert.deepEqual(h.readBridge().autoIllustration, baseline.autoIllustration, '来源切换不互写配置');
+        } finally { h.close(); }
+    });
+}
+
+async function externalSourceHarness(mode, phase, fail = false) {
+    const h = await committedImageHarness(), gate = imageDeferred();
+    const requests = [], naiCalls = [], reads = [], waits = [];
+    const context = { chat: [{ mes: '正文' }], extensionSettings: {
+        baibai_image: { enabled: true, autoTag: { enabled: true } },
+        'st-chatu8': { scriptEnabled: true, autoLLMImageGen: true, insertOriginalText: true },
+    } };
+    const globalObject = { SillyTavern: { getContext: () => context },
+        STBaiBaiImage: { apiVersion: 1, getBackendStatus: () => ({ configured: true }),
+            async generate(request) {
+                requests.push(request);
+                if (phase === 'request') await gate.promise;
+                if (fail) throw new Error('fixture-failure');
+                return { dataUrl: 'data:image/png;base64,QQ==' };
+            } },
+        async fetch(url) {
+            reads.push(url); await gate.promise;
+            if (fail) throw new Error('fixture-image-read-failure');
+            return { ok: true, blob: async () => new Blob(['fixture'], { type: 'image/png' }) };
+        },
+    };
+    const backend = createImageBackend({ global: globalObject, getBridge: h.readBridge, taskRuntime: h.runtime,
+        nai: { async generate(input) { naiCalls.push(input); return { ok: true, dataUrl: 'data:image/png;base64,TkFJ' }; } },
+        chatu8: { findHost: () => ({ win: globalObject, eventSource: {} }),
+            async request(_host, prompt) {
+                requests.push(prompt);
+                if (phase === 'request') await gate.promise;
+                if (fail && phase !== 'image') return { ok: false, error: 'fixture-failure' };
+                return { ok: true, imageData: phase === 'image' ? '/fixture-image' : 'data:image/png;base64,QQ==' };
+            } },
+        floorPromptWait: { timeoutMs: 1, intervalMs: 1, async sleep() {
+            waits.push(true); await gate.promise;
+            context.chat[0].mes = '<bbi_image>room</bbi_image><image>image###room###</image>';
+        } },
+    });
+    assert.equal(h.save({ bridge: { imageApi: { mode } } }).ok, true);
+    return { ...h, backend, gate, requests, naiCalls, reads, waits,
+        close() { gate.resolve(); h.close(); } };
+}
+
+
+for (const mode of ['baibai', 'extension']) {
+    for (const phase of mode === 'extension' ? ['floor', 'request', 'image'] : ['floor', 'request']) {
+        for (const fail of [false, true]) {
+            test(`gate:source-switch:external-${mode}-${phase}-${fail ? 'failure' : 'success'}切回不复活`, { timeout: 5000 }, async () => {
+                const h = await externalSourceHarness(mode, phase, fail);
+                try {
+                    const baseline = structuredClone(h.readBridge());
+                    const pending = h.backend.generate({ scene: 'room' }, baseline.autoIllustration.nai,
+                        phase === 'floor' ? { messageId: 0, slot: 1 } : {});
+                    await imageTick();
+                    assert.equal(phase === 'floor' ? h.waits.length : phase === 'image' ? h.reads.length : h.requests.length, 1);
+                    assert.equal(h.save({ bridge: { imageApi: { mode: 'nai' } } }).ok, true);
+                    assert.equal(h.save({ bridge: { imageApi: { mode } } }).ok, true);
+                    const result = await pending;
+                    assert.equal(result.ok, false); assert.equal(result.reason, 'stale-config');
+                    assert.equal(result.stopGeneration, true); assert.equal(result.dataUrl, undefined);
+                    h.gate.resolve(); await imageTick(); await imageTick();
+                    assert.equal(h.requests.length, phase === 'floor' ? 0 : 1, '失效后不继续外部请求');
+                    assert.equal(h.naiCalls.length, 0, '迟到失败或图片读取失败不启动 NAI 兜底');
+                    assert.deepEqual(h.readBridge().autoIllustration, baseline.autoIllustration);
+                } finally { h.close(); }
+            });
+        }
+    }
+}
+
+for (const method of ['generateForReader', 'testForReader', 'generateCaption']) {
+    test(`gate:source-switch:external-baibai-${method}保留停止原因`, { timeout: 5000 }, async () => {
+        const h = await externalSourceHarness('baibai', 'request', true);
+        try {
+            const pending = method === 'generateCaption'
+                ? h.backend.generateCaption({ caption: { v4_prompt: { caption: { base_caption: 'room', char_captions: [] } },
+                    v4_negative_prompt: { caption: { base_caption: '', char_captions: [] } } } })
+                : h.backend[method]({ prompt: 'room' }, { unifiedSettings: { bridge: h.readBridge() } });
+            await imageTick(); assert.equal(h.requests.length, 1);
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'nai' } } }).ok, true);
+            assert.equal(h.save({ bridge: { imageApi: { mode: 'baibai' } } }).ok, true);
+            const result = await pending;
+            assert.equal(result.reason, 'stale-config'); assert.equal(result.stopGeneration, true);
+            assert.equal(result.url, undefined); assert.equal(result.dataUrl, undefined);
+            h.gate.resolve(); await imageTick(); await imageTick();
+            assert.equal(h.naiCalls.length, 0);
+        } finally { h.close(); }
+    });
+}
+
+
+
+
+test('gate:image-runtime:真实设置失败保存不失效，服装资料保存不误取消', { timeout: 3000 }, async () => {
+    const h = await committedImageHarness();
+    try {
+        const config = await h.backend.getEditConfig({ imageKind: 'cg' });
+        assert.equal(config.ok, true); assert.equal(config.isCurrent(), true);
+        const before = structuredClone(h.readBridge()), originalWrite = h.storage.setItem;
+        h.storage.setItem = () => { throw new Error('隔离保存失败'); };
+        assert.equal(h.save({ bridge: { autoIllustration: { nai: { apiKey: 'fixture-b' } } } }).ok, false);
+        assert.deepEqual(h.readBridge(), before); assert.equal(config.isCurrent(), true);
+        h.storage.setItem = originalWrite;
+        assert.equal(h.save({ bridge: { autoIllustration: before.autoIllustration, sceneAssets: {
+            wardrobe: { fixture: { prompt: 'A white dress.' } } } } }).ok, true);
+        assert.equal(config.isCurrent(), true);
+        assert.equal((await h.backend.generate({ scene: 'room' }, before.autoIllustration.nai,
+            { expectedConfigToken: config.configToken })).ok, true);
+        assert.equal(h.calls.length, 1);
+        assert.equal(JSON.stringify(config).includes('fixture-a'), false);
+    } finally { h.close(); }
+});
+
+for (const field of ['apiKey', 'endpoint', 'transport', 'model', 'artistPrefix', 'writing']) {
+    test(`gate:image-runtime:成功提交${field}后改回仍拒绝旧写词交接与配置令牌`, { timeout: 3000 }, async () => {
+        const h = await committedImageHarness();
+        try {
+            const config = await h.backend.getEditConfig({ imageKind: 'cg' });
+            const written = await h.backend.writePrompt({ description: '画无人房间', imagePromptTask: 'background' });
+            assert.equal(written.ok, true, written.error);
+            const baseline = structuredClone(h.readBridge().autoIllustration);
+            const changed = structuredClone(baseline);
+            if (field === 'writing') {
+                changed.llm = { ...changed.llm, jailbreakHead: 'Fixture writing requirement.' };
+            } else changed.nai[field] = { apiKey: 'fixture-b', endpoint: 'https://fixture.test/ai/generate-image',
+                transport: 'st-proxy', model: 'nai-diffusion-5-full', artistPrefix: 'artist:fixture' }[field];
+            assert.equal(h.save({ bridge: { autoIllustration: changed } }).ok, true);
+            assert.equal(config.isCurrent(), false);
+            assert.equal(h.save({ bridge: { autoIllustration: baseline } }).ok, true);
+            assert.equal(config.isCurrent(), false, '改回原值不得复活旧租约');
+            const handoff = await h.backend.generateCaption({ caption: written.caption, imageKind: 'background' });
+            assert.equal(handoff.ok, false);
+            const token = await h.backend.generate({ scene: 'room' }, baseline.nai,
+                { expectedConfigToken: config.configToken });
+            assert.equal(token.reason, 'stale-config');
+            assert.equal(h.calls.length, 0);
+        } finally { h.close(); }
+    });
+}
+
+test('gate:image-runtime:配置变更取消排队与在途任务，迟到成功不交付', { timeout: 3000 }, async () => {
+    const h = await committedImageHarness();
+    try {
+        h.waitImages();
+        const baseline = structuredClone(h.readBridge().autoIllustration);
+        const first = h.backend.generate({ scene: 'room' }, baseline.nai);
+        await imageTick();
+        assert.equal(h.calls.length, 1);
+        const second = h.backend.generate({ scene: 'room' }, baseline.nai);
+        await imageTick();
+        const changed = structuredClone(baseline); changed.nai.artistPrefix = 'artist:fixture';
+        assert.equal(h.save({ bridge: { autoIllustration: changed } }).ok, true);
+        assert.equal(h.save({ bridge: { autoIllustration: baseline } }).ok, true);
+        assert.equal((await first).reason, 'stale-config');
+        assert.equal((await second).reason, 'stale-config');
+        assert.equal(h.calls[0].signal.aborted, true);
+        h.gates[0].resolve(); await imageTick();
+        assert.equal(h.calls.length, 1);
+    } finally { h.close(); }
+});
+
+test('gate:image-runtime:current切换后改回不复活，草稿与失败保存不改变有效租约', { timeout: 3000 }, async () => {
+    const h = await committedImageHarness();
+    try {
+        const config = await h.backend.getEditConfig({ imageKind: 'cg' });
+        const current = h.registry.getCurrent('prompt-preset');
+        const epoch = h.registry.getImagePromptEpoch();
+        const other = structuredClone(current); other.id = 'fixture-image-preset';
+        assert.equal(h.registry.savePromptPreset(other, null).ok, true);
+        assert.equal(h.registry.savePromptDraft(current.id, current,
+            { expectedRevision: current.data.revision }).ok, true);
+        assert.equal(h.registry.getImagePromptEpoch(), epoch);
+        assert.equal(config.isCurrent(), true);
+        const write = h.storage.setItem;
+        h.storage.setItem = (key, value) => {
+            if (key === h.registry.store.key) throw new Error('隔离预设写入失败');
+            return write(key, value);
+        };
+        // 只阻断预设存储，不影响设置页记忆和其他写口。
+        const failed = h.registry.activateImagePromptPreset(other.id, h.registry.get('prompt-preset', other.id).data.revision);
+        assert.equal(failed.ok, false);
+        assert.equal(config.isCurrent(), true);
+        h.storage.setItem = write;
+        assert.equal(h.registry.activateImagePromptPreset(other.id, h.registry.get('prompt-preset', other.id).data.revision).ok, true);
+        assert.equal(config.isCurrent(), false);
+        assert.equal(h.registry.activateImagePromptPreset(current.id, current.data.revision).ok, true);
+        assert.equal(config.isCurrent(), false);
+        assert.ok(h.registry.getImagePromptEpoch() > epoch);
+        assert.equal((await h.backend.generate({ scene: 'room' }, h.readBridge().autoIllustration.nai,
+            { expectedConfigToken: config.configToken })).reason, 'stale-config');
+        assert.equal(h.calls.length, 0);
+    } finally { h.close(); }
+});
+
+for (const stop of ['settings', 'preset', 'abort', 'dispose']) {
+    test(`gate:image-runtime:写词期间${stop}停止等待并拒收迟到回复`, { timeout: 3000 }, async () => {
+        const h = await committedImageHarness(), controller = new AbortController();
+        try {
+            h.waitWriting();
+            const writing = h.backend.writePrompt({ description: '画无人房间', imagePromptTask: 'background',
+                signal: controller.signal });
+            await imageTick(); assert.equal(h.gates.length, 1);
+            if (stop === 'settings') {
+                const changed = structuredClone(h.readBridge().autoIllustration);
+                changed.nai.artistPrefix = 'artist:fixture';
+                assert.equal(h.save({ bridge: { autoIllustration: changed } }).ok, true);
+            } else if (stop === 'preset') {
+                const current = h.registry.getCurrent('prompt-preset');
+                current.data.prompts.find(block => block.identifier === 'igs-image-framework').content += '\nFixture instruction.';
+                assert.equal(h.registry.savePromptPreset(current, current.data.revision).ok, true);
+            } else if (stop === 'abort') controller.abort();
+            else h.runtime.dispose();
+            const result = await writing;
+            assert.equal(result.reason, 'stale-config');
+            assert.equal(result.stopGeneration, true); assert.equal(result.caption, undefined);
+            h.gates[0].resolve(); await imageTick(); assert.equal(h.calls.length, 0);
+        } finally { h.close(); }
+    });
+}
+
+test('gate:image-runtime:最终请求使用租约私有配置且保留任务覆写', { timeout: 3000 }, async () => {
+    const h = await committedImageHarness();
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    try {
+        const old = structuredClone(h.readBridge().autoIllustration.nai);
+        const auto = structuredClone(h.readBridge().autoIllustration);
+        Object.assign(auto.nai, { apiKey: 'fixture-b', endpoint: 'https://fixture.test/ai/generate-image',
+            transport: 'st-proxy', model: 'nai-diffusion-4-full', steps: 17, artistPrefix: 'artist:current' });
+        assert.equal(h.save({ bridge: { autoIllustration: auto,
+            imageApi: { ...h.readBridge().imageApi, cgModel: 'nai-diffusion-5-full' } } }).ok, true);
+        const wires = [];
+        const nai = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async (url, init) => {
+            wires.push({ url, init, body: JSON.parse(init.body) }); return imageResponse();
+        } });
+        const backend = createImageBackend({ nai, taskRuntime: h.runtime, getBridge: h.readBridge, global: {} });
+        assert.equal((await backend.generate({ scene: 'room' }, old,
+            { imageKind: 'cg', size: '640x640' })).ok, true);
+        assert.equal(wires[0].init.headers.Authorization === 'Bearer fixture-b', true);
+        assert.equal(wires[0].url, '/proxy/https://fixture.test/ai/generate-image');
+        assert.equal(wires[0].body.model, 'nai-diffusion-5-full');
+        assert.equal(wires[0].body.parameters.steps, 17);
+        assert.equal(wires[0].body.parameters.width, 640);
+        assert.equal(wires[0].body.input, 'artist:current, room');
+        const png = pngFixture(64, 128).dataUrl;
+        const result = await backend.edit({ prompt: 'room', sourceDataUrl: png, maskDataUrl: png,
+            width: 64, height: 128, model: 'nai-diffusion-4-5-full-inpainting' });
+        assert.equal(result.ok, true, result.error);
+        assert.equal(wires[1].body.model, 'nai-diffusion-4-5-full-inpainting');
+        assert.equal(wires[1].init.headers.Authorization === 'Bearer fixture-b', true);
+        const reader = await backend.generateForReader({ prompt: 'room', size: '640x640' },
+            { unifiedSettings: { bridge: h.readBridge() } });
+        assert.ok(reader.url); assert.equal(wires[2].body.model, 'nai-diffusion-5-full');
+        assert.equal(JSON.stringify(wires.map(w => w.body)).includes('fixture-b'), false);
+    } finally { h.close(); }
+});
+
+
+test('gate:image-runtime:画师三态与重绘配置来自同一租约快照', { timeout: 5000 }, async () => {
+    const h = await committedImageHarness();
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    try {
+        const stale = structuredClone(h.readBridge());
+        stale.autoIllustration.nai.artistPrefix = 'artist:stale';
+        const auto = structuredClone(h.readBridge().autoIllustration);
+        auto.nai.artistPrefix = 'artist:global';
+        auto.nai.artistByKind = { enabled: true, kinds: { cg: { positive: 'artist:snapshot', negative: 'snapshot-uc' } } };
+        assert.equal(h.save({ bridge: { autoIllustration: auto,
+            imageApi: { ...h.readBridge().imageApi, cgModel: 'nai-diffusion-5-full' } } }).ok, true);
+        const wires = [];
+        const nai = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async (_url, init) => {
+            wires.push(JSON.parse(init.body)); return imageResponse();
+        } });
+        const backend = createImageBackend({ nai, taskRuntime: h.runtime, getBridge: () => stale, global: {} });
+        assert.equal((await backend.generate({ scene: 'room', sceneUc: 'text' }, stale.autoIllustration.nai,
+            { imageKind: 'cg' })).ok, true);
+        assert.equal(wires[0].input, 'artist:snapshot, room');
+        assert.equal(wires[0].parameters.negative_prompt, 'snapshot-uc, text');
+        const caption = parseCaptionSlots('scene: A quiet room.\nchar:\nuc: text').captions[0].caption;
+        const original = structuredClone(caption), png = pngFixture(64, 128).dataUrl;
+        for (const artist of [undefined, null, { positivePrompt: 'artist:override', negativePrompt: 'override-uc' }]) {
+            const meta = { imageKind: 'cg', ...(artist !== undefined && { artist }) };
+            const config = await backend.getEditConfig(meta);
+            assert.equal(config.ok, true); assert.equal(config.model, 'nai-diffusion-5-full');
+            const expected = artist === undefined
+                ? { positivePrompt: 'artist:snapshot', negativePrompt: 'snapshot-uc' } : artist;
+            assert.deepEqual(config.artist, expected);
+            const result = await backend.generateCaption({ ...meta, caption, captionMode: 'final' });
+            assert.equal(result.ok, true, result.error);
+            assert.equal(wires.at(-1).input, (expected?.positivePrompt ? expected.positivePrompt + ', ' : '') + 'A quiet room.');
+            assert.equal(wires.at(-1).parameters.negative_prompt, (expected?.negativePrompt ? expected.negativePrompt + ', ' : '') + 'text');
+
+            const edited = await backend.edit({ ...meta, caption, captionMode: 'final',
+                sourceDataUrl: png, maskDataUrl: png, width: 64, height: 128,
+                expectedConfigToken: config.configToken });
+            assert.equal(edited.ok, true, edited.error);
+            assert.equal(wires.at(-1).model, 'nai-diffusion-5-full-inpainting');
+            assert.equal(wires.at(-1).action, 'infill');
+            assert.equal(wires.at(-1).input, (expected?.positivePrompt ? expected.positivePrompt + ', ' : '') + 'A quiet room.');
+            assert.equal(wires.at(-1).parameters.negative_prompt, (expected?.negativePrompt ? expected.negativePrompt + ', ' : '') + 'text');
+            assert.deepEqual(edited.sentPrompt.artist, expected);
+            assert.equal(config.isCurrent(), true);
+        }
+        assert.deepEqual(caption, original);
+        const explicit = await backend.getEditConfig({ imageKind: 'cg', model: 'nai-diffusion-4-5-full-inpainting' });
+        assert.equal(explicit.ok, true); assert.equal(explicit.model, 'nai-diffusion-4-5-full-inpainting');
+        assert.equal(JSON.stringify(wires).includes('artist:stale'), false);
+    } finally { h.close(); }
+});
+
+
+async function snapshotWritingHarness(entry, failure) {
+    const h = await committedImageHarness();
+    const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
+    const { writeCaptionsWithLlm, writeTemplateCaptionsWithLlm } = await import('../src/generated-images/illustration/caption-writer.js');
+    const { requestWithSoftRetry } = await import('../src/generated-images/illustration/prompt-kit.js');
+    const calls = [], gate = imageDeferred();
+    let waiting = false;
+    const reply = ['slotid: 6', 'prompt_mode: dna_template', 'scene: One woman in a half-body composition.',
+        'char: 0.3,0.5 | <<dna:rA7>> wears a blue coat and waves.',
+        'char_uc: <<dna_uc:rA7>>, closed eyes', 'meta_kind: 0 | named', 'meta_key: 0 | Alice',
+        'meta_token: 0 | rA7', 'meta_frame: 0 | half_body', 'meta_outfit_name: 0 | Coat',
+        'meta_outfit_description: 0 | A blue coat.',
+        'meta_dna_full_body: 0 | Alice, a tall adult woman with silver hair and blue eyes,',
+        'meta_dna_half_body: 0 | Alice, an adult woman with silver hair and blue eyes,',
+        'meta_dna_portrait: 0 | Alice, an adult woman with silver hair and blue eyes,'].join('\n');
+    const llm = createImagePromptLlm({ async request(request, settings) {
+        calls.push({ request, settings });
+        if (waiting) await gate.promise;
+        if (failure) throw failure;
+        return entry === 'template' ? reply : '#1\nscene: A quiet room.\nchar:\nuc: text';
+    } }, h.registry, h.runtime);
+    const old = { source: 'openai', endpoint: '', model: '' };
+    const meta = { description: '画 Alice 的半身立绘', imagePromptTask: 'sprite',
+        promptTask: { version: 1, mode: 'dna_template', purpose: 'sprite',
+            characters: [{ characterKey: 'Alice', token: 'rA7', framing: 'half_body' }] },
+        characterContext: [{ characterKey: 'Alice', dna: {} }] };
+    const write = () => entry === 'template' ? writeTemplateCaptionsWithLlm(llm, old, meta)
+        : entry === 'caption' ? writeCaptionsWithLlm(llm, old, '画无人房间', { imagePromptTask: 'background' })
+        : requestWithSoftRetry(llm, { system: 'fixture', user: '画无人房间', parse: parseCaptionSlots,
+            imagePrompt: { task: 'background', input: { description: '画无人房间', outputs: { format: 'caption-slots' } } } }, old);
+    return { h, calls, write, wait: () => { waiting = true; }, close() { gate.resolve(); h.close(); } };
+}
+
+for (const entry of ['caption', 'template', 'soft']) {
+    test(`gate:image-runtime:${entry}写词透传422诊断且不补发`, async () => {
+        const { secondaryLlmHttpError } = await import('../src/host/secondary-llm-result.js');
+        const failure = secondaryLlmHttpError(422, 'st-backend');
+        const fixture = await snapshotWritingHarness(entry, failure);
+        try {
+            const auto = structuredClone(fixture.h.readBridge().autoIllustration);
+            auto.llm = { ...auto.llm, source: 'openai', endpoint: 'https://fixture.test/v1', model: 'fixture-model' };
+            assert.equal(fixture.h.save({ bridge: { autoIllustration: auto } }).ok, true);
+            const result = await fixture.write();
+            assert.equal(result.ok, false);
+            assert.equal(result.reason, 'secondary-llm-http-failed');
+            assert.equal(result.status, 422);
+            assert.deepEqual(result.diagnostic, { stage: 'secondary-llm', transport: 'st-backend', status: 422 });
+            assert.match(result.error, /HTTP 422.*未自动补发/);
+            assert.equal(fixture.calls.length, 1);
+        } finally { fixture.close(); }
+    });
+}
+
+
+for (const entry of ['caption', 'template', 'soft']) {
+    test(`gate:image-runtime:${entry}写词使用私有LLM配置并拒收变更后的回复`, { timeout: 5000 }, async () => {
+        const fixture = await snapshotWritingHarness(entry), { h, calls } = fixture;
+        try {
+            const auto = structuredClone(h.readBridge().autoIllustration);
+            auto.llm = { ...auto.llm, source: 'openai', endpoint: 'https://fixture.test/v1',
+                model: 'snapshot-model', apiKey: 'fixture-writing-key', jailbreakHead: 'Fixture requirement.' };
+            assert.equal(h.save({ bridge: { autoIllustration: auto } }).ok, true);
+            const first = await fixture.write();
+            assert.equal(first.ok, true, first.error);
+            assert.equal(calls.length, 1);
+            for (const key of ['source', 'endpoint', 'model', 'apiKey', 'jailbreakHead'])
+                assert.equal(calls[0].settings[key] === auto.llm[key], true, key);
+            assert.ok(Array.isArray(calls[0].request.messages));
+            assert.equal(JSON.stringify(calls[0].request).includes('fixture-writing-key'), false);
+            fixture.wait();
+            const pending = fixture.write();
+            await imageTick();
+            assert.equal(calls.length, 2);
+            assert.equal(calls[1].settings.model, 'snapshot-model');
+            const changed = structuredClone(auto); changed.llm.model = 'next-model';
+            assert.equal(h.save({ bridge: { autoIllustration: changed } }).ok, true);
+            const stopped = await pending;
+            assert.equal(stopped.reason, 'stale-config');
+            assert.equal(stopped.stopGeneration, true);
+            assert.equal(stopped.caption, undefined);
+            assert.equal(calls[1].settings.signal.aborted, true);
+            assert.equal(h.calls.length, 0);
+        } finally { fixture.close(); }
+        await imageTick();
+        assert.equal(calls.length, 2, '迟到回复不得追加写词请求');
+    });
+}
+
+
+test('gate:image-runtime:草稿试图冻结配置且与正式生成共享凭据队列', { timeout: 5000 }, async () => {
+    const h = await committedImageHarness();
+    const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+    const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+    const gate = imageDeferred(), wires = [];
+    let active = 0, maxActive = 0;
+    try {
+        const baseline = structuredClone(h.readBridge());
+        const draft = structuredClone(baseline);
+        Object.assign(draft.autoIllustration.nai, { endpoint: 'https://fixture.test/ai/generate-image',
+            transport: 'st-proxy', model: 'nai-diffusion-5-full', artistPrefix: 'artist:draft' });
+        const nai = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async (url, init) => {
+            active++; maxActive = Math.max(maxActive, active);
+            wires.push({ url, init, body: JSON.parse(init.body) });
+            try { if (wires.length === 1) await gate.promise; return imageResponse(); }
+            finally { active--; }
+        } });
+        const backend = createImageBackend({ nai, taskRuntime: h.runtime, getBridge: h.readBridge, global: {} });
+        const config = await backend.getEditConfig();
+        const formal = backend.generate({ scene: 'formal room' }, baseline.autoIllustration.nai);
+        await imageTick(); assert.equal(wires.length, 1);
+        const preview = backend.testForReader({ prompt: 'draft room' }, { unifiedSettings: { bridge: draft } });
+        draft.autoIllustration.nai.artistPrefix = 'artist:late';
+        draft.autoIllustration.nai.endpoint = 'https://late.test/ai/generate-image';
+        await imageTick(); assert.equal(wires.length, 1);
+        gate.resolve();
+        assert.equal((await formal).ok, true);
+        assert.ok((await preview).url);
+        assert.equal(maxActive, 1); assert.equal(wires.length, 2);
+        assert.equal(wires[1].url, '/proxy/https://fixture.test/ai/generate-image');
+        assert.equal(wires[1].body.model, 'nai-diffusion-5-full');
+        assert.equal(wires[1].body.input, 'artist:draft, draft room');
+        assert.deepEqual(h.readBridge(), baseline); assert.equal(config.isCurrent(), true);
+        assert.equal((await backend.generate({ scene: 'formal room' }, draft.autoIllustration.nai)).ok, true);
+        assert.equal(wires[2].body.model, baseline.autoIllustration.nai.model);
+        assert.equal(wires[2].body.input, 'formal room');
+        assert.equal(JSON.stringify(wires.map(w => w.body)).includes('fixture-a'), false);
+    } finally { gate.resolve(); h.close(); }
+});
+
+
+for (const phase of ['queued', 'inflight']) {
+    for (const stop of ['abort', 'settings', 'dispose']) {
+        test(`gate:image-runtime:草稿试图${phase}-${stop}拒发或拒收迟到结果`, { timeout: 5000 }, async () => {
+            const h = await committedImageHarness();
+            const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
+            const { createNaiRequestQueue } = await import('../src/generated-images/nai-request-queue.js');
+            const gate = imageDeferred(), calls = [], controller = new AbortController();
+            let formal;
+            try {
+                const baseline = structuredClone(h.readBridge());
+                const nai = createNaiOfficialClient({ queue: createNaiRequestQueue(), fetch: async (_url, init) => {
+                    calls.push(init); await gate.promise; return imageResponse();
+                } });
+                const backend = createImageBackend({ nai, taskRuntime: h.runtime, getBridge: h.readBridge, global: {} });
+                if (phase === 'queued') {
+                    formal = backend.generate({ scene: 'formal room' }, baseline.autoIllustration.nai);
+                    await imageTick(); assert.equal(calls.length, 1);
+                }
+                const preview = backend.testForReader({ prompt: 'draft room', signal: controller.signal },
+                    { unifiedSettings: { bridge: baseline } });
+                await imageTick(); assert.equal(calls.length, 1);
+                if (stop === 'abort') controller.abort();
+                else if (stop === 'dispose') h.runtime.dispose();
+                else {
+                    const auto = structuredClone(baseline.autoIllustration);
+                    auto.nai.artistPrefix = 'artist:changed';
+                    assert.equal(h.save({ bridge: { autoIllustration: auto } }).ok, true);
+                }
+                const stopped = await preview;
+                assert.equal(stopped.reason, 'stale-config');
+                assert.equal(stopped.stopGeneration, true);
+                assert.equal(stopped.url, undefined);
+                if (phase === 'inflight' || stop !== 'abort') assert.equal(calls[0].signal.aborted, true);
+                gate.resolve();
+                if (formal) {
+                    const result = await formal;
+                    assert.equal(result.ok, stop === 'abort');
+                }
+                await imageTick(); assert.equal(calls.length, 1, '排队取消零发送，在途迟到不补发');
+                if (stop === 'dispose') {
+                    assert.equal((await backend.testForReader({ prompt: 'room' },
+                        { unifiedSettings: { bridge: baseline } })).reason, 'stale-config');
+                    assert.equal(calls.length, 1);
+                }
+            } finally { gate.resolve(); h.close(); if (formal) await formal; }
+        });
+    }
+}
+
+
+const providedForbiddenFields = ['numberedText', 'previousText', 'lore', 'characters', 'scenes',
+    'messageId', 'skipRecall', 'history', 'characterLibrary', 'tagLibrary'];
+function forbidProvidedReads(input) {
+    for (const field of providedForbiddenFields) Object.defineProperty(input, field,
+        { enumerable: true, get() { assert.fail(`provided 不得读取 ${field}`); } });
+    return input;
+}
+
+test('gate:provided:白名单先于复制且保留控制字段，旧输入对象不变', async () => {
+    const { imageWritingContext } = await import('../src/generated-images/image-prompt-context.js');
+    const { PROVIDED_PROMPT_DATA_FIELDS } = await import('../src/presets/prompt-preset.js');
+    const signal = new AbortController().signal;
+    const input = forbidProvidedReads({ contextMode: 'provided', imagePromptTask: 'consistency',
+        systemPrompt: 'system', signal, shouldStart: () => true, expectedConfigToken: 'fixture-token',
+        ...Object.fromEntries(PROVIDED_PROMPT_DATA_FIELDS.map(field => [field, { field }])) });
+    const filtered = imageWritingContext(input);
+    assert.equal(filtered.ok, true);
+    for (const field of [...PROVIDED_PROMPT_DATA_FIELDS, 'contextMode', 'imagePromptTask',
+        'systemPrompt', 'signal', 'shouldStart', 'expectedConfigToken'])
+        assert.equal(filtered.value[field], input[field], field);
+    for (const field of providedForbiddenFields) assert.equal(Object.hasOwn(filtered.value, field), false);
+    const legacy = { description: '旧调用', numberedText: '旧正文', messageId: 8 };
+    assert.equal(imageWritingContext(legacy).value, legacy);
+    assert.deepEqual(legacy, { description: '旧调用', numberedText: '旧正文', messageId: 8 });
+    const invalid = { contextMode: 'unknown', get description() { assert.fail('未知模式不得读资料'); } };
+    assert.equal(imageWritingContext(invalid).reason, 'PROMPT_CONTEXT_MODE');
+});
+
+test('gate:provided:渲染器拒收禁止的必需字段和未知模式', async () => {
+    const { renderImagePromptPreset } = await import('../src/presets/prompt-preset-renderer.js');
+    const { createDefaultImagePromptPreset } = await import('../src/generated-images/image-prompt-defaults.js');
+    const preset = createDefaultImagePromptPreset();
+    const input = forbidProvidedReads({ contextMode: 'provided', description: '明确资料 {{任务资料}}',
+        promptTask: { purpose: 'consistency' }, characterContext: [{ characterKey: 'A' }],
+        userPrompts: { positive: 'provided-positive' }, writingRequirements: { quality: 'provided-quality' },
+        originalPrompt: { caption: 'original' }, layout: { crop: { x: 0 } }, outputs: { format: 'dna-template' } });
+    const restricted = structuredClone(preset.data);
+    restricted.modules.find(module => module.task === 'consistency').requiredFields.push('numberedText');
+    const rejected = renderImagePromptPreset(restricted, 'consistency', input);
+    assert.equal(rejected.reason, 'missing-prompt-data');
+    assert.deepEqual(rejected.errors, [{ field: 'numberedText', reason: 'required' }]);
+    assert.equal(renderImagePromptPreset(preset.data, 'consistency', { contextMode: 'unknown' }).reason, 'PROMPT_CONTEXT_MODE');
+});
+
+test('gate:provided:未知模式在内置与 DBG 来源分支前零调用', async () => {
+    for (const mode of ['nai', 'dbgen']) {
+        const backend = createImageBackend({ global: { get NaiDbGen() { assert.fail('未知模式不能读取 DBG'); } },
+            getBridge: () => ({ imageApi: { mode } }),
+            llm: { request() { assert.fail('未知模式不能写词'); } } });
+        const result = await backend.writePrompt({ contextMode: 'unknown',
+            get promptTask() { assert.fail('未知模式不能校验任务'); } });
+        assert.equal(result.reason, 'PROMPT_CONTEXT_MODE');
+    }
+});
+
+test('gate:provided:过滤与任务归一复制保留私有租约，配置变化后零写词', async () => {
+    const h = await committedImageHarness();
+    const { imageWritingContext } = await import('../src/generated-images/image-prompt-context.js');
+    const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
+    let calls = 0;
+    try {
+        const meta = forbidProvidedReads({ contextMode: 'provided', imagePromptTask: 'sprite', description: '画 Alice',
+            promptTask: { version: 1, mode: 'dna_template', purpose: 'sprite',
+                characters: [{ characterKey: 'Alice', token: 'rA7', framing: 'half_body' }] },
+            characterContext: [{ characterKey: 'Alice', dna: {} }] });
+        const lease = h.runtime.capture(meta);
+        assert.equal(lease.ok, true); lease.bind(meta); lease.release();
+        const filtered = imageWritingContext(meta).value;
+        const inherited = h.runtime.capture(filtered);
+        assert.equal(inherited.ok, true); assert.equal(inherited.token, lease.token); inherited.release();
+        const auto = structuredClone(h.readBridge().autoIllustration);
+        auto.nai.artistPrefix = 'artist:changed';
+        assert.equal(h.save({ bridge: { autoIllustration: auto } }).ok, true);
+        const llm = createImagePromptLlm({ request() { calls++; assert.fail('旧租约不得开始写词'); } }, h.registry, h.runtime);
+        const backend = createImageBackend({ global: {}, llm, taskRuntime: h.runtime, getBridge: h.readBridge });
+        const result = await backend.writePrompt(meta);
+        assert.equal(result.reason, 'stale-config'); assert.equal(result.stopGeneration, true);
+        assert.equal(calls, 0); assert.equal(h.calls.length, 0);
+    } finally { h.close(); }
+});

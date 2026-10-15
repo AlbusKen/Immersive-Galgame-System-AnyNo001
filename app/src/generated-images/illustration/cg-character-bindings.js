@@ -5,6 +5,7 @@ import { extractSceneDirectives, resolveCharacterKey } from '../../scene/scene-d
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { readCaptionIdentity } from '../character-caption.js';
 import { checkPromptTask, checkPromptOutput, isSceneOnlyPromptOutput } from '../../schemas/prompt-recipe.js';
+import { inheritImageTaskLease } from '../image-task-runtime.js';
 
 // CG 是允许池，不套用立绘批次的必需角色 slots；每图由 recipe 显式选角色和景别。
 export function cgPromptTask(context) {
@@ -50,16 +51,20 @@ export function preflightCgCaption(entry, task, context) {
 
 // 两条发送链复用同一只读预检；历史定稿旁路不参与身份处理。
 export function cgPaintRequests(slots, assets) {
-    return slots.map(({ status, error, failureReason, dataUrl, floorKey, key, updatedAt, ...source }) => {
+    return slots.map(entry => {
+        const { status, error, failureReason, dataUrl, floorKey, key, updatedAt, ...source } = entry;
+        inheritImageTaskLease(entry, source);
         // 未迁移的旧协议保留原引用和请求形状。
         if (!source.promptRecipe && !source.promptTask && !source.captionMode
             && source.promptEdited !== true && source.edited !== true) return source;
-        const request = structuredClone(source);
+        const request = inheritImageTaskLease(source, structuredClone(source));
+        inheritImageTaskLease(source.caption, request.caption);
         if (request.promptEdited === true || request.edited === true) return request;
         try {
             if (request.promptRecipe) {
                 delete request.captionMode;
                 request.caption = structuredClone(request.promptRecipe.caption);
+                inheritImageTaskLease(source.promptRecipe?.caption || source.caption, request.caption);
                 if (assets) {
                     request.characterContext = currentCgContext(request, assets);
                     request.promptTask = { version: 1, mode: 'dna_template', purpose: 'cg',
@@ -86,7 +91,7 @@ export function cgPaintRequests(slots, assets) {
 export function cgFinalRequest(request) {
     const { promptRecipe, promptTask, dnaCandidates, dnaSnapshot, outfitSnapshot, outfitContext,
         sentPrompt, preflightFailure, ...final } = request;
-    return { ...final, captionMode: 'final' };
+    return inheritImageTaskLease(request, { ...final, captionMode: 'final' });
 }
 
 // 普通重画只取当前 DNA；保留原 CG 当次衣装元数据，不重新解释剧情或复用历史身份。

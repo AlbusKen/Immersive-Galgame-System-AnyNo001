@@ -7,6 +7,9 @@
 - 输出给 `visual` 的稳定 scene model。
 - 检测生图段出现和消失，给 `visual` 输出对应显示策略。
 - 根据时间、天气、地点输出背景规则和环境效果候选。
+- 正文替换由 `message-source.js` 统一执行：主规则在前，追加规则按保存顺序执行。内置追加规则版本为 2，删除完整 HTML 注释及宿主脱壳后的成对 `segmentplan:`／`segmentplan：` 至 `segmentplan_end` 文段；不完整标记保留，不写回聊天原文。
+- 旧追加规则仅在缺版本或旧版本且 pattern／flags／replacement 逐字等于已知默认时原位升级；自定义值、顺序、开关及显式空列表保持，已删除规则不重新注入。缺列表使用当前默认；非法正则保留原文并携带 `virtualRegexError`。
+- 无正文保留标签的回退文本也执行正文替换，合法删空不得被原文或 DOM 覆盖补回。HTML 清洗保留原始指令及格式化后的 `[【系统】]：` 角色名字栏，普通状态批注仍删除；最终文段与场景指令索引保持对齐。
 - 按句分页启用时，场景指令索引必须重映射到最终可见分页坐标，不得沿用分页前的原始行号计数。
 - HTML 卡片（`html-cards.js`）：`bridge.sourceFilter.htmlCardTags`（默认 `htm1fenge`）命中的整块在一切正文处理前从原文抠出，原位换成独占一行的 `[igs-card#N]`，单独成页；占位不得写成 `[key:value]`（会被 `parseSceneText` 当场景标签吞掉）。未闭合块（流式中）同样占位。payload 以 `htmlCards[N]` 携带原始 HTML，渲染由 `visual/igs-ui/html-card-layer.js` 消毒后放入 Shadow DOM。
 - `[igs-img:N]` 只由插件写入；原文保留标记以定位插图，显示正文与主模型上下文隐藏标记。解析时记录原文偏移，不计入 scene/char/thought 的可见段索引。当前页按 `resolveHeldSourceOffset` 从第一页往后定位（只在 `<content>` 正文里找，对不上时沿用前一页的位置），再由 `resolveIllustrationAtSourceOffset` 取该位置之后最近的一张（`[igs-img:N]` 与数据库 `<IMG>N</IMG>` 同规则），翻过最后一张后保持最后一张。阅读器经 `resolveIllustrationForPage` 按页分流：NSFW 页（本楼无场景标签时沿用上一楼）走上述整楼规则，只被下一张替换（已翻过的 NSFW 图转到 SFW 场景也保持）；SFW 页从标记前一页（锚句所在页）切入，不提前显示，至少停留 `readerSettings.cgHoldPages` 页（默认 4），之后本段未开口的角色说话即退场，最长两倍页数，换地点/时段或下一张标记也结束当前 CG，退场后恢复背景与立绘。

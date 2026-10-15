@@ -44,6 +44,8 @@ import { createReaderImageService } from '../generated-images/reader-image-servi
 import { createPromptInjector } from '../host/prompt-injector.js';
 import { createIllustrationMessageHost } from '../host/illustration-message-host.js';
 import { createSecondaryLlm } from '../host/secondary-llm.js';
+import { createImagePromptLlm } from '../generated-images/image-prompt-runtime.js';
+import { createBuiltinImageTaskRuntime } from '../generated-images/builtin-image-task-runtime.js';
 import { createImageBackend, mergeLegacyNaiSettings } from '../generated-images/image-backend.js';
 import { IMAGE_ACTIVITY_EVENT, trackImageActivity } from '../generated-images/generation-activity.js';
 import { createNaiOfficialClient } from '../generated-images/nai-official-client.js';
@@ -104,25 +106,23 @@ export function bootstrapIGS(options = {}) {
     const inputChannel = createInputChannel(hostAdapter);
     const layerController = options.layerController || createLayerController(options.layers || {});
     const renderer = options.renderer || createStageRenderer(layerController);
+    const readerImageOptions = (opts = {}) => {
+        const bridge = opts.unifiedSettings?.bridge || {};
+        return { ...opts, unifiedSettings: {
+            ...opts.unifiedSettings,
+            bridge: { ...bridge, autoIllustration: mergeLegacyNaiSettings(bridge.autoIllustration, bridge.imageApi) },
+        } };
+    };
     const readerImageService = options.readerImageService || createReaderImageService({
         global: globalObject,
         hostAdapter,
-        imageGenerator: options.imageGenerator || ((request, opts) => imageBackend.generateForReader(request, {
-            ...opts,
-            unifiedSettings: {
-                ...(opts && opts.unifiedSettings),
-                bridge: (() => {
-                    const bridge = (opts && opts.unifiedSettings && opts.unifiedSettings.bridge) || {};
-                    return { ...bridge, autoIllustration: mergeLegacyNaiSettings(bridge.autoIllustration, bridge.imageApi) };
-                })(),
-            },
-        })),
+        imageGenerator: options.imageGenerator || ((request, opts) =>
+            imageBackend.generateForReader(request, readerImageOptions(opts))),
         providers: options.imageProviders,
         fetch: options.fetch,
     });
     const promptInjector = options.promptInjector || createPromptInjector(globalObject);
     const illustrationMessageHost = options.illustrationMessageHost || createIllustrationMessageHost(globalObject);
-    const secondaryLlm = options.secondaryLlm || createSecondaryLlm(globalObject, { fetch: options.fetch });
     const naiOfficialClient = options.naiOfficialClient || createNaiOfficialClient({ fetch: options.fetch || (typeof globalObject.fetch === 'function' ? globalObject.fetch.bind(globalObject) : undefined) });
     // 只读一两个字段的地方用浅合并，不为一个开关整份深拷贝配置（素材库大时每条生图日志、每次取阅读模式都很贵）。
     const peekBridge = () => ({ ...(state.legacyIgs && state.legacyIgs.bridge || {}), ...(state.config || {}) });
@@ -130,6 +130,10 @@ export function bootstrapIGS(options = {}) {
         const bridge = (getUnifiedSettingsSnapshot() || {}).bridge || {};
         return { ...bridge, autoIllustration: mergeLegacyNaiSettings(bridge.autoIllustration, bridge.imageApi) };
     };
+    const imageTaskRuntime = createBuiltinImageTaskRuntime({ readBridge: readImageBridge, registry: presetRegistry,
+        subscribeSettings: handler => events.on('igs:legacy-settings-updated', handler) });
+    const secondaryLlm = createImagePromptLlm(options.secondaryLlm
+        || createSecondaryLlm(globalObject, { fetch: options.fetch }), presetRegistry, imageTaskRuntime);
     const imageJobLog = options.imageJobLog || createImageJobLog({
         storage: storageLike,
         getSettings: () => cloneData(peekBridge().imageJobLog),
@@ -146,6 +150,7 @@ export function bootstrapIGS(options = {}) {
         getBridge: readImageBridge,
         global: globalObject,
         llm: secondaryLlm,
+        taskRuntime: imageTaskRuntime,
         report: (level, message) => {
             if (imageJobLog && typeof imageJobLog.add === 'function') imageJobLog.add(level, message);
         },
@@ -268,6 +273,7 @@ export function bootstrapIGS(options = {}) {
     app.igsUi = options.igsUi || createIgsReaderHost({
         global: globalObject,
         version: app.version,
+        presetRegistry,
         random: options.random,
         getIllustrationSource: (messageId) => illustrationMessageHost.readFloor(messageId),
         getIllustrationUrl: (query) => illustrationService.getIllustrationUrl(query),
@@ -336,6 +342,9 @@ export function bootstrapIGS(options = {}) {
         testImageApi(context = {}) {
             return readerImageService.test({
                 ...context,
+                imageGenerator: options.imageGenerator || ((request, opts) =>
+                    (imageBackend.testForReader || imageBackend.generateForReader)
+                        .call(imageBackend, request, readerImageOptions(opts))),
                 providers: getImageProviders(),
                 unifiedSettings: context.settings || context.unifiedSettings || getUnifiedSettingsSnapshot({ mode: context.mode }),
             });
@@ -899,6 +908,7 @@ export function bootstrapIGS(options = {}) {
         if (typeof state.metaDigestCleanup === 'function') state.metaDigestCleanup();
         state.metaDigestCleanup = null;
         promptInjector.clear();
+        imageTaskRuntime.dispose();
         illustrationService.stop();
         assetGenerationService.stop();
         itemCg.itemImages.stop();

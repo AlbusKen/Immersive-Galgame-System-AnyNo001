@@ -1,5 +1,6 @@
 import { clampPixelPair } from '../illustration/cg-pixel-cap.js';
 import { prefixFinalArtist } from '../final-caption.js';
+import { globalArtist } from '../prompt-artists.js';
 
 export const NAI_OFFICIAL_ENDPOINT = 'https://image.novelai.net/ai/generate-image';
 
@@ -96,12 +97,12 @@ export function buildNaiV4Request(slot, naiSettings = {}, random = Math.random) 
     const final = slot?.captionMode === 'final';
     if (slot?.captionMode !== undefined && !final) throw new Error('PROMPT_MODE_CONFLICT');
     const finalArtist = settings.finalArtist !== undefined ? settings.finalArtist
-        : { positivePrompt: settings.artistPrefix || '', negativePrompt: '' };
+        : globalArtist(settings);
     const prepared = final ? prefixFinalArtist(slot.caption, finalArtist) : null;
     if (final && /<<\s*dna/i.test(JSON.stringify(prepared))) throw new Error('DNA_TEMPLATE_UNRESOLVED');
     const chars = Array.isArray(slot && slot.chars) ? slot.chars.filter((c) => c && String(c.tags || '').trim()) : [];
     const base = final ? prepared.v4_prompt.caption.base_caption : joinTags(settings.artistPrefix, slot && slot.scene);
-    const negBase = final ? prepared.v4_negative_prompt.caption.base_caption : joinTags(settings.negativePrompt, slot && slot.sceneUc);
+    const negBase = final ? prepared.v4_negative_prompt.caption.base_caption : joinTags(settings.artistNegativePrefix, slot && slot.sceneUc);
     const posChars = final ? prepared.v4_prompt.caption.char_captions : chars.map((c) => ({
         char_caption: String(c.tags).trim(),
         centers: [{ x: snapToNaiGrid(c.x), y: snapToNaiGrid(c.y) }],

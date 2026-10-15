@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pngFixture, imageZipFixture } from './helpers/png-fixture.js';
+import { deflateRawSync } from 'node:zlib';
 
 import { bootstrapIGS, createMemoryStorage, createPresetRegistry, PRESET_STORE_KEY } from '../src/index.js';
 import { writeLegacyIgsSettings } from '../src/storage/legacy-igs.js';
@@ -74,7 +76,7 @@ test('gate:simulation:virtual-regex-extra-rules-render-add-save-and-remove', asy
         let snapshot = settings.getSnapshot();
         assert.match(snapshot.html, /自定义规则（依上下顺序生效）/);
         // 内置的 HTML 注释剥离规则随默认值一起下发（用户删掉后不会再长回来）。
-        const builtinRule = { pattern: '\\s*<!--[\\s\\S]*?-->\\s*\\n?', flags: 'g', replacement: '' };
+        const builtinRule = { pattern: String.raw`[ \t]*(?:<!--[\s\S]*?-->|\bsegmentplan[ \t]*[:：][\s\S]*?\bsegmentplan_end\b)[ \t]*(?:\r?\n)?`, flags: 'g', replacement: '' };
         assert.deepEqual(snapshot.draft.bridge.virtualRegex.rules, [builtinRule]);
 
         const added = await settings.invoke('add-virtual-regex');
@@ -113,7 +115,7 @@ test('gate:simulation:virtual-regex-strips-html-comments-and-keeps-deleted-built
     try {
         const opened = await vn.openLatestAvailable('pc');
         const settings = opened.reader.controller.openSettings('regex').controller;
-        const builtinRule = { pattern: '\\s*<!--[\\s\\S]*?-->\\s*\\n?', flags: 'g', replacement: '' };
+        const builtinRule = { pattern: String.raw`[ \t]*(?:<!--[\s\S]*?-->|\bsegmentplan[ \t]*[:：][\s\S]*?\bsegmentplan_end\b)[ \t]*(?:\r?\n)?`, flags: 'g', replacement: '' };
 
         // 内置规则真的生效：注释整段消失，正文一个字不丢。
         const cleaned = vn.getUnifiedSettings({ mode: 'pc' }).bridge.virtualRegex;
@@ -136,6 +138,53 @@ test('gate:simulation:virtual-regex-strips-html-comments-and-keeps-deleted-built
         vn.destroy();
     }
 });
+
+test('gate:simulation:virtual-regex:segmentplan预览保存重开与合法删空', async () => {
+    const storage = createMemoryStorage();
+    const document = createFakeDocument();
+    const plan = '<!-- segmentplan: 段目标与动作。\r\n不展示的规划。segmentplan_end -->';
+    const message = { id: 1, text: '前段正文。\n' + plan + '\n后段正文。' };
+    const vn = bootstrapIGS({
+        global: { document, localStorage: storage }, autoAttachMagicWand: false,
+        hostAdapter: { getCurrentMessage: async () => message, typeAndSend: async () => ({ ok: true }) },
+    });
+    try {
+        const opened = await vn.openLatestAvailable('pc');
+        const settings = opened.reader.controller.openSettings('regex').controller;
+        settings.setValue('bridge.sourceFilter.stripHtmlComments', false);
+        await settings.invoke('test-virtual-regex');
+        const preview = settings.getSnapshot().resultText.virtualRegex;
+        const expected = buildIgsTextPayload(message, settings.getSnapshot().draft.bridge).formattedText;
+        assert.equal(preview.split('最终正文：\n')[1], expected);
+        assert.equal(expected, '前段正文。\n后段正文。');
+        assert.equal(settings.close().ok, true);
+        const reopened = vn.openSettings({ tab: 'regex', mode: 'pc' }).controller;
+        await reopened.invoke('test-virtual-regex');
+        assert.equal(reopened.getSnapshot().resultText.virtualRegex, preview);
+        reopened.setValue('bridge.virtualRegex.pattern', '[\\s\\S]+');
+        reopened.setValue('bridge.virtualRegex.flags', 'g');
+        reopened.setValue('bridge.virtualRegex.replacement', '');
+        await reopened.invoke('test-virtual-regex');
+        const cleared = reopened.getSnapshot().resultText.virtualRegex;
+        assert.match(cleared, /formattedTextLength=0/);
+        assert.match(cleared, /正文已被当前过滤／替换规则清空/);
+        assert.doesNotMatch(cleared, /当前没有可测试/);
+        reopened.setValue('bridge.virtualRegex.pattern', '[');
+        await reopened.invoke('test-virtual-regex');
+        assert.match(reopened.getSnapshot().resultText.virtualRegex, /error=/);
+        assert.match(reopened.getSnapshot().resultText.virtualRegex, /前段正文/);
+        // 删除内置规则后，保存与再次归一不能复活它；脱壳规划按配置保留。
+        reopened.setValue('bridge.virtualRegex.pattern', '');
+        await invokeConfirmed(reopened, document, 'remove-virtual-regex:0');
+        assert.equal(reopened.close().ok, true);
+        const afterDelete = vn.openSettings({ tab: 'regex', mode: 'pc' }).controller;
+        assert.deepEqual(afterDelete.getSnapshot().draft.bridge.virtualRegex.rules, []);
+        const plain = plan.slice(4, -3);
+        assert.match(buildIgsTextPayload({ text: plain }, afterDelete.getSnapshot().draft.bridge).formattedText, /segmentplan:/);
+        assert.equal(afterDelete.close().ok, true);
+    } finally { vn.destroy(); }
+});
+
 
 test('gate:igs-ui:toolbar-top-first-row-aligns-with-toggle-and-close', () => {
     const css = getOriginalReaderStyleText();
@@ -5884,7 +5933,7 @@ test('gate:simulation:igs-ui-image-settings-fetch-models-and-test-nai-use-real-s
     vn.destroy();
 });
 
-// 严格仿 NAI 官方：只认 /ai/generate-image、Bearer Key 与 V4 请求体，返回 zip 包的 PNG。
+// 隔离请求替身：检查地址、鉴权、V4 结构及 DBG 的整数提示字段契约，不代表真实服务接受性。
 function createStrictNaiServer(expectedUrl) {
     const calls = [];
     const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8ffff3f0005fe02fea57d7fa60000000049454e44ae426082', 'hex');
@@ -5904,6 +5953,8 @@ function createStrictNaiServer(expectedUrl) {
         const p = body.parameters || {};
         const valid = body.action === 'generate' && /^nai-diffusion-[45]/.test(body.model) && String(body.input || '').trim()
             && p.v4_prompt && String(p.v4_prompt.caption.base_caption || '').trim() && p.v4_negative_prompt
+            && [0, 1].includes(p.tag_hint_qt) && [0, 1].includes(p.tag_hint_uc_preset)
+            && typeof p.qualityToggle === 'boolean'
             && p.width % 64 === 0 && p.height % 64 === 0 && p.steps >= 1 && p.steps <= 50;
         if (!valid) return new Response('{"statusCode":400,"message":"invalid body"}', { status: 400 });
         return new Response(zip, { status: 200, headers: { 'content-type': 'application/x-zip-compressed' } });
@@ -5948,6 +5999,40 @@ test('gate:simulation:igs-ui-builtin-nai-empty-endpoint-tests-and-regenerates-vi
     }
 });
 
+for (const transport of ['direct', 'st-proxy']) {
+    test(`gate:simulation:nai-response:测试按钮 ${transport} 压缩响应与失败不补发`, async () => {
+        const png = pngFixture(1, 1);
+        const zip = imageZipFixture(png.bytes, { method: 8, descriptor: true, compressed: deflateRawSync(png.bytes) });
+        const calls = [];
+        let broken = false;
+        const storage = createMemoryStorage();
+        const vn = bootstrapIGS({ global: { document: createFakeDocument(), localStorage: storage,
+            fetch: async (url, init) => {
+                calls.push({ url, init });
+                return new Response(broken ? imageZipFixture(png.bytes, { method: 99 }) : zip,
+                    { headers: { 'content-type': 'text/plain' } });
+            } }, autoAttachMagicWand: false, tavernSettingsSync: false,
+            config: { imageApi: { mode: 'nai' } },
+            hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
+        try {
+            const committed = structuredClone(vn.getUnifiedSettings().bridge), disk = storage.getItem('igs_bridge_config');
+            const c = vn.openSettings({ tab: 'image' }).controller;
+            for (const [key, value] of Object.entries({ apiKey: 'pst-fake', endpoint: 'https://fixture.test/', transport }))
+                c.setValue(`bridge.autoIllustration.nai.${key}`, value);
+            await c.invoke('test-image');
+            assert.match(c.getSnapshot().resultText.image, /真实生成测试成功/);
+            broken = true;
+            await c.invoke('test-image');
+            assert.match(c.getSnapshot().resultText.image, /解析失败.*压缩方式不受支持.*未自动补发/);
+            assert.equal(calls.length, 2, '每次按钮只发送一次，不补发');
+            assert.ok(calls.every(call => call.url === (transport === 'direct'
+                ? 'https://fixture.test/ai/generate-image' : '/proxy/https://fixture.test/ai/generate-image')));
+            assert.deepEqual(vn.getUnifiedSettings().bridge, committed);
+            assert.equal(storage.getItem('igs_bridge_config'), disk);
+        } finally { vn.destroy(); }
+    });
+}
+
 test('gate:simulation:igs-ui-builtin-nai-reports-auth-failure-and-relay-endpoint', async () => {
     const relay = 'https://relay.example.com/ai/generate-image';
     const server = createStrictNaiServer(relay);
@@ -5958,6 +6043,7 @@ test('gate:simulation:igs-ui-builtin-nai-reports-auth-failure-and-relay-endpoint
         hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) },
     });
     try {
+        const committed = structuredClone(vn.getUnifiedSettings().bridge);
         const settings = vn.openSettings({ tab: 'image', mode: 'pc' });
         await settings.controller.invoke('test-image');
         assert.match(settings.controller.getSnapshot().resultText.image, /鉴权失败（401）/);
@@ -5967,6 +6053,7 @@ test('gate:simulation:igs-ui-builtin-nai-reports-auth-failure-and-relay-endpoint
         await settings.controller.invoke('test-image');
         assert.equal(server.calls[1].url, `/proxy/${relay}`);
         assert.equal(server.calls[1].init.headers.Authorization, 'Bearer pst-fake', '面板里刚改的 Key 要立即生效');
+        assert.deepEqual(vn.getUnifiedSettings().bridge, committed, '显式草稿试图不得提交配置');
     } finally {
         vn.destroy();
     }
@@ -5980,6 +6067,49 @@ test('gate:simulation:auto-illustration-nai-client-passes-strict-official-server
     assert.equal(result.ok, true, result.error);
     assert.match(result.dataUrl, /^data:image\/png;base64,/);
 });
+
+for (const model of ['nai-diffusion-4-5-full', 'nai-diffusion-5-full']) {
+    for (const [transport, suffix] of ['direct', 'st-proxy'].flatMap(transport =>
+        ['/', '/ai/', '/ai/generate-image'].map(suffix => [transport, suffix]))) {
+        test(`gate:simulation:nai-wire:测试按钮 ${model} ${transport} ${suffix} 地址补全与草稿隔离`, async () => {
+            const endpoint = 'https://fixture.example' + suffix;
+            const target = 'https://fixture.example/ai/generate-image';
+            const url = transport === 'st-proxy' ? `/proxy/${target}` : target;
+            const server = createStrictNaiServer(url);
+            const storage = createMemoryStorage();
+            const vn = bootstrapIGS({ global: { document: createFakeDocument(), localStorage: storage, fetch: server.fetch },
+                autoAttachMagicWand: false, tavernSettingsSync: false, config: { imageApi: { mode: 'nai' } },
+                hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
+            try {
+                const committed = structuredClone(vn.getUnifiedSettings().bridge);
+                const disk = storage.getItem('igs_bridge_config');
+                const c = vn.openSettings({ tab: 'image' }).controller;
+                for (const [key, value] of Object.entries({ apiKey: 'pst-fake', endpoint, transport, model,
+                    sampler: 'k_euler', noiseSchedule: 'karras', steps: 20, scale: 4, size: '640x640' })) {
+                    c.setValue(`bridge.autoIllustration.nai.${key}`, value);
+                }
+                const result = await c.invoke('test-image');
+                assert.equal(result.ok, true, JSON.stringify(result));
+                assert.equal(server.calls.length, 1);
+                const call = server.calls[0], body = JSON.parse(call.init.body), p = body.parameters;
+                assert.equal(call.url, url);
+                assert.equal(body.model, model);
+                assert.equal(body.action, 'generate');
+                assert.equal(p.tag_hint_qt, 1);
+                assert.equal(p.tag_hint_uc_preset, 1);
+                assert.equal(p.qualityToggle, true);
+                assert.equal(p.sampler, 'k_euler');
+                assert.equal(p.noise_schedule, 'karras');
+                assert.equal(p.steps, 20); assert.equal(p.scale, 4);
+                assert.deepEqual([p.width, p.height], [640, 640]);
+                assert.equal(c.getSnapshot().draft.bridge.autoIllustration.nai.endpoint, endpoint);
+                assert.deepEqual(vn.getUnifiedSettings().bridge, committed);
+                assert.equal(storage.getItem('igs_bridge_config'), disk);
+            } finally { vn.destroy(); }
+        });
+    }
+}
+
 
 test('gate:simulation:igs-ui-auto-llm-fetch-models-and-select', async () => {
     const calls = [];
@@ -10390,7 +10520,11 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'infli
         if (choice === 'close') {
             assert.equal(saves, 1); assert.equal(host.getState().activeReader, null);
             assert.deepEqual(settings.bridge.sceneAssets.characterOutfits.Alice.礼服.moods, {});
-            assert.ok(loadStoryOutfitCandidates(storage).items[0].imageId);
+            const row = loadStoryOutfitCandidates(storage).items[0];
+            assert.equal(row.status, 'saved');
+            assert.equal(row.prompt, 'wears a white dress', '保留已入柜的服装说明');
+            assert.equal(row.imageId, undefined, '目标失效后拒收迟到图片');
+            assert.ok(!(await assets.readStoredImage('story-sprite')), '迟到图片不写入素材存储');
             return;
         }
         if (choice === 'switch') {
@@ -10398,7 +10532,11 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'infli
             assert.equal(settings.bridge.sceneAssets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
             assert.deepEqual(settings.bridge.sceneAssets.characterOutfits.Alice.礼服.moods, {});
             assert.deepEqual(settings.bridge.sceneAssets.characterDna, before.characterDna);
-            assert.ok(loadStoryOutfitCandidates(storage).items[0].imageId); return;
+            const row = loadStoryOutfitCandidates(storage).items[0];
+            assert.equal(row.status, 'saved');
+            assert.equal(row.prompt, 'wears a white dress', '保留已入柜的服装说明');
+            assert.equal(row.imageId, undefined, '切卡后拒收迟到图片');
+            assert.ok(!(await assets.readStoredImage('story-sprite')), '迟到图片不写入素材存储'); return;
         }
         if (choice === 'save-failed') {
             assert.deepEqual(settings.bridge.sceneAssets, before);
@@ -10509,5 +10647,123 @@ test('gate:story-outfit:bootstrap-cg-stages-before-user-adoption', async () => {
         assert.deepEqual(saved.characterDna, before.characterDna);
         assert.deepEqual(saved.characters, before.characters);
         assert.equal(paints, 1);
+    } finally { vn.destroy(); }
+});
+
+test('gate:simulation:image-prompt-dom:输入排序折叠保存及刷新恢复', async () => {
+    const storage = createMemoryStorage(), document = createFakeDocument({ innerWidth: 390, innerHeight: 844 });
+    const registry = createPresetRegistry({ storage });
+    let requests = 0;
+    const vn = bootstrapIGS({ global: { document, localStorage: storage }, presetRegistry: registry,
+        config: { imageApi: { mode: 'nai' } },
+        autoAttachMagicWand: false, secondaryLlm: { request: async () => { requests++; } },
+        naiOfficialClient: { generate: async () => { requests++; } },
+        hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
+    const address = (group, id, field) => JSON.stringify([group, id, field]);
+    try {
+        const controller = vn.openSettings({ tab: 'image' }).controller;
+        controller.switchImageSubTab('llm');
+        const root = document.getElementById('igs-unified-settings').parentNode;
+        const key = 'image-prompt-prompts-igs-image-framework';
+        const details = document.createElement('details');
+        details.setAttribute('data-advanced', key); details.open = true;
+        root.dispatchEvent({ type: 'toggle', target: details });
+        const html = controller.getSnapshot().html;
+        assert.match(html, /data-image-prompt-field=/);
+        const input = document.createElement('textarea');
+        input.setAttribute('data-image-prompt-field', address('prompts', 'igs-image-framework', 'content'));
+        input.value = 'DOM 编辑的共享正文';
+        root.dispatchEvent({ type: 'input', target: input });
+        assert.equal(controller.getSnapshot().html, html, 'input 不整页重绘');
+        root.dispatchEvent({ type: 'change', target: input });
+        assert.match(controller.getSnapshot().html, /DOM 编辑的共享正文/);
+        assert.match(controller.getSnapshot().html, /data-advanced="image-prompt-prompts-igs-image-framework"[^>]* open/);
+        const role = document.createElement('select');
+        role.setAttribute('data-image-prompt-field', address('prompts', 'igs-image-framework', 'role'));
+        role.value = 'assistant';
+        root.dispatchEvent({ type: 'change', target: role });
+        const enabled = document.createElement('input'); enabled.type = 'checkbox'; enabled.checked = false;
+        enabled.setAttribute('data-image-prompt-order-enabled', 'igs-image-submit');
+        root.dispatchEvent({ type: 'change', target: enabled });
+        const move = document.createElement('button');
+        move.setAttribute('data-action', 'image-prompt:move:igs-image-protocol:igs-image-framework');
+        assert.ok(controller.getSnapshot().html.includes('image-prompt:move:igs-image-protocol:igs-image-framework') === false,
+            '相邻上移按钮不使用数组索引');
+        root.dispatchEvent({ type: 'click', target: move });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal((await controller.invoke('image-prompt:save')).ok, true);
+        const saved = registry.getCurrent('prompt-preset');
+        assert.equal(saved.data.prompts[0].content, input.value);
+        assert.equal(saved.data.prompts[0].role, 'assistant');
+        assert.equal(saved.data.prompt_order[0].identifier, 'igs-image-protocol');
+        assert.equal(saved.data.prompt_order.find(e => e.identifier === 'igs-image-submit').enabled, false);
+        assert.equal(controller.close().ok, true);
+        assert.deepEqual(createPresetRegistry({ storage }).getCurrent('prompt-preset'), saved);
+        assert.equal(requests, 0);
+    } finally { vn.destroy(); }
+});
+
+test('gate:simulation:artist-library-dom:来源页直达与文件导入选择应用保存', async () => {
+    const storage = createMemoryStorage(), document = createFakeDocument({ innerWidth: 390, innerHeight: 844 });
+    const row = { id: 'dom-ink', name: 'DOM 画师', positivePrompt: 'artist:dom', negativePrompt: 'dom-uc' };
+    let requests = 0;
+    const vn = bootstrapIGS({ global: { document, localStorage: storage }, autoAttachMagicWand: false,
+        secondaryLlm: { request: async () => { requests++; assert.fail('不得请求模型'); } },
+        naiOfficialClient: { generate: async () => { requests++; assert.fail('不得绘图'); } },
+        config: { imageApi: { mode: 'nai' } },
+        hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) } });
+    try {
+        let c = vn.openSettings({ tab: 'image' }).controller;
+        c.switchImageSubTab('source');
+        const root = document.getElementById('igs-unified-settings').parentNode;
+        // 复用现有假 DOM：HTML 不解析，提取生产渲染标记后交给真实宿主委托。
+        const html = c.getSnapshot().html;
+        const entryId = /data-setting-go="(image-prompt-presets)"/.exec(html)?.[1];
+        assert.ok(entryId);
+        const entry = document.createElement('button'); entry.setAttribute('data-setting-go', entryId);
+        await root.dispatchEvent({ type: 'click', target: entry });
+        assert.equal(c.getSnapshot().imageSubTab, 'llm');
+        assert.equal((c.getSnapshot().html.match(/data-image-prompt-panel/g) || []).length, 1);
+        c.goToSetting('artist-library');
+        let pendingAction;
+        const invoke = c.invoke.bind(c);
+        c.invoke = name => {
+            pendingAction = invoke(name);
+            return pendingAction;
+        };
+        const action = verb => {
+            assert.ok(c.getSnapshot().html.includes(`data-action="artist-library:${verb}"`));
+            const button = document.createElement('button'); button.setAttribute('data-action', `artist-library:${verb}`);
+            pendingAction = null;
+            root.dispatchEvent({ type: 'click', target: button });
+            assert.ok(pendingAction, '生产点击委托调用了控制器');
+            return pendingAction;
+        };
+        const pending = action('import');
+        const picker = document.body.children.find(el => el.type === 'file');
+        assert.ok(picker, '文件按钮真实创建 picker');
+        picker.files = [{ text: async () => JSON.stringify([row]) }];
+        await picker.dispatchEvent({ type: 'change', target: picker });
+        await new Promise(resolve => setImmediate(resolve));
+        answerSettingsDialog(document);
+        await pending;
+        assert.equal(picker.parentNode, null, '读取后清理文件输入');
+        assert.deepEqual(c.getSnapshot().draft.bridge.autoIllustration.nai.artistLibrary.entries, [row]);
+        for (const [key, value] of [['id', row.id], ['target', 'global']]) {
+            assert.ok(c.getSnapshot().html.includes(`data-artist-library-field="${key}"`));
+            const select = document.createElement('select'); select.setAttribute('data-artist-library-field', key);
+            select.value = value; root.dispatchEvent({ type: 'change', target: select });
+        }
+        const applying = action('apply'); answerSettingsDialog(document); await applying;
+        await action('save');
+        const saved = JSON.parse(storage.getItem('igs_bridge_config')).autoIllustration.nai;
+        assert.equal(saved.artistPrefix, row.positivePrompt);
+        assert.equal(saved.artistNegativePrefix, row.negativePrompt);
+        assert.equal(c.close().ok, true);
+        c = vn.openSettings({ tab: 'image' }).controller;
+        c.switchImageSubTab('source');
+        assert.deepEqual(c.getSnapshot().draft.bridge.autoIllustration.nai.artistLibrary.entries, [row]);
+        assert.equal(c.getSnapshot().draft.bridge.autoIllustration.nai.artistNegativePrefix, row.negativePrompt);
+        assert.equal(requests, 0);
     } finally { vn.destroy(); }
 });

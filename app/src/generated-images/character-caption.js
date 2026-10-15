@@ -2,6 +2,7 @@
 import { checkPromptRecipe, checkPromptTask, checkPromptOutput, checkRecipeCharacterMeta, promptTaskForSlot, isSceneOnlyPromptOutput } from '../schemas/prompt-recipe.js';
 import { readCharacterDnaView, normalizeCharacterDna, checkDnaViews } from '../scene/character-dna.js';
 import { checkOutfitTemplates } from '../schemas/outfit-template.js';
+import { promptProvenance } from './generation-prompt.js';
 const fail = (reason, error) => ({ ok: false, reason, error });
 const controlled = /<<\s*(?:dna|outfit)/i;
 const textFields = (caption) => [caption?.v4_prompt?.caption, caption?.v4_negative_prompt?.caption]
@@ -18,8 +19,11 @@ export function readCaptionIdentity(dna, framing, purpose, metadata) {
     if (purpose !== 'cg' || !['DNA_MISSING', 'DNA_VIEW_MISSING'].includes(saved.reason)) return saved;
     if (dna?.version !== undefined && dna.version !== 2)
         return fail('DNA_VIEW_INVALID', '未知 DNA 版本不能作为当次身份降级');
-    if (dna?.version === 2 && dna.views !== undefined && !checkDnaViews(dna.views, { allowEmpty: true }).ok)
-        return fail('DNA_VIEW_INVALID', '非法景别资料不能作为当次身份降级');
+    if (dna?.version === 2 && dna.views !== undefined) {
+        const checked = checkDnaViews(dna.views, { allowEmpty: true });
+        if (!checked.ok) return { ...checked,
+            error: `非法景别资料不能作为当次身份降级；${checked.error}` };
+    }
     const subject = metadata?.identityAnchor, signature = metadata?.signatureDetails || '';
     if (typeof subject !== 'string' || !subject.trim() || subject.length > 4096
         || typeof signature !== 'string' || signature.length > 4096) return saved;
@@ -64,6 +68,23 @@ export function prepareCharacterCaption(input = {}) {
     if (!output.ok) return output;
     const outfits = checkOutfitTemplates(checked.value, input.characterMeta, characterContext, selected.value);
     if (!outfits.ok) return outfits;
+    // 普通 CG 重画保留原衣装来源；不能把快照复用误记为已入柜。
+    // 先核验格式和本次展开的绑定／正文，拒绝借历史快照替换其他衣装。
+    if (selected.value?.purpose === 'cg' && checked.value.outfitMode === 'template'
+        && input.outfitSnapshot !== undefined) {
+        let snapshot;
+        try { snapshot = promptProvenance({ outfitSnapshot: input.outfitSnapshot }).outfitSnapshot; }
+        catch { return fail('OUTFIT_TEMPLATE_INVALID', 'CG 原衣装快照无效，已停止出图'); }
+        if (snapshot.characters.length !== outfits.value.characters.length)
+            return fail('OUTFIT_TEMPLATE_INVALID', 'CG 原衣装快照绑定不一致，已停止出图');
+        for (const outfit of outfits.value.characters) {
+            const original = snapshot.characters.find(c => c.captionIndex === outfit.captionIndex);
+            if (!original || ['characterKey', 'token', 'name', 'description']
+                .some(field => original[field] !== outfit[field]))
+                return fail('OUTFIT_TEMPLATE_INVALID', 'CG 原衣装快照与本次展开不一致，已停止出图');
+        }
+        outfits.value = snapshot;
+    }
     for (const b of checked.value.bindings.filter((b) => b.token)) {
         if (characterContext.filter((c) => c?.characterKey === b.characterKey).length !== 1)
             return fail('DNA_TEMPLATE_BINDING', '角色资料快照无法唯一绑定');

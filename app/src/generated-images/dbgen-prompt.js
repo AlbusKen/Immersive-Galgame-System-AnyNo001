@@ -1,5 +1,5 @@
 import { moodPresetAct, moodPresetTags, moodPresetUse } from '../scene/mood-groups.js';
-import { BUILTIN_PROMPTS } from './prompt-registry.js';
+import { BUILTIN_PROMPTS, SPRITE_HALF_BODY_RULE } from './prompt-registry.js';
 import { hasSpriteDna, isSpriteExpressionTag } from './sprite-prompt-composition.js';
 
 // 楼内补立绘一次最多写 8 份，超过则平分 2 批。
@@ -10,6 +10,7 @@ export const EXPRESSION_DIFF_BATCH_MAX = 9;
 // 正负模板在出图前合并进插件返回的 NaiCaption，不交给写词模型照抄。
 const OUTFIT_TEMPLATE_RULE = '任务 outfitMode 为 template 时，每份写 outfit_mode: template；named Char 在身份占位后恰写本人的 <<outfit:token>> 一次，再写动作与表情，不重复衣装说明。'
     + 'meta_outfit_name 与 meta_outfit_description 是独立服装 DNA：已保存的当次衣装或角色 outfits 按原值复用，不改写或重新设计；缺服装 DNA 的新装在同次回复提供名称和英文穿着谓语，不增加写词请求。固定外貌、动作、表情和背景不进入服装 DNA。'
+    + '新衣装逐件保留来源明确的主辅色、材质、剪裁、领袖与长度、内外层和纹样；配饰保留已知颜色、形状、数量与佩戴位置，左右按穿着者自身。不用泛称服装或配饰替代明确细节，不编造未知颜色；同套差分复用同一说明，不随表情换色换饰。'
     + 'reference 的两项 meta_outfit_* 在自己的索引各写一次空值，reference、scene 与 UC 不使用衣装占位。';
 
 const WEIGHT_RE = /^-?\d*\.?\d+::|::$/g;
@@ -101,6 +102,9 @@ export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit
     const moods = (Array.isArray(labels) ? labels : []).map((item) => String(item || '').trim()).filter(Boolean);
     if (template) return [
         `为角色「${name || ''}」写 ${moods.length} 份独立表情动态模板，按本次 slots 映射输出。`,
+        `本批图号与表情一一对应：${moods.map((mood, index) => `slotid: ${index + 1} 对应 ${mood}`).join('；')}。每图第一行独立写 slotid: 本图编号，不输出表情标题或 #编号。`,
+        '每图写完 prompt_mode、scene、scene_uc、char、char_uc 和该图全部 meta 字段；Char 索引从0重新开始。多图只在完整图片之间用独立一行 ---，之后下一非空行必须是新的 slotid；单图不写 ---，同图字段之间不分段。不输出 at 或身份候选。',
+        SPRITE_HALF_BODY_RULE,
         OUTFIT_TEMPLATE_RULE,
         '只引用已保存的 half_body 身份，不生成候选、不重复固定外貌。',
         '每份 Char 正文为 <<dna:token>> <<outfit:token>> 加当次表情与动作；服装 DNA 已有则直接复用，缺失则同次写入独立 meta_outfit_*，不要重写包含外貌和衣装的完整正文。',
@@ -152,7 +156,8 @@ export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit
         clothes && clothes.nsfwBoost && !nude ? nsfwClothingBoostLine('character') : '',
         clothesPrompt ? `服装提示词：\n${clothesPrompt}` : '',
         '表情依据该角色的性格、脾气与行为习惯分别撰写，禁止套用统一表情模板。',
-        '规格：大腿以上（cowboy shot）。朝向正面，直立，平视。禁止全身，禁止露出脚，禁止侧身，禁止倾斜构图。',
+        SPRITE_HALF_BODY_RULE,
+        '朝向正面，直立，平视，不使用侧身或倾斜构图。',
         '情绪须写入肢体：手势、肩线、重心随该情绪变化。禁止仅替换面部。',
         '各表情的动作按下面的说明写，不要把不同表情画成同一张脸。',
         '下面的动作是基准，不是照抄的模板。先按角色的性格改幅度和形式：三无、高冷、内敛的性格幅度极小，靠眼神和嘴角的细微变化，动作克制；开朗、外向的性格按基准写；狂躁、元气、暴烈的性格幅度夸张，带动肩、手、重心，甚至打破站姿。',
@@ -174,13 +179,13 @@ const UPRIGHT_POSITIVE = BUILTIN_PROMPTS.expression.positive;
 const UPRIGHT_NEGATIVE = BUILTIN_PROMPTS.expression.negative;
 const EXPRESSION_DROP_POSITIVE = new Set(splitTags(BUILTIN_PROMPTS.expression.dropPositive).map(tagKey));
 
-// 景别回到大腿以上。只拿掉双手下垂，避免表情动作被锁死。
+// 旧组合路径使用正常上半身。只拿掉双手下垂，避免表情动作被锁死。
 export function expressionSpritePrompts(positive, negative) {
     const kept = splitTags(positive).filter((tag) => !EXPRESSION_DROP_POSITIVE.has(tagKey(tag))).join(', ');
     return { positive: kept, negative: String(negative || '') };
 }
 
-// 写词结果补上大腿以上和正面。负面排除全身和脚。
+// 旧组合路径使用腰胯以上和正面。负面排除全身和脚。
 export function uprightSpriteCaption(caption) {
     const pos = caption && caption.v4_prompt && caption.v4_prompt.caption;
     const neg = caption && caption.v4_negative_prompt && caption.v4_negative_prompt.caption;
@@ -247,6 +252,7 @@ export function buildCharacterSpriteDescription(name, dna, options) {
     if (options?.template) return [
         `为角色「${name || ''}」写一份默认立绘动态模板，slotid 为 1。`,
         OUTFIT_TEMPLATE_RULE,
+        SPRITE_HALF_BODY_RULE,
         '固定身份只引用本次任务 token；仅缺景别时同次输出独立景别 DNA 候选，衣装不进入 DNA。',
         nude ? '当次不穿衣服；保留基础身份及标志性特征，不删改 DNA。' : '衣装按当次角色资料；未指定时按角色设定设计日常穿着。',
         SPRITE_DAILY_POSE_LINE, note ? `本次额外要求：\n${note}` : '',
@@ -257,7 +263,8 @@ export function buildCharacterSpriteDescription(name, dna, options) {
         nude
             ? '不要画任何衣服、内衣和配饰。长相按下面的角色设定，人还是这个角色。不要套用现成的服装提示词，按这个角色自己写裸体该怎么画。'
             : '外貌与服装按下面的角色设定来画。设定里没写到的，按这个角色补一个日常样子。',
-        '规格：大腿以上（cowboy shot）。朝向正面，直立，平视。禁止全身，禁止露出脚，禁止侧身，禁止倾斜构图。',
+        SPRITE_HALF_BODY_RULE,
+        '朝向正面，直立，平视，不使用侧身或倾斜构图。',
         SPRITE_DAILY_POSE_LINE,
         note ? `这次额外的要求：\n${note}` : '',
         spriteGroundLine(options && options.transparent),
@@ -303,7 +310,8 @@ export function buildWardrobeClothingDescription(_character, outfitName, { nsfwB
         request ? `用户对这套服装的具体要求（必须照办）：${request}` : '',
         '只写英文穿着描述，不写角色主体、固定外貌、表情、动作、背景或完整立绘提示词。',
         '服装和配套饰品仅按本次依据描述，不为凑齐全套而编造未提供的衣物。',
-        '有依据的款式、颜色、材质和配饰保留；未知细节不编造。',
+        '逐件保留来源明确的主色与辅色、材质和光泽、剪裁、领型袖型、长度、开合、边饰与纹样，写清内外层关系；颜色紧邻对应衣物或部位，不能仅用服装名或深色衣服概括，不把光照色当固有色。',
+        '配饰保留来源明确的数量、颜色、材质、形状、大小及佩戴位置，左右按穿着者自身；区分发饰、耳饰、胸针、领结和腰带扣。不编造未知颜色或装饰，不为凑细节增添饰物；产出一份可由所有表情逐字复用的完整说明。',
         nsfwBoost ? nsfwClothingBoostLine('clothes') : '',
         '不要写人，不要写表情、姿势、背景。',
         '只写一份，slotid 为 1。',
@@ -315,6 +323,8 @@ export function buildDbgenSpriteBatchDescription(needs = [], options = {}) {
     if (options.template) return [
         `按本次 slots 映射写 ${needs.length} 份独立立绘动态模板，slotid 从 1 到 ${needs.length}。`,
         OUTFIT_TEMPLATE_RULE,
+        SPRITE_HALF_BODY_RULE,
+        '每份从独立一行 slotid: 本图编号开始，写完全部 scene、char、char_uc 和 meta 字段再分隔下一图；--- 后下一非空行必须是新的 slotid，单图内部不分段。',
         ...needs.map((need, index) => `${index + 1}. ${need.name}`),
         '每份只画该 slot 指定的角色，固定身份使用自身 token。',
         '仅缺景别的角色同次输出独立景别 DNA 候选；已有景别逐字保留，服装独立。',

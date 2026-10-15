@@ -3,6 +3,7 @@ import { currentCgContext } from './cg-character-bindings.js';
 import { checkPromptTask, checkPromptOutput, checkPromptRecipe, promptTaskForSlot } from '../../schemas/prompt-recipe.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { referenceCanvasCenter } from '../../media/cg-reference-canvas.js';
+import { inheritImageTaskLease } from '../image-task-runtime.js';
 
 // 诊断只带字段路径和数值索引，不包含衣装正文、身份资料或写词回复。
 const fail = (reason = 'DNA_TEMPLATE_BINDING', field = 'promptRecipe', where = {}) => ({
@@ -61,13 +62,13 @@ export function consistencyPromptTask(record, characters, assets, plans) {
             '裁剪内保留元素尽量沿用原 CG 提示词：衣装颜色、款式、材质与配件，表情、视线、姿势、动作、身体朝向、位置、尺度、遮挡、互动和接触关系；画面内其他人物、马匹等动物、道具、缰绳、建筑及局部背景仍使用原有描述。光影、画风和整体色调沿用原词；画外元素和不适用的全图构图描述从局部模板省略，不为了完整复述原词而重新画入。',
             '本轮输出清单的 characterKey 是目标；layout.sourceSize/crop 是原图裁剪依据，work/reference 是工作区与辅助图区域。根据原词、原角色位置及裁剪结构筛选局部元素，不把粗裁剪区视为整块重设计许可。只输出清单指定的角色，画外内容不强行移入；没有位置依据的物件不猜测位置，不声称看过图片。',
             '每个工作轮次独立用于实际重绘，从随图保存的原词与裁剪布局派生。保留元素的姿势、动作、身体朝向、表情、视线、遮挡和互动接触关系尽量复用原提示词，不笼统省略成仅身份与衣装或保持原姿势。只对局部裁剪确实需要的描述作最小调整，不重写整份动态描述。',
-            '只反推动作、表情、互动与局部环境；复用原 named 的角色 token 和景别，Char 恰有自身 <<dna:token>> 一次，负向可引用自身 <<dna_uc:token>> 一次，发送前展开保存 DNA。不重写身份正文，不输出 identity_mode、meta_correction_identity、meta_correction_uc 或 meta_dna_*。reference 使用本次清单的独立身份 token，不生成替代 DNA。',
-            '具名人物的 meta_outfit_name 与 meta_outfit_description 必须从本次角色资料的 outfit.name/description 逐字照抄；这些字段来自原 CG 衣装快照，不是参照立绘衣装。不改写、不翻译、不补全，空值保持为空。实际 Char 绘图正文必须同时保持该原衣装的颜色和细节；元数据照抄但正文换色同样不合格。',
+            '只反推动作、表情、互动与局部环境；复用原 named 的角色 token 和景别，Char 恰有自身 <<dna:token>> 一次，负向可引用自身 <<dna_uc:token>> 一次。不重写身份正文，不输出 meta_identity、meta_signature、identity_mode、meta_correction_identity、meta_correction_uc 或 meta_dna_*。reference 使用本次清单的独立身份 token，不生成替代 DNA，不套用普通 CG 的身份旁路。',
+            '具名人物的 meta_outfit_name 与 meta_outfit_description 必须从本次角色资料的 outfit.name/description 逐字照抄；这些字段来自原 CG 衣装快照，不是参照立绘衣装。不改写、不翻译、不补全，空值保持为空。衣装模板模式下，Char 只用衣装槽引用该原衣装，不再复述 wearing/wears 或衣装清单；没有衣装模板时才在 Char 中保真写原衣装，不迁移参照图衣装。',
             ...(recipe.outfitMode === 'template' ? ['每份写 outfit_mode: template；named Char 恰写本人的 <<outfit:token>> 一次，不另写衣装说明。reference 与所有 UC 不使用衣装占位。原 CG 衣装仅按快照展开，不采用新候选或参照图服装。'] : []),
-            '以本次输出清单的 captionIndex 作为本图 Char 的零基索引，从 0 连续编号。slotid、原图角色序号和 token 中的数字都不是本图索引。同一 characterKey 的 named 与 reference 是两个独立 Char，必须各用清单给出的索引和 token，不能合并。每个索引的每个 meta_* 字段恰好写一次，不在图末重复汇总。',
-            '固定标签 reference inset 由程序在局部绘图请求的正向 Scene 开头添加，写词输出不包含该标签。用简短英文自然语言说明同一角色参考关系：侧边辅助图对应本轮 characterKey 的目标，仅参考脸、头发及可见稳定身份细节；主工作区保留原 CG 动作、衣装和环境，不采用参考立绘的姿态、表情、服装、背景或画风。描述参考与目标的实际内容，不只写抽象的请保持不变。',
-            '参考 Char 使用输入的独立 reference token 和 portrait 景别，只引用身份占位符及简洁可见状态，不要求相框、描边、展示卡、衣装或新背景。协议字段完整：在参考 Char 自己的索引各写一次 meta_outfit_name: 索引 | 和 meta_outfit_description: 索引 |，值均为空；不得复制 named 的衣装或写回 named 的索引。辅助图不是剧情里的第二个人。',
-            'reference inset 是工作画布技术参考，不是最终 CG 的分栏构图；不得额外要求 panel、frame、border、split screen、collage 或装饰边线。将新增相框、金色边框、装饰边线、分栏、拼贴及重复参考人物等伪影排除项写入工作轮次 scene_uc，不排除本次必需的 reference inset；保留原 CG 中实际存在的物件，不把真实建筑或道具误当技术边界删除。',
+            '以本次输出清单的 captionIndex 作为本图 Char 的零基索引，从 0 连续编号。每个 meta_* 字段都写为 字段名: captionIndex | 值，包括 meta_key、meta_token、meta_frame。例如索引0须写 meta_key: 0 | 输入角色键、meta_token: 0 | 输入token、meta_frame: 0 | 输入景别，不能只写值。slotid、原图角色序号和 token 中的数字都不是本图索引。同一 characterKey 的 named 与 reference 是两个独立 Char，各用自己的索引和 token；每个字段恰好一次，不在图末重复汇总。',
+            '参考关系只写进对应 reference 的 char 英文自然语言：辅助人像对应本轮目标，仅比较脸、头发及可见稳定身份细节；主工作区保留原 CG 动作、衣装和环境，不采用参考立绘的姿态、表情、服装、背景或画风。Scene 只描述原 CG 裁剪内的共同画面，不写技术分区。reference 是 meta_kind 的取值，不是字段名；不输出 reference:、reference_uc:、额外参考说明段落或独立 reference inset 行，也不把该技术标签写进正文。',
+            '参考 Char 使用输入的独立 reference token 和 portrait 景别，只引用身份占位符及简洁可见状态，不复述外貌，不要求相框、描边、展示卡、衣装或新背景。参考 Char 仍写 char 和 char_uc；在自己的索引各写一次 meta_kind、meta_key、meta_token、meta_frame、meta_outfit_name、meta_outfit_description，所有值均以 索引 | 开始，衣装两项在竖线后留空；不得复制 named 的衣装或索引。辅助图不是剧情里的第二个人。',
+            '辅助人像不改变最终 CG 的构图；不得额外要求 panel、frame、border、split screen、collage 或装饰边线。将新增相框、金色边框、装饰边线、分栏、拼贴及重复剧情人物等伪影排除项写入工作轮次 scene_uc，不排除本轮必需的辅助人像；保留原 CG 中实际存在的物件，不把真实建筑或道具误当技术边界删除。',
             '每份严格绑定该 slots 的全部 token；景别照抄输入。所有动态文字、质量、UC 在本次完成，不输出画师串。',
             '本张 CG 保存的原提示词（筛选局部元素并尽量复用原措辞，身份和衣装使用原 token）：\n'
                 + JSON.stringify(record.promptEdited ? record.prompt?.caption || record.prompt || record.caption : recipe.caption),
@@ -131,7 +132,7 @@ export function checkConsistencyCaptions(written, bundle, characters) {
         const input = { slotId: entry.slotId, caption,
             promptRecipe: { ...recipe, caption }, promptTask: selected.value,
             characterContext: bundle.characterContext, characterMeta: { version: 1, characters: metadata } };
-        results.push(input);
+        results.push(inheritImageTaskLease(entry, input));
     }
     return { ok: true, rounds: results };
 }

@@ -267,7 +267,8 @@ test('gate:dna-expression:当前 DNA 重画与手改定稿跨连接回读', asyn
     const outfit = { name: '礼服', prompt: 'wears a white dress', words: ['white dress'] };
     const before = structuredClone(dna);
     try {
-        const first = await h.service.generateExpressionSet({ name: 'Alice', dna, outfit, moods: ['喜悦', '愤怒'] });
+        const first = await h.service.generateExpressionSet({ name: 'Alice', dna, outfit, moods: ['喜悦', '愤怒'],
+            note: '按额外要求描写当次动作' });
         assert.equal(first.ok, true, first.error);
         assert.deepEqual(first.items.map((i) => i.ok), [true, true]);
         assert.equal(h.writes.length, 1);
@@ -880,7 +881,8 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
             if (mode === 'wire-changed') record.sentPrompt.caption.v4_prompt.caption.base_caption += ' changed';
             if (mode === 'stale') hash = 'source-2';
             return record;
-        } }, getContext: () => ({ root, scopeKey: 'card:Current', floorKey: 'chat|39|0', messageId: 39, sourceHash: hash }),
+        } }, getContext: () => ({ root, scopeKey: 'card:Current', floorKey: 'chat|39|0', messageId: 39, sourceHash: hash,
+            text: 'Alice 换上白色礼服。' }),
         commit(next, expected, guard) {
             assert.equal(guard(), true); assert.deepEqual(root, expected); saves++;
             if (mode === 'save-failed' && saves === 1) return { ok: false, reason: 'fixture-save' };
@@ -917,7 +919,7 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
                 if (mode === 'missing-dna') assert.equal(h.paints.length, 0);
                 return;
             }
-            if (['paint-failed', 'sprite-write-failed', 'recovery-save-failed'].includes(mode)) {
+            if (['paint-failed', 'recovery-save-failed'].includes(mode)) {
                 assert.equal(result.ok, false); assert.equal(result.saved, true); assert.equal(result.reopen, false);
                 const library = root.cards['card:Source'];
                 assert.equal(library.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
@@ -965,6 +967,7 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
             assert.deepEqual(library.characters, before.cards['card:Source'].characters);
             assert.equal(root.cards['card:Current'], undefined, '借用角色仍写原归属');
             assert.equal(h.paints.length, mode === 'save' ? 0 : 1, '保存失败重试不重新生图');
+            if (mode === 'sprite-write-failed') assert.equal(h.writes.length, 1, '保存 DNA 与新衣装直出，不调用不可用的立绘写词');
             if (mode !== 'save') assert.match(library.characterOutfits.Alice.礼服.moods.平和, /^igs-gen:/);
             assert.equal(loadStoryOutfitCandidates(storage).items.length, 0);
         } finally { service.dispose(); h.pipeline.imageGen.dispose(); }

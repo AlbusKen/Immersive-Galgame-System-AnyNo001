@@ -5,8 +5,14 @@
 - 适配 TavernHelper、SillyTavern DOM 和酒馆魔法棒菜单。
 - 统一定位聊天楼层、当前楼层、输入框、发送按钮和消息图片。
 - 副 LLM 请求（`secondary-llm.js`）。
+- `request` 保留旧 `{system,user}` 调用；显式 `{messages}` 仅接受 system/user/assistant 的纯文本消息，保持正文、顺序并复制发送，拒绝混用字段或未知消息字段。用户附加词在旧调用保持原拼接，在有序调用使用独立首尾消息。
+- TavernHelper 使用 `ordered_prompts`，独立 API 使用 `messages`；旧 SillyTavern 双字段接口只接受 system/user 两条消息，多角色请求返回 `ordered-messages-unsupported`，不得压平或降级角色。
+- 独立副 LLM 优先通过宿主 `ChatCompletionService` 的 custom 通道，使用 IGS 本次私有地址、模型、消息及 Authorization，不读取 DBG 配置，不修改酒馆主模型配置。宿主缺少发送能力时才走浏览器直连；已选通道失败后不切换、不自动补发。
+- 两条独立 API 路径固定 `stream: false`，不主动追加未配置的采样参数或 JSON schema。响应仅剥离前置且完整闭合的 `<think>` 块，未闭合思考不作为正式结果；直连保留 JSON／SSE 解析。
+- HTTP 拒绝通过 `SecondaryLlmError` 传递状态、通道和白名单字段名，正文、地址及凭据不进入诊断。写词层透传受控失败，取消／超时保留停止语义；模型列表在宿主发送能力及请求头能力齐全时走酒馆 custom status 通道，否则直连。
 - 自动插图楼层读写、生成事件订阅及 `[igs-img]` 标记对外隐藏（`illustration-message-host.js`）。
 - 自动插图 `writeFloor(messageId, text, expectedFloor)` 写回前复核聊天、楼层、swipe、最新 AI 身份与原文；发生变化返回 `stale`，不写入。宿主 API 未提供原子条件写入，复核与实际调用之间的极窄竞态仍需真机验证。
+- `onImageFloorReady(handler)` 合并主生成期间的渲染通知，在 `GENERATION_ENDED` 后读取当前聊天的最终 AI 楼层；缺渲染通知时按结束事件和当前轮楼层补交。忽略 dryRun、非 quietToLoud 的 quiet、impersonate 和 IGS 后台请求；后台结束不提前收束主生成。停止、换聊天、下一轮或卸载使排队交付失效，停止后的迟到渲染不重启自动生图；正常新一轮才解除拒收。生命周期事件缺失的旧宿主保留渲染入口，真实宿主事件顺序仍需现场复验。
 - 提供 `typeIntoInputAndSend(text)`，供阅读器输入框和选项浮窗调用。
 - `input-channel.js` 是输入框发送的默认骨架入口。
 - `magic-wand-entry.js` 是酒馆魔法棒菜单入口的唯一实现，负责向 `#extensionsMenu`、`#extensions_menu`、`.extensions_block .list-group` 注入 `Immersive Galgame System` 菜单项；入口保留原版书本图标和单入口魔法棒契约。

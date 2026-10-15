@@ -1,3 +1,5 @@
+import { imageBackendMethod } from '../backend-methods.js';
+
 import { floorHasEventCg } from '../../scene/event-cg.js';
 import { numberParagraphs, formatNumberedParagraphs, insertMarkers, insertMarkersAtAnchors, findAnchorInsertIndex, appendedTail, reattachTail, transplantMarkers } from './marker-placer.js';
 import { MIN_AUTO_IMAGE_BODY_CHARS, floorBodyLength } from './floor-body-length.js';
@@ -14,6 +16,7 @@ import { cgCharacterState, bindCgCaption, cgPromptTask, preflightCgCaption, cgPa
 import { createCgConsistencyService } from './cg-consistency-service.js';
 import { promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
 import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
+import { inheritImageTaskLease } from '../image-task-runtime.js';
 
 const MARKER_RE = /(?:\[igs-img:\s*(\d+)\s*\]|<IMG>\s*(\d+)\s*<\/IMG>)/gi;
 
@@ -203,12 +206,17 @@ export function bindCharacterDnaToCaption(caption, sceneAssets, contextCharacter
 
 export function createAutoIllustrationService(deps) {
     const { messageHost, llm, nai, store, getSettings, events } = deps;
+    const writeFloorPrompts = imageBackendMethod(nai, 'writeFloorPrompts');
+    const generateCaption = imageBackendMethod(nai, 'generateCaption');
+
     const random = deps.random || Math.random;
     const now = deps.now || (() => new Date().toISOString());
     const report = deps.report || (() => {});
     const minBodyChars = Number.isFinite(Number(deps.minBodyChars)) ? Number(deps.minBodyChars) : MIN_AUTO_IMAGE_BODY_CHARS;
     const sourceFilter = typeof deps.getSourceFilter === 'function' ? deps.getSourceFilter : () => undefined;
     const locks = new Map();
+    const runningFloors = new Map();
+    const pendingFloors = new Map();
     const cache = new Map();
     const hydrated = new Set();
     let offRendered = null;
@@ -278,7 +286,7 @@ export function createAutoIllustrationService(deps) {
         report('info', `第 ${messageId} 楼向数据库生图插件要 ${decision.want} 张 CG…`);
         progress(floor, { phase: 'write' });
         await store.putFloor(key, { ...base, status: 'planning', updatedAt: now() });
-        if (!nai || typeof nai.writeDbgenFloorPrompts !== 'function' || typeof nai.generateDbgenCaption !== 'function') {
+        if (!nai || typeof writeFloorPrompts !== 'function' || typeof generateCaption !== 'function') {
             const error = '数据库生图插件缺少楼内写词或出图接口';
             await store.putFloor(key, { ...base, status: 'failed', error, updatedAt: now() });
             report('error', `第 ${messageId} 楼插图未开始：${error}`);
@@ -294,7 +302,7 @@ export function createAutoIllustrationService(deps) {
         const task = template && characterState.context.length ? cgPromptTask(characterState.context) : null;
         let written;
         try {
-            written = await nai.writeDbgenFloorPrompts({
+            written = await writeFloorPrompts({
                 messageId,
                 ...(task || (characterState.context.length && { characterContext: characterState.context })),
                 ...(template && { writingRequirements: cgWritingRequirements(s, cgSize(s), decision.kind) }),
@@ -517,12 +525,13 @@ export function createAutoIllustrationService(deps) {
                 result = { ok: false, error: '没有可出图的提示词' };
             } else {
                 try {
-                    result = await nai.generateDbgenCaption({ caption: request.caption, size: cgSize(s), messageId,
+                    result = await generateCaption({ caption: request.caption, size: cgSize(s), messageId,
                         imageKind: 'cg', promptKind: base.kind === 'nsfw' ? 'nsfwCg' : 'cg',
                         ...(edited || (!request.promptRecipe && request.captionMode === 'final')
                             ? { captionMode: 'final' } : request.promptRecipe || request.promptTask ? {
                             ...(request.promptRecipe !== undefined && { promptRecipe: request.promptRecipe }),
                             ...(request.promptTask !== undefined && { promptTask: request.promptTask }),
+                            ...(request.outfitSnapshot !== undefined && { outfitSnapshot: request.outfitSnapshot }),
                         } : {}),
                         ...(request.characterMeta && { characterMeta: request.characterMeta,
                             characterContext: request.characterContext }) });
@@ -583,7 +592,8 @@ export function createAutoIllustrationService(deps) {
             return generateSlots(messageId, floor, key, s, base, marked.retry, { refreshDna: true });
         }
         if (marked.all.length) return { ok: true, reason: manual ? 'nothing-missing' : 'already-decided' };
-        if (!manual && previous && SETTLED_STATUSES.has(previous.status)) return { ok: true, reason: 'already-decided' };
+        if (!manual && previous && SETTLED_STATUSES.has(previous.status)
+            && previous.kind !== 'none') return { ok: true, reason: 'already-decided' };
         // 不记成已处理：用户点「继续」把这楼写长后，下次渲染照常规划。
         const bodyChars = floorBodyLength(floor.text, sourceFilter());
         if (!manual && bodyChars < minBodyChars) {
@@ -605,9 +615,14 @@ export function createAutoIllustrationService(deps) {
         // 作者在 CG 库里预置了这一幕：用库里的图，不再生成过场图（NSFW 照常）。
         const presetCg = !numbered.isNsfw && typeof deps.getSceneAssets === 'function'
             && floorHasEventCg(floor.text, (deps.getSceneAssets() || {}).eventCgs);
+        const decisionKey = JSON.stringify([stripIllustrationMarkers(floor.text), s.nsfwEnabled,
+            s.interludeEnabled, s.interludeProbability, numbered.isNsfw, Boolean(presetCg), bodyChars]);
+        if (!manual && previous?.kind === 'none' && SETTLED_STATUSES.has(previous.status)
+            && previous.decisionKey === decisionKey) return { ok: true, reason: 'already-decided' };
         const decision = numbered.paragraphs.length && !presetCg ? decide(s, numbered.isNsfw, manual) : null;
         if (!decision) {
-            await store.putFloor(key, { kind: 'none', status: 'done', updatedAt: now() });
+            await store.putFloor(key, { kind: 'none', status: 'done',
+                decisionKey, updatedAt: now() });
             const why = !numbered.paragraphs.length ? '本楼没有可读正文' : presetCg ? '本楼命中 CG 库里的预置 CG'
                 : (!numbered.isNsfw && !s.interludeEnabled ? '本楼未标记 NSFW 场景（需正文含 [igs-scene:场景|时间|天气|nsfw]），且未开启过场插图'
                     : '过场插图本次未触发（按触发概率随机）');
@@ -645,6 +660,11 @@ export function createAutoIllustrationService(deps) {
             });
             if (template) {
                 const written = await writeTemplateCaptionsWithLlm(llm, s.llm, { ...task,
+                    imagePromptTask: 'cg',
+                    outputs: { selection: 'numbered-text', maxSlots: decision.want, exact: decision.exact,
+                        paragraphCount: numbered.paragraphs.length },
+                    ...(typeof llm?.prepareImagePrompt === 'function' && s.llm.prompts.illustration !== PLANNER_SYSTEM_PROMPT
+                        && { userPrompts: { writing: s.llm.prompts.illustration } }),
                     description: [user, `本次允许 slotid 为 1 到 ${decision.want}；不得改用其他编号。`,
                         '具名角色按允许池显式绑定，镜头不受 DNA 景别是否齐全限制。每个 named 同次写 meta_identity 完整英文身份主语（含可见标志细节）及 meta_signature 锚点摘要；匹配保存景别优先，否则按已有身份、角色库及正文给保守当次描述，不登记永久 DNA、不生成候选。',
                         characterState.timeline.length && `当楼衣装时间线：${JSON.stringify(characterState.timeline)}`,
@@ -681,6 +701,11 @@ export function createAutoIllustrationService(deps) {
                 system: s.llm.prompts.illustration,
                 softSystem: numbered.isNsfw ? s.llm.prompts.illustrationSoft : '',
                 user,
+                imagePrompt: { task: 'cg', input: { description: user,
+                    ...(s.llm.prompts.illustration !== PLANNER_SYSTEM_PROMPT
+                        && { userPrompts: { writing: s.llm.prompts.illustration } }),
+                    outputs: { format: 'cg-plan', maxSlots: decision.want, exact: decision.exact,
+                        paragraphCount: numbered.paragraphs.length } } },
                 parse: (reply) => parseIllustrationPlan(reply, { maxSlots: decision.want, paragraphCount: numbered.paragraphs.length }),
             }, s.llm);
             // 温和模式下 LLM 只给了构图，露骨 tag 在本地补上，不经过 LLM。
@@ -733,7 +758,7 @@ export function createAutoIllustrationService(deps) {
         }
 
         // 数据库生图插件自己写提示词，这里交给它插图位置附近的正文作为画面描述。
-        plan.slots = plan.slots.map((slot) => ({
+        plan.slots = plan.slots.map((slot) => inheritImageTaskLease(slot, {
             ...slot,
             description: numbered.paragraphs.slice(Math.max(0, slot.at - 2), slot.at).map((p) => p.text).join('\n'),
         }));
@@ -811,13 +836,33 @@ export function createAutoIllustrationService(deps) {
             return { ok: true, reason: 'not-eligible' };
         }
         const key = floorKeyOf(floor);
-        if (locks.has(key)) return locks.get(key);
-        const job = run(Number(messageId), floor, key, s, manual)
+        if (locks.has(key)) {
+            if (!manual && !backfill && runningFloors.has(key)
+                && runningFloors.get(key) !== stripIllustrationMarkers(floor.text))
+                pendingFloors.set(key, true);
+            return locks.get(key);
+        }
+        const job = (async () => {
+            let current = floor, config = s, result;
+            do {
+                pendingFloors.delete(key);
+                runningFloors.set(key, stripIllustrationMarkers(current.text));
+                result = await run(Number(messageId), current, key, config, manual);
+                if (!result?.ok || result.stopGeneration || !pendingFloors.has(key)) break;
+                const latest = messageHost.readFloor(messageId);
+                if (!latest?.isAi || !latest.isLatest || floorKeyOf(latest) !== key
+                    || stripIllustrationMarkers(latest.text) === stripIllustrationMarkers(current.text)) break;
+                config = settings();
+                if (!config.nsfwEnabled && !config.interludeEnabled) break;
+                current = latest;
+            } while (true);
+            return result;
+        })()
             .catch((error) => {
                 report('error', `自动插图处理异常：${(error && error.message) || error}`);
                 return { ok: false, reason: 'error', error: '自动插图处理失败' };
             })
-            .finally(() => locks.delete(key));
+            .finally(() => { locks.delete(key); runningFloors.delete(key); pendingFloors.delete(key); });
         locks.set(key, job);
         return job;
     }
@@ -985,12 +1030,14 @@ export function createAutoIllustrationService(deps) {
         start() {
             if (offRendered) return;
             messageHost.attachPromptStrip();
-            offRendered = messageHost.on('CHARACTER_MESSAGE_RENDERED', (messageId) => {
-                void processMessage(Number(messageId));
-            });
+            const ready = messageId => { void processMessage(Number(messageId)); };
+            offRendered = typeof messageHost.onImageFloorReady === 'function'
+                ? messageHost.onImageFloorReady(ready)
+                : messageHost.on('CHARACTER_MESSAGE_RENDERED', ready);
         },
         stop() {
             consistency.cancel();
+            pendingFloors.clear();
             if (offRendered) { offRendered(); offRendered = null; }
             messageHost.destroy();
         },

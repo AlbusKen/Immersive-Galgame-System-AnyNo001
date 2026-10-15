@@ -172,8 +172,10 @@ export function checkDnaCandidates(raw, { task, context, recipe } = {}) {
             && !Object.values(source.dna.views || {}).some((v) => v.subject?.trim()))
             return fail('DNA_TEMPLATE_BINDING', 'dnaCandidates.characters', 'locked', where);
         const checked = checkDnaViews(c.views, { complete: true });
-        if (!checked.ok) return { ...checked, diagnostic: { code: checked.reason,
-            field: 'dna.views', issue: 'invalid', ...where } };
+        if (!checked.ok) {
+            const binding = recipe.bindings.find(b => b.kind === 'named' && b.characterKey === c.characterKey);
+            return { ...checked, diagnostic: { ...checked.diagnostic, ...where, captionIndex: binding.captionIndex } };
+        }
         for (const frame of CHARACTER_DNA_VIEWS) {
             const saved = source.dna?.views?.[frame];
             if (frame === 'partial') {

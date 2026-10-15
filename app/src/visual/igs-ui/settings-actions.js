@@ -367,7 +367,8 @@ function generationFailure(globalObj, dialogs, message, reason) {
 // 已有提示词的先补画，不重写；剩下没有词的再写再画。补画中途停下就不再写。
 async function paintThenWriteExpressions({ service, name, paintItems, writeLabels, basePrompt, dna, outfit, note, nsfw, onProgress, signal, shouldStart, onOutfitDna }) {
     const paint = paintItems.length && typeof service.paintExpressionCaptions === 'function'
-        ? await service.paintExpressionCaptions({ name, items: paintItems, basePrompt, dna, outfit, nsfw, onProgress, signal })
+        ? await service.paintExpressionCaptions({ name, items: paintItems, basePrompt, dna, outfit, nsfw, onProgress, signal,
+            ...(shouldStart && { shouldStart }) })
         : null;
     if (paint && !paint.ok) return paint;
     if (paint && (paint.stopped || (signal && signal.aborted))) return paint;
@@ -1884,11 +1885,12 @@ export async function handleSettingsAction(action, ctx) {
         try {
             const paintOnly = !retry && !writeLabels.length;
             result = resume || paintOnly
-                ? await service.paintExpressionCaptions({ name, items: resumeItems, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
+                ? await service.paintExpressionCaptions({ name, items: resumeItems, basePrompt, dna, outfit, nsfw, onProgress,
+                    signal: stopControl.signal, shouldStart: targetUnchanged })
                 : retry && savedCaption && typeof service.generateExpressionImage === 'function'
                 ? await service.generateExpressionImage({ name, mood, caption: savedCaption, exact: savedExact,
                     ...characterPromptRecovery(savedHistory), ...(savedHistory && { history: savedHistory }),
-                    basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal })
+                    basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal, shouldStart: targetUnchanged })
                 : retry
                     ? await service.generateExpressionImage({ name, mood, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal,
                         shouldStart: targetUnchanged, ...(onOutfitDna && { onOutfitDna }) })
@@ -2888,7 +2890,7 @@ export async function handleSettingsAction(action, ctx) {
             result = { ok: false, message: `测试失败：${error && error.message || error}` };
         }
         settingsState.asyncState.imageResult = String(
-            result && (result.message || result.reason)
+            result && (result.message || result.error || result.reason)
             || (settingsState.draft.bridge.imageApi.mode === 'nai'
                 ? '图像 API 生成测试失败。'
                 : '插图扩展检测失败。'),

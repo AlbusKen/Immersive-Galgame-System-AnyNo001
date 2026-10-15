@@ -12,12 +12,22 @@
 - 检测到生图段时驱动 `visual` 切换到生图层；生图段消失时回到背景+立绘。
 - 自动插图由 `illustration/` 负责段落编号、标记插入、规划提示词与解析、设置规范化和事件驱动服务；tag 与图片交由 `media/illustration-store.js` 保存。
 - NovelAI 官方接口由 `request-builders/nai-v4-builder.js`（`providerType: nai-official`）构建请求、`nai-official-client.js` 发起请求，并复用 `image-api-client.js` 的响应解析；不得覆盖既有 `bridge.imageApi`。
+- NAI HTTP 序列化边界与 DBG 对齐：仅将布尔 `tag_hint_qt`／`tag_hint_uc_preset` 转为整数 `0/1`，不修改 builder 返回值及调用方对象；普通生成、定稿与 infill 共用此边界，`qualityToggle` 和透明字段仍保持布尔值。设置试图冻结草稿且不落盘；HTTP 500 仍只发送一次，不回显服务端载荷。离线字段一致性不证明具体现场 500 的唯一根因或真实服务接受性。
+- 内置 NAI 的 `resolveNaiEndpoint` 在发送前将 HTTP(S) 根地址或 `/ai`（含尾斜杠）补为 `/ai/generate-image`，留空走官方地址；完整接口及其他显式自定义路径保持原样，查询参数保留。普通生成与 infill 共用地址解析，代理包装在补全之后；不改写草稿／持久配置，不扩大旧通用图像接口的 NAI 识别范围。现场根路径 POST 与此前源码行为吻合，修正后的上游接受性仍待用户复验。
+- 图像响应先保留原始二进制字节，再按魔数／Content-Type 分派，ZIP 不经 UTF-8 解码后回灌。`image-response-zip.js` 支持 stored／deflate 与中央目录中的 data descriptor 长度；保留长度明确的无目录本地头响应兼容。格式不支持、数据损坏、长度不符或浏览器缺解压能力返回白名单错误，不回显上游正文，不自动补发。内置 NAI 阅读器／测试按钮保留错误码、中文提示和 HTTP 状态，草稿不落盘。
+- 文本画师库由 `artist-library.js` 管理，配置为 `bridge.autoIllustration.nai.artistLibrary = { version: 1, entries: [{ id, name, positivePrompt, negativePrompt }] }`。支持条目数组、版本 1 库与 `{ presets, images }` 导入，只接收文本白名单，不复制图片、凭据或其他字段；非法 JSON、重复字段、危险键、坏字段、超限或 ID／名称冲突整批拒绝。未知持久版本保留并拒绝修改，不以空库覆盖。
+- 导入只追加，不自动应用。显式应用到全局写 `artistPrefix`／`artistNegativePrefix`，或到 `artistByKind.kinds` 的既有类别；分区开关与其他类别保持，空类别回退全局。`artistNegativePrefix` 是独立画师负向，旧通用 `negativePrompt` 不作为定稿画师负向覆盖。
+- 画师正负向统一在库内命名、新建、编辑、删除、选择和应用；分类页跳转库并选择应用目标，不直接编辑活动文本。编辑／删除库条目不联动已应用文本，应用后成功保存才影响运行配置。
+- 打开设置时将原全局、分区画师及旧通用负面原文归档到草稿，全部成功后随设置保存 `artistLibraryArchived: true`，避免删除条目后重开又归档。未知坏库或超过 500 条时保持原配置且不标记完成；旧 `nai.negativePrompt` 仅兼容保存／归档，不参与绘图或写词要求。
+- 生图与 infill 复用既有画师三态和一次前置链，发送快照从最终 prepared request 取画师正负向。未应用的 `artistLibrary` 不进入任务配置租约或 wire；应用并成功保存的文本改变使旧任务失效。DBG 保留既有配置来源及可选兼容，柏宝绘／智绘姬沿用自己的画师设置。
+- 内置 NAI 立绘透明底由 `bridge.imageApi.naiSpriteTransparent`（缺省 `true`）与实际立绘模型能力共同决定；V5 开启时发送 `straight_alpha: true`，定稿的 `tag_hint_transparent_background: false` 保持，普通请求为 `true`。关闭或模型不支持时写词要求使用白底，matte 接收 `alreadyTransparent: false`。素材补全、默认立绘、表情及存量 caption 重画共用同一决策。DBG 独立读取原 `dbgenSpriteTransparent`，外部插件沿既有非透明策略；infill 两个透明字段保持 `false`。新键进入任务快照，成功配置变更使旧租约失效，迟到结果不抠图、不存储，停止原因和 `stopGeneration` 透传。
 
 - 生图提示词公共规则在 `illustration/prompt-kit.js`：虚构/成年人框架、CG 构图指南、拒答识别与「温和模式」重试（主提示词被拦截时只让 LLM 写构图，露骨 tag 由本地模板 `nsfwExtra` 补）、内置背景/立绘 NAI 模板与背景词典兜底。
 - 生图排查日志（`image-job-log.js`）：自动插图与素材补全通过 `report(level, message)` 上报进度与失败原因，由 bootstrap 写入日志（localStorage `igs_image_job_log`，按 `bridge.imageJobLog.retainDays` / `maxEntries` 自动清理）并按 `bridge.showToasts` 弹 toast；只有 `done` 楼层算已处理，失败 / 过期楼层下次渲染重试。副 LLM 系统提示词可由 `bridge.autoIllustration.llm.prompts.*` 覆盖，留空用内置。
 - 正文字数门槛（`illustration/floor-body-length.js`）：自动插图与素材补全自动触发时，先按 `bridge.sourceFilter`（和阅读器同一套正文保留 / 排除标签，`scene/message-source.js` 的 `readerBodyText`）取出正文；台词 / 心理只数台词本身，指令和空白不算。不足 `MIN_AUTO_IMAGE_BODY_CHARS`（50）字返回 `body-too-short`，日志写一行原因，不记成已处理（楼层「继续」写长后下次渲染照常处理）；手动生成不受限。
-- 素材补全（`illustration/asset-generation-service.js`）：场景素材模式开启且对应开关打开时，最新 AI 楼层出现素材库匹配不上的场景或无名角色 → 副 LLM 写内容 tag（`asset-prompt.js`）→ NAI 生成（立绘 V5 走原生透明底，其余模型浅灰底 + `media/alpha-matte.js` 抠图）→ 存为本聊天临时素材，状态 `review`，等待楼层结束时由阅读器询问用户加入素材库 / 仅本聊天 / 丢弃。
-- 物品图（`illustration/item-image-service.js`，设置 `bridge.itemImages`，默认关闭）：关闭时入口短路，不读表、不联网。候选 = 本楼 `[igs-fx:item]` 标签物品在前 + 物品表（`data/shujuku/item-catalog.js`）在后，按归一化名称合并；缺图者每层最多 `maxPerFloor`（默认 3）件，串行队列 + 按物品键在途锁，重复事件不重复计费。存入 `igs-generated-assets`，`type: 'item'`、状态 `ready`（不进入素材审核与临时素材列表），按聊天隔离；重画失败保留原图，`discarded` 不自动重补。手动「补全物品图」单次最多 10 件。提示词见 `illustration/item-prompt.js`（副 LLM 失败时仅纯英文名兜底，中文名记失败待重试）；透明底沿用立绘分支。
+- 自动插图与素材补全优先订阅 `messageHost.onImageFloorReady`，旧注入宿主回退渲染事件。同楼在途通知合并，成功后仅消费最新正文；失败不在原任务内重发。素材已完成楼层重复通知短路，仅手动补全或本次成功任务期间的新正文可重算，已有素材不重画。CG 的无图决定按正文、开关、概率、继承 NSFW、预置 CG 命中和有效字数去重，输入改变可重评；已有图不重新掷概率。100% 只保证概率门，不绕过其他门禁。
+- 素材补全（`illustration/asset-generation-service.js`）：场景素材模式开启且对应开关打开时，最新 AI 楼层出现素材库匹配不上的场景或无名角色 → 既有写词入口 → 生成与 `media/alpha-matte.js`（NAI 立绘透明／白底依独立开关及模型能力，其他来源依各自策略）→ 存为本聊天临时素材，状态 `review`，等待楼层结束时由阅读器询问用户加入素材库 / 仅本聊天 / 丢弃。
+- 物品图（`illustration/item-image-service.js`，设置 `bridge.itemImages`，默认关闭）：关闭时入口短路，不读表、不联网。候选 = 本楼 `[igs-fx:item]` 标签物品在前 + 物品表（`data/shujuku/item-catalog.js`）在后，按归一化名称合并；缺图者每层最多 `maxPerFloor`（默认 3）件，串行队列 + 按物品键在途锁，重复事件不重复计费。存入 `igs-generated-assets`，`type: 'item'`、状态 `ready`（不进入素材审核与临时素材列表），按聊天隔离；重画失败保留原图，`discarded` 不自动重补。手动「补全物品图」单次最多 10 件。提示词见 `illustration/item-prompt.js`（副 LLM 失败时仅纯英文名兜底，中文名记失败待重试）；透明底沿用原模型能力策略，不受立绘透明开关控制。
 
 - 自管 NAI／DBGen 的人物生成遵守下文 DNA 模板契约；`sprite-prompt-composition.js` 仅服务未进入新协议的兼容调用。无模板存量图不猜测拆成身份模板，沿旧完整词路径复用；未知画师来源不推断去重，也不伪造发送快照。逐图手改词走定稿重画。裸体只改变当次衣装要求，不修改基础 DNA；其他图像插件保持原有流程。
 - 普通 CG 的新模板通过显式角色键、token、captionIndex 和景别绑定读取已保存 DNA，衣装由当次写词决定。旧 planner 的 `char: 角色名 | x,y | tags` 与 `char: x,y | tags` 保持旧解析兼容；旧图缺绑定时不能凭顺序猜人物或进入一致性重绘。数据库生图 CG 不复用立绘组合模块。
@@ -28,20 +38,39 @@
 - 智绘姬读取层按上游原版 DOM（`dom-image-candidates.js`）：图片取 `.st-chatu8-image-container` / `.st-chatu8-image-span` / `span[data-request-id]` 内的 `img` 与 `video`，按钮取 `.image-tag-button` / `.st-chatu8-image-button`（均带 `data-request-id`）；图片与重画按钮优先按 `data-request-id` 精确配对，slotIndex / locationHash / imageId / buttonIndex 与 DOM 顺序兜底不变。原 `img.st-chatu8-image-tag-image` 选择器在上游已不存在，不得恢复。
 
 - 柏宝绘出图（`baibai-client.js`）：图像来源为 `baibai` 时，剧情 CG、素材、物品图与阅读器重画经柏宝绘公开接口 `globalThis.STBaiBaiImage`（apiVersion 1）出图，`save: false` 不进柏宝绘图库；后端支持多角色时分角色传，否则拼成一段 prompt；未检测到或失败时有 NAI Key 就退回内置 NAI。不保证透明底，立绘按浅灰底出图再抠图。
-- 副 LLM 写词（`illustration/caption-writer.js`）：图像来源不是数据库生图时，`writeDbgenPrompt` 改由副 LLM 按同一份描述写 NAI v4 caption，`generateDbgenCaption` 把 caption 拆回 slot 按当前来源出图；表情差分、头像、默认立绘与衣柜共用。副 LLM 选独立 API 却没填地址或模型时直接报「还没接副 LLM」，不发请求。副 LLM 设置单独在「生图 → 副 LLM」子页。
+- 副 LLM 写词（`illustration/caption-writer.js`）：图像来源不是数据库生图时，`writePrompt` 由副 LLM 按同一份描述写 NAI v4 caption，`generateCaption` 把 caption 拆回 slot 按当前来源出图；表情差分、头像、默认立绘与衣柜共用。副 LLM 选独立 API 却没填地址或模型时直接报「还没接副 LLM」，不发请求。副 LLM 设置单独在「生图 → 副 LLM」子页。
+- 来源中立入口为 `writePrompt`、`writeFloorPrompts`、`generateCaption`；旧 `writeDbgenPrompt`、`writeDbgenFloorPrompts`、`generateDbgenCaption` 保留同一实现别名。业务服务通过 `backend-methods.js` 兼容仅提供旧方法的注入后端，保留接收者、参数与结果；来源选择、DNA 协议门禁和发送快照不因名称迁移改变。活动事件覆盖新旧绘制入口，每次调用发一组开始／结束事件。
+- bootstrap 通过 `image-prompt-runtime.js` 将唯一 PresetRegistry current 接到实际写词请求；`image-prompt-defaults.js` 提供共享框架、显式任务模块和中间资料槽。角色、顺序与正文经有序 messages 发送。未接入预设的独立旧调用继续使用原 `{system,user}`；非生图的副 LLM 请求不受预设影响。
+- 内置 `writeFloorPrompts` 只接受显式 CG 模板任务，保留编号正文的 at，不探测 DBG；自动立绘复用模板批处理，同次输入角色设定、当楼正文、前文及用户自定义要求，生成候选后才交既有采用门禁，不提前登记 DNA。非模板兼容来源保留旧规划与词典流程，但预设读取／装配失败和过期请求禁止通过兜底继续绘图。
+- 剧情衣装显式传入本楼正文，`outputs.purpose: outfit-dna` 与服装图分离，缺正文或迟到回复拒绝交接；指定衣装使用 outfit 模块，普通差分使用 expression 模块。普通 caption 字段解析仅匹配当前行，LF／CRLF 下空 char／uc 不吞下一字段。模板协议沿用既有严格解析与身份绑定，不后补模型正文。
+- 内置任务由 `builtin-image-task-runtime.js` 装配配置与唯一注册表 epoch，`image-task-runtime.js` 保存私有租约并处理取消／迟到拒收。NAI 凭据、传输、全局参数、分区画师与写词 LLM 设置取同一任务快照；显式任务模型、尺寸及画师三态仍保留。`getEditConfig` 返回同源模型、画师、脱敏 token 与同步守卫。配置或 current 成功改变后再改回也不复活旧任务；失败保存和不影响绘图配置的衣装资料保存不使租约失效。复制 caption／recipe 时通过 `inheritImageTaskLease` 保留内存租约，token 不进入 wire、日志或图片来源；不承诺跨标签页强一致性。
+- 选择 DBG 时，公开写词／绘图／阅读器／试图／编辑入口同时受 IGS 来源租约保护；插件 `expectedConfigToken` 原样传递，不与 IGS token 混用。编辑守卫组合两方有效性，切来源再切回不复活旧租约。组合链在写词结束后复核，取消不继续绘图；停止等待后拒收迟到结果，不声称插件请求已中止。`provided` 先过滤再捕获租约；无运行时注入的旧调用保留参数形状。兼容 caption、NAI 兜底及阅读器返回保持受控 reason／stopGeneration，不把停止伪装成可继续的普通失败。
+- 柏宝绘／智绘姬适配链在等待楼层词之前捕获 IGS 私有租约；外部请求及图片读取结束后复核有效性。成功切源再切回不复活旧任务，迟到失败不能启动 NAI 兜底；柏宝绘阅读器传递取消、shouldStart 及已有租约。停止等待与拒收仅是 IGS 的交付边界，不保证外部插件实际中止请求。
+
+- `nai-request-queue.js` 由普通生成与 infill 共用，按实际凭据串行。排队取消零发送；在途取消停止等待、拒收迟到结果，但实际请求 settle 前保留凭据锁。每次发送及重试前复核取消和租约；仅明确 HTTP 429 有界重试，遵守 Retry-After、最多三次尝试及本次总等待预算。网络异常、408／5xx、超时和发送状态不明不自动补发；不回显上游载荷，不声称 abort 已停止宿主执行或计费。
+- 设置页显式试图走独立 `testForReader`：本次草稿配置冻结在内存，不提交设置、不替换正式配置、不接管已有提示词协议；与正式生成使用同一客户端／凭据队列及取消守卫。普通 `generate`／`generateForReader` 不接受草稿凭据覆写。注入的旧后端缺该入口时保持原阅读器接口兼容；活动事件覆盖试图入口。
+- 内置 infill 在 builder 校验模型白名单、强度 `[0.1,1]`、64 步长、边长 `[64,4096]` 及 1024² 像素上限；通用缺省强度 `0.7` 不改变一致性缺省 `0.75`。原图／蒙版经 `media/png-validation.js` 的容器和有界解压校验后才发送。`inpaintImg2ImgStrength` 与低于 1 时的 `img2img` 仅有离线实际请求捕获证据，V5／低强度的真实上游接受性尚未验证。
 
 ## DNA 模板与定稿发送
 
 - 显式 `promptRecipe.mode: dna_template` 由 `character-caption.js` 唯一展开；正负令牌仅绑定自身 Char，Scene、动态正文、权重及坐标保真。不推断任务用途，候选与 reference 必须带显式 `promptTask`；保存 recipe 的普通重画只读取当前保存 DNA。
 - `image-backend.js` 接收 DBGen 写词失败时，将 `error.context`、`diagnostic` 与 `diagnostics` 收拢至受控诊断：阶段、错误码、字段、原因、合法 `slotId`／角色或 Char 索引、HTTP 状态及可关联 `traceId`。本地 IGS 校验使用 `igs-prompt-input`／`igs-prompt-output` 区分；DBGen 原样阶段为 `prompt-input`／`prompt-parse`／`prompt-output`／`prompt-write`。写词接口异常、等待超时和空返回分别标记 `DBGEN_PROMPT_EXCEPTION`、`DBGEN_PROMPT_TIMEOUT`、`DBGEN_PROMPT_EMPTY`；超时仅停止等待，不证明上游停止。错误提示使用固定文案与受控诊断，不回显外部 message/hint、模型回复、DNA、token、衣装正文或 JSON。
+- 景别校验保持原有拒收条件，`DNA_VIEW_INVALID` 诊断区分对象形状、未知／缺失景别、缺少／空主语、文本类型／长度和递归身份占位；`field` 限定为 `dna.views` 及已知景别的 `subject`／`negative`，`detail` 为固定原因标签。候选交接保留 Char 索引和 slotId；扁平回复中确实存在对应字段才附 lineNumber，不为缺失字段伪造行号。后端双写词入口白名单透传，失败不补发、不绘图、不回显正文或未知键。
 - 人物新任务缺 recipe、未知／重复／跨角色／递归令牌均停止发送。只有显式普通 `cg` 在保存 DNA 或所需景别缺失时可消费有效当次身份；非法 DNA、未知版本及其他任务用途仍拒发。`captionMode: final` 与 recipe／任务／候选互斥，手改定稿不得再次套身份。
 - 纯场景不要求 DNA、人物任务或 recipe。无人 DBGen CG 不构造空身份任务；CG 允许池中无 Char、无候选、无身份占位且无具名元数据的纯 Scene 可不带 recipe。无任务的空模板及明确 `generic/object` 模板仍校验版本、绑定数量、索引及正负占位；`named/reference` 和 DNA 候选仍要求显式任务。纯场景发送关闭 DBGen 角色关键字替换，不读取人物库；有空场景模板时保留该模板直至定稿准备，不因缺人物任务丢失它。人物预检失败仍保存原模板与绑定，补齐资料后仅重试失败图。
 - 内置 NAI 与 DBGen 的定稿正文只允许画师前置一次；质量、UC、透明底文字等必须在写词阶段完成。DBGen 必须声明 `getPromptCapabilities().finalCaption === 1`，并以 `replaceCharacterKeywords: false`、`capturePrompt: true` 发送。通用生成、阅读器及局部重绘都遵守该边界，其他图像插件拒绝新协议且不兜底。
 - 新模板图片返回 `promptRecipe`、`dnaSnapshot` 与 `sentPrompt`；发送快照从最终 prepared request 提取文本、坐标、model/action 和画师，不含凭据、图片或参数全量。历史记录缺这些字段时保持缺省，不从正文或图片反推来源。
 - 旧四字段／中文 DNA 不自动拆分景别；显式立绘在同次写词中生成保留原身份的 `full_body`、`half_body`、`portrait` 三景别候选，经实际发送与权威图片回读后采用才补齐。缺任一必需景别均拒绝；历史 `partial` 可保留但不得新建，空历史视图不作为可用候选。旧字段、触发词、权重、身份来源及已有景别保持；普通 CG 缺景别按下述当次身份规则处理，衍生图及一致性重绘仍拒发，不转换、不自动补立绘。
-- 新 DNA 的三个身份主语包含有依据且一致的年龄感、发色、发型、瞳色、脸型与五官、体型、身高／比例、肤色、稳定眼神及可见标志饰物；不编造未知岁数或数值。编辑面仅展示三景别身份与景别负面词、触发词及独立默认外观服装，隐藏旧公共身份／负面词及 `partial` 编辑项但兼容持久字段。`defaultAppearance` 是衣装兜底，剧情明确换装、当前 outfit 和持续衣装完全覆盖默认衣装，正文与衣装元数据一致；瞬时表情、视线和姿态不修改基础 DNA。
+- 默认框架 v9 与旧独立调用的兼容提示词将字段职责分为稳定身份、独立衣装和当次动态。新 DNA 的三个身份主语只写有依据且一致的年龄感、发型发色、瞳色、脸型五官、肤色体型、非人身体特征及明确标志饰物；未知外貌不以衣装、职业或表情补全。制服、战斗服、护甲、鞋帽、武器、普通战术耳机等可更换穿戴物归 `meta_outfit_description`，喜怒、严肃／镇定表情、警戒、视线和姿态归 Char 动态；明确的角色标志饰物仍按身份保留。普通 CG 的新 `meta_identity`／`meta_signature` 同样只承担身份与锚点，不作为完整画面词。
+- v8 依据工作区 `1001适配gal前端生图预设.json` 的 `preset-imagegen-97-v5` 适配通用语义：完整构图骨架、同一可见瞬间、英文自然语言、连续状态、可见性、闭合权重及输出自检；适用的 Scene／Char 分工、衣装空值分支和字段自检复用源原句。保留五块固定框架和十种任务模块，由 `createImagePromptLlm()` 按活动预设装配；只消费本轮实际提供资料，不引入召回服务。物品与批量背景在写词前提供绘图要求，严格对账编号及字段后以 `captionMode: final` 交接，发送只前置画师，不追加旧模板；活动预设写词失败停止，不重试或本地兜底绘图。旧独立调用兼容行为保持，已保存衣柜参考词直接绘图仍不增加写词请求。
+- CG 模块包含完整 `dna-template` 示例：Char 只含实际数字坐标与动态正文，meta 以连续索引独立绑定角色；身份／衣装占位使用自身输入 token，衣装名称不作 token。缺身份或景别的 CG 仍使用当次旁路，不能省略身份槽，不登记永久 DNA。
+- 模板解析器严格拒收代码围栏，提供 `field=response_format`、`issue=invalid`、`detail=code-fence` 和实际行号，后端受控诊断白名单保留这两个固定标签；不剥围栏、补槽、猜 token 或增加请求。前置思考块仅由既有副 LLM transport 提取层处理，解析器不解释推理正文。
+- 编辑面仅展示三景别身份与景别负面词、触发词及独立默认外观服装，隐藏旧公共身份／负面词及 `partial` 编辑项但兼容持久字段。`defaultAppearance` 是衣装兜底，剧情明确换装、当前 outfit 和持续衣装完全覆盖默认衣装，正文与衣装元数据一致。新分工约束只用于新提取，已有 DNA 不以关键词过滤、清洗或自动迁移；完整／锁定身份及已有景别按原契约保真复用。默认 v1 至 v7 升级到 v8 仅替换与持久基线一致的正文，保留自定义块、角色、顺序、开关和备份。提示词要求不保证真实模型遵从。
 - 新候选写词逐项核对有来源的角、尾巴、翅膀、非人耳、身体标记及标志饰品，检查遗漏、互斥和 UC 误排除。全身身份不因输入立绘裁切而删除已知尾翼；头像保留头颈可见锚点，不描述画外尾巴或扩大构图。换装不自动移除身份饰品；程序不猜测、补词或自动改写存量 DNA。候选、权威采用资料与最终发送正文保持身份文本保真。
 - 自管 NAI／DBGen 人物入口使用动态模板：默认立绘、换装和表情选 `half_body`，头像选 `portrait`；新立绘在同次写词产生完整景别候选，图片生成本身不登记身份。普通模板重画使用本次当前 DNA，不复用旧候选；手改 `final` 原样发送，历史旁路仅作追溯。
+- v7 将立绘、换装和表情的 `half_body` 明确为完整头顶至腰胯，保留头发、双肩、躯干和画内手势并留少量余白；明确全身／头像任务、普通 CG 和局部一致性各自镜头保持。旧内置立绘正负模板仅迁移已知原样副本，自定义模板不覆盖，阅读器布局和显示缩放不变。
+- 衣柜角色换装和表情差分按本轮图号独立输出 `dna-template`：每图首行 `slotid`，完整写完动态与全部绑定字段后才以独立行 `---` 分隔下一图，其后下一非空行必须是新 `slotid`；单图不写分隔符。服装静物和独立服装 DNA 提取保持各自协议。解析器不补编号、清洗回复或放宽拒收；`slotid` 缺失行号不能单独证明整条回复没有图号。
+- v8 的一致性模块提供 named/reference 双 Char 完整格式示例；全部 `meta_*` 使用本图 `captionIndex | 值`，角色键、token、景别和空衣装字段都保留索引及竖线。写词指导不允许一致性输出普通 CG 的 `meta_identity`／`meta_signature`；参考关系只写在参考 Char 中，不新增 `reference:`／`reference_uc:` 或独立 `reference inset` 行。模板衣装只用本人的衣装槽引用原 CG 快照，不复述衣装清单。严格解析、模块路由及既有参考标签发送封装保持，不自动补索引或修复回文。
 - 立绘采用必须回读权威图片与候选、任务、身份快照和发送快照，核验角色／作用域及任务期间资料变化。成功采用才登记候选；保存失败恢复设置，临时素材状态保存成功后才更新内存。设置保存与图片数据库不共有事务，失败恢复是顺序补偿，不是跨系统原子提交。
 - 普通 CG 复用现有一次规划／写词调用，按显式角色键、token、captionIndex 与真实取景预检，不强制半身或齐全景别。每个 named 同次输出 `meta_identity` 完整英文身份主语（包括可见锚点）和 `meta_signature` 摘要；匹配保存景别优先，否则消费有效当次主语，不拼补正文、不登记永久 DNA、不增加写词或补立绘请求。两种来源都缺失时拒绝对应图；失败重画保留原图及对应正文与来源，不以旧图存在冒报成功。
 - CG 一致性重绘经 DBGen infill 执行；独立选择器 `bridge.autoIllustration.consistencyModel` 提供 V4.5 Full 与 V5 Full Inpainting，缺键默认 V5，显式非法值拒发。后端通用 infill 映射保留 V4／V4.5／V5 范围，不跨模型回退。固定当前 CG、revision/token、DNA、衣装、写词要求、模型及强度快照；仅为各局部工作 slot 并发写词，依据随 CG 保存的原提示词与裁剪布局筛选剩余元素，尽量复用原措辞。各分支使用同一原 CG 基线，全部成功后按固定 `captionIndex` 顺序合成；任一失败或取消不提供部分候选。不看图定位、不生成 DNA，不绕过 credential 请求池。
@@ -58,6 +87,8 @@
 - 衣装只在 `prepareCharacterCaption()` 展开，保存独立 `outfitSnapshot`；已有说明按角色复用，不翻译、不改写，同名不同说明拒收。普通 CG 的剧情当前衣装优先，明确新衣装不回退默认；未换装时复用已保存说明。CG 同次写词的新衣装经权威图片回读暂存候选，不自动入库。默认立绘成功采用后将说明写入 `characterDna[name].defaultAppearance`，不自动创建 `characterOutfits` 或 `wardrobe` 条目。
 - 衣柜与表情差分使用三层资料：保存角色 DNA 管固定外貌，`wardrobe[key].prompt` 保存独立服装 DNA，`characterOutfits[name][outfit].wardrobe` 绑定对应衣装分栏，`promptRecipe.caption` 保存角色／服装双占位符和当次表情动作。剧情入柜提取服装 DNA 后独立保存；手动新增衣装缺服装 DNA 时，同次写词输出 `meta_outfit_*` 与动态模板，经整批模板校验和 `onOutfitDna` 宿主保存成功后才发图。服装 DNA 保存失败零绘图；图片失败不撤销已保存 DNA。已有服装 DNA 保真复用，不重新设计，角色 DNA 不被换装覆盖。
 - 有保存半身 DNA 的新表情／单槽生成不依赖旧立绘完整提示词。衣装分栏提供服装 DNA 查看／编辑；编辑建立本套的独立引用，不覆盖其他衣装共享资料，保存失败恢复草稿。显式模板重画和继续生图以当前角色 DNA、同名服装 DNA 展开原模板，不增加写词请求、不修改历史图片或发送快照；衣装名称错绑仍拒收。逐图手改定稿保持原样发送，旧协议读取兼容保持。实际展开的 caption、`dnaSnapshot`／`outfitSnapshot` 与 `sentPrompt` 独立归档，不替代可复用模板。
+- 模板来源、无额外 `note`、保存半身 DNA 和本套衣装说明可用且情绪有内置预设时，基础平和图／预设表情直接构造双 DNA 模板，通过 `prepareCharacterCaption` 后绘图，不调用写词。额外要求、自定义情绪或缺衣装说明时沿原写词／提取流程；取消、租约、采用及持久化门禁不变。楼末入柜先保存衣装，再按同一默认直出路径生成平和图。
+- 默认框架 v9 加强新提取 DNA 的发型结构、发色层次、五官、肤色体型及服装颜色、材质光泽、剪裁层次、纹样和装饰数量／形状／位置指导，只写有来源的细节；未知不编造。保存正文与快照原样复用，不清洗或重设计。v1 至 v8 升级到 v9 仅替换与持久基线一致的默认正文，保留自定义、顺序、角色、开关及备份；提示指导不证明模型遵从或视觉稳定性。
 
 - 默认立绘写入 DNA 前仍须通过图片成功、权威回读、角色／作用域、冻结衣装基线、模板、实际发送正文／坐标及既有设置保存门禁。已有默认说明、`identityInitialized: true`（含主动清空）和内置裸体不被自动覆盖或补写；存量衣装不迁移、不删除。设置或素材状态保存失败按原路径恢复，保留同一候选供重试。
 - 后续默认立绘、头像、表情和普通 CG 优先读取 DNA 默认服装；旧外部衣装的默认标记仅在 DNA 无默认说明时兼容读取。有名当次衣装及剧情明确换装优先，空名默认衣装使用空 `meta_outfit_name`／`meta_outfit_description` 保真复用 DNA，来源为 `saved`；默认说明改写仍拒收。普通 CG 重画读取当前身份但保留原图 `outfitSnapshot`，一致性只用原 CG 衣装快照。

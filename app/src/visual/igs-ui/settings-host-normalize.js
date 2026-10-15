@@ -83,6 +83,7 @@ export function normalizeImageApi(value) {
         ? normalized.availableModels.filter(Boolean)
         : [];
     normalized.dbgenSpriteTransparent = normalized.dbgenSpriteTransparent !== false;
+    normalized.naiSpriteTransparent = normalized.naiSpriteTransparent !== false;
     return normalized;
 }
 

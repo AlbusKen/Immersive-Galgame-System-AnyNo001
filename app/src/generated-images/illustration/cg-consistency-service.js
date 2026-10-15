@@ -1,3 +1,6 @@
+import { imageBackendMethod } from '../backend-methods.js';
+import { inheritImageTaskLease } from '../image-task-runtime.js';
+
 import { planReferenceCanvas, buildReferencePixels, composeReferencePixels } from '../../media/cg-reference-canvas.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { normalizeCharacterDna } from '../../scene/character-dna.js';
@@ -13,6 +16,7 @@ let serial = 0;
 // 单任务、同基线并发、固定顺序合成的内存候选。提交由存储适配器负责。
 export function createCgConsistencyService(deps) {
     const { store, nai, codec, getSceneAssets, resolveReference, targetStillLive, onAccepted } = deps;
+    const writePrompt = imageBackendMethod(nai, 'writePrompt');
     const now = deps.now || (() => new Date().toISOString());
     const report = (task, level, message) => {
         const floor = task?.target?.floor;
@@ -120,12 +124,15 @@ export function createCgConsistencyService(deps) {
         const cap = nai?.describeEdit?.(undefined, { model: selectedModel });
         if (cap?.supported && (cap.infillModelNegotiation !== 1 || cap.model !== selectedModel))
             return failure('dbgen-infill-model-required', '请升级数据库生图插件以支持独立选择一致性重绘模型');
-        if (!cap?.supported || cap.via !== 'dbgen') return failure(cap?.reason || 'dbgen-infill-required', cap?.message || '请启用支持所选模型局部重绘的数据库生图插件');
+        if (!cap?.supported || !['nai', 'dbgen'].includes(cap.via)) return failure(cap?.reason || 'image-edit-unsupported',
+            cap?.message || '请启用支持所选模型局部重绘的内置 NAI 或数据库生图来源');
         if (cap.infillImg2imgStrength !== 1) return failure('dbgen-infill-strength-required',
             '请升级数据库生图插件以支持低强度局部重绘');
+        if (cap.via === 'nai' && cap.providedPromptContext !== 1)
+            return failure('provided-context-required', '内置写词未接入提供资料模式，未开始一致性任务');
         if (!codec?.available) return failure('no-canvas', '当前环境不支持图片画布');
         if (typeof store.updateSlot !== 'function' || typeof resolveReference !== 'function'
-            || typeof nai.writeDbgenPrompt !== 'function' || typeof nai.getEditConfig !== 'function')
+            || typeof writePrompt !== 'function' || typeof nai.getEditConfig !== 'function')
             return failure('consistency-unavailable');
         return { ok: true };
     };
@@ -186,13 +193,17 @@ export function createCgConsistencyService(deps) {
                         : characterContext.find((c) => c.characterKey === row.characterKey).outfit })) };
             await unchanged(task);
             if (!canStart(task)) throw new Error('stale-config');
-            const result = await wait(task, nai.writeDbgenPrompt({
+            const result = await wait(task, writePrompt({
+                imagePromptTask: 'consistency',
+                outputs: { slotIds: [expected.slotId], rows: clone(output.rows) },
                 description: bundle.description
                     + `\n本次只输出 slotid ${expected.slotId}，共 ${output.rows.length} 个 Char。其他轮次由独立请求完成。`
                     + '\n本次输出清单（captionIndex 是本图连续零基索引，每个字段只写一次）：\n'
                     + JSON.stringify(output),
                 promptTask, characterContext: clone(characterContext),
                 contextMode: 'provided',
+                originalPrompt: clone(task.record.promptEdited ? task.record.prompt?.caption || task.record.prompt || task.record.caption : task.record.promptRecipe.caption),
+                layout: clone(expected.layout),
                 ...(task.writingRequirements && { writingRequirements: clone(task.writingRequirements) }),
                 signal: task.controller.signal, shouldStart: () => canStart(task) }));
             await unchanged(task);
@@ -292,10 +303,10 @@ export function createCgConsistencyService(deps) {
                 const maskDataUrl = await wait(task, codec.encodePixels(work.mask));
                 await unchanged(task);
                 if (!canStart(task)) throw new Error('stale-config');
-                const result = await wait(task, nai.edit({ ...round, sourceDataUrl, maskDataUrl,
+                const result = await wait(task, nai.edit(inheritImageTaskLease(round, { ...round, sourceDataUrl, maskDataUrl,
                     width: plan.size.width, height: plan.size.height, strength: task.strength, imageKind: 'cg', promptKind: 'cg',
                     model: task.model, artist: task.editConfig.artist, expectedConfigToken: task.editConfig.configToken,
-                    signal: task.controller.signal, shouldStart: () => canStart(task) }));
+                    signal: task.controller.signal, shouldStart: () => canStart(task) })));
                 await unchanged(task);
                 if (!result?.ok || !result.dataUrl) return failure(result?.reason || 'edit-failed', result?.error);
                 if (!result.promptRecipe || !result.dnaSnapshot || !result.sentPrompt)

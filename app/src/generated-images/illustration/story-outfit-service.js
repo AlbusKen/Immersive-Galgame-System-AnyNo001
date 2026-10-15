@@ -48,7 +48,10 @@ export function createStoryOutfitService(deps) {
         const saved = persist(row);
         if (!saved.ok) return saved;
         row.status = 'writing'; notify();
+        const context = deps.getContext(row);
         const result = await deps.assets.writeWardrobePrompt({ character: row.character, outfit: row.word,
+            ...(context?.text !== undefined && { sourceText: context.text }),
+            shouldStart: () => current(row),
             ...(deps.signal && { signal: deps.signal }),
             messageId: row.messageId, note: '仅从本楼正文提取这套衣服的款式、颜色、材质与配饰；未知细节不编造。' });
         if (!current(row)) return fail('stale-target');
@@ -163,8 +166,7 @@ export function createStoryOutfitService(deps) {
                 const result = await deps.assets.generateExpressionSet({ name: row.character, dna,
                     outfit: { name: row.word, prompt: row.prompt }, moods: ['平和'],
                     messageId: row.messageId, ...(deps.signal && { signal: deps.signal }),
-                    shouldStart: () => current(row) && savedOutfit(row) && JSON.stringify(deps.getContext(row).root) === baseline,
-                    note: '只生成这套已确认衣服的一张平和立绘；固定外貌只复用保存 DNA，衣装说明逐字复用。' });
+                    shouldStart: () => current(row) && savedOutfit(row) && JSON.stringify(deps.getContext(row).root) === baseline });
                 const image = result?.items?.find(item => item.ok && item.mood === '平和' && item.imageId);
                 if (!image) {
                     const item = result?.items?.[0];

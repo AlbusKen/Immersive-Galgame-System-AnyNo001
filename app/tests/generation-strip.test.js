@@ -135,3 +135,27 @@ test('一致性进度复用细线，各阶段有文字且终态只清理本任�
     assert.equal(strip.getState().phase, 'idle');
     strip.dispose();
 });
+
+test('来源中立和旧绘制入口每次只发一组活动事件，保留接收者', async () => {
+    const events = [], input = { imageKind: 'sprite' };
+    let calls = 0;
+    const original = {
+        async generateCaption(request) {
+            assert.equal(this, original);
+            assert.equal(request, input);
+            calls += 1;
+            return { ok: true, dataUrl: 'data:fake' };
+        },
+    };
+    original.generateDbgenCaption = original.generateCaption;
+    const backend = trackImageActivity(original, (event) => events.push(event));
+    await backend.generateCaption(input);
+    await backend.generateDbgenCaption(input);
+    assert.equal(calls, 2);
+    assert.deepEqual(events.map(({ type, kind }) => [type, kind]), [
+        ['start', 'sprite'], ['end', 'sprite'], ['start', 'sprite'], ['end', 'sprite'],
+    ]);
+    assert.equal(events[0].id, events[1].id);
+    assert.equal(events[2].id, events[3].id);
+    assert.notEqual(events[0].id, events[2].id);
+});

@@ -5,6 +5,10 @@ import { FICTION_FRAME, SOFT_MODE_NOTE, TAG_WRITING_RULES, requestWithSoftRetry 
 import { DNA_TEMPLATE_WRITER_SYSTEM } from '../prompt-registry.js';
 import { parseTemplateCaptionSlots } from './template-caption-parser.js';
 import { checkPromptTask } from '../../schemas/prompt-recipe.js';
+import { spriteIdentityRequirements } from './character-prompt-task.js';
+import { prepareImageWritingRequest } from '../image-prompt-runtime.js';
+import { imageWritingContext } from '../image-prompt-context.js';
+import { secondaryLlmFailure, secondaryLlmText } from '../../host/secondary-llm-result.js';
 
 export const LLM_SETUP_HINT = '请到「生图 → 副 LLM」页接好副 LLM';
 
@@ -36,16 +40,17 @@ function side(base, char) {
     return { caption: { base_caption: base, char_captions: char == null ? [] : [{ char_caption: char, centers: [{ x: 0.5, y: 0.5 }] }] } };
 }
 
-export function parseCaptionSlots(text) {
+export function parseCaptionSlots(text, options = {}) {
+    if (options.slotIds) return parseRequiredCaptionSlots(text, options);
     const body = String(text || '').replace(/```[a-z]*\n?|```/gi, '').trim();
     if (!body) return { ok: false };
-    const blocks = body.split(/^\s*#\s*(\d+)\s*$/m);
+    const blocks = body.split(/^[ \t]*#[ \t]*(\d+)[ \t]*\r?$/m);
     const pairs = blocks.length > 1
         ? blocks.slice(1).reduce((list, item, index, all) => (index % 2 ? list : [...list, [Number(item), all[index + 1] || '']]), [])
         : [[1, body]];
     const captions = pairs.map(([slotId, block]) => {
         const read = (key) => {
-            const m = String(block).match(new RegExp(`^\\s*${key}\\s*[:：]\\s*(.*)$`, 'im'));
+            const m = String(block).match(new RegExp(`^[ \\t]*${key}[ \\t]*[:：][ \\t]*([^\\r\\n]*)\\r?$`, 'im'));
             return m ? m[1].trim() : '';
         };
         const scene = read('scene');
@@ -57,8 +62,70 @@ export function parseCaptionSlots(text) {
     return captions.length ? { ok: true, captions } : { ok: false };
 }
 
+function parseRequiredCaptionSlots(text, { slotIds, noCharacters = false }) {
+    const fail = (issue, field = 'slots', where = {}) => {
+        const labels = { 'invalid-id': '输入图号集合无效', 'unknown-id': '回复图号不在本轮清单',
+            'duplicate-id': '回复图号重复', 'invalid-field': '回复格式或字段无效',
+            'duplicate-field': '字段重复', 'missing-field': '缺少必需图号或字段',
+            'unexpected-character': '无人任务的 char 必须为空', 'code-fence': '回复含代码围栏包装' };
+        return { ok: false, reason: 'caption-slot-fields-invalid',
+            error: `写词图号或字段无效，未继续绘图 [字段=${field}；原因=${labels[issue]}；issue=${issue}${
+                Object.entries(where).map(([key, value]) => `；${key}=${value}`).join('')}]`,
+            diagnostic: { stage: 'prompt-parse', field, issue, ...where } };
+    };
+    if (!Array.isArray(slotIds) || !slotIds.length || new Set(slotIds).size !== slotIds.length
+        || slotIds.some(id => !Number.isSafeInteger(id) || id < 1)) return fail('invalid-id');
+    const rows = new Map();
+    let current, currentId;
+    const lines = secondaryLlmText(text).split(/\r?\n/);
+    const position = (id, lineNumber) => ({
+        ...(Number.isSafeInteger(id) && id >= 1 && id <= 9999 && { slotId: id }),
+        ...(lineNumber !== undefined && { lineNumber }) });
+    for (const [index, line] of lines.entries()) {
+        if (!line.trim()) continue;
+        const where = position(currentId, index + 1);
+        if (/^(?:`{3,}|~{3,})/.test(line.trim())) return fail('code-fence', 'response_format', where);
+        const header = line.match(/^#([1-9]\d*)[ \t]*$/);
+        if (header) {
+            const id = Number(header[1]);
+            if (!slotIds.includes(id)) return fail('unknown-id', 'slots', position(id, index + 1));
+            if (rows.has(id)) return fail('duplicate-id', 'slots', position(id, index + 1));
+            currentId = id;
+            current = {}; rows.set(id, current);
+            continue;
+        }
+        const field = line.match(/^(scene|char|uc):[ \t]*(.*)$/i);
+        if (!current || !field) return fail('invalid-field', 'slots', where);
+        const key = field[1].toLowerCase();
+        if (Object.hasOwn(current, key)) return fail('duplicate-field', key, where);
+        current[key] = field[2].trim();
+        current[`${key}Line`] = index + 1;
+    }
+    if (rows.size !== slotIds.length) return fail('missing-field', 'slots',
+        position(slotIds.find(id => !rows.has(id))));
+    for (const [id, row] of rows) {
+        const missing = ['scene', 'char', 'uc'].find(key =>
+            !Object.hasOwn(row, key) || (key === 'scene' && !row.scene));
+        if (missing) return fail('missing-field', missing, position(id, row[`${missing}Line`]));
+        if (noCharacters && row.char) return fail('unexpected-character', 'char', position(id, row.charLine));
+    }
+    return { ok: true, captions: slotIds.map(slotId => {
+        const row = rows.get(slotId), char = row.char || null;
+        return { slotId, caption: { v4_prompt: side(row.scene, char), v4_negative_prompt: side(row.uc, char ? '' : null) } };
+    }) };
+}
+
 // 返回形状与数据库生图插件的 writeDbgenPrompt 一致：{ ok, caption, captions: [{ slotId, caption }] }。
-export async function writeCaptionsWithLlm(llm, llmSettings, description) {
+export async function writeCaptionsWithLlm(llm, llmSettings, description, meta = {}) {
+    const context = imageWritingContext(meta);
+    if (!context.ok) return context;
+    meta = context.value;
+    const execute = (guarded, lease) => writeCaptions(llm,
+        lease?.state?.config?.autoIllustration?.llm || llmSettings, description, guarded);
+    return typeof llm?.runImageTask === 'function' ? llm.runImageTask(meta, execute) : execute(meta);
+}
+
+async function writeCaptions(llm, llmSettings, description, meta) {
     const ready = describeLlmReady(llmSettings);
     if (!ready.ok) return { ok: false, error: ready.error };
     if (!llm || typeof llm.request !== 'function') return { ok: false, error: `副 LLM 不可用：${LLM_SETUP_HINT}` };
@@ -68,14 +135,39 @@ export async function writeCaptionsWithLlm(llm, llmSettings, description) {
         system: CAPTION_WRITER_SYSTEM,
         softSystem: CAPTION_WRITER_SOFT_SYSTEM,
         user,
-        parse: parseCaptionSlots,
+        ...(meta.signal && { signal: meta.signal }),
+        ...(meta.shouldStart && { shouldStart: meta.shouldStart }),
+        imagePrompt: { task: meta.imagePromptTask || 'sprite', input: { description: user,
+            ...(meta.contextMode !== undefined && { contextMode: meta.contextMode }),
+            ...(meta.originalPrompt !== undefined && { originalPrompt: meta.originalPrompt }),
+            ...(meta.layout !== undefined && { layout: meta.layout }),
+            ...(meta.characterContext !== undefined && { characterContext: meta.characterContext }),
+            ...(meta.numberedText !== undefined && { numberedText: meta.numberedText }),
+            ...(meta.previousText !== undefined && { previousText: meta.previousText }),
+            ...(meta.lore !== undefined && { lore: meta.lore }),
+            ...(meta.userPrompts !== undefined && { userPrompts: meta.userPrompts }),
+            ...(meta.writingRequirements !== undefined && { writingRequirements: meta.writingRequirements }),
+            outputs: { ...meta.outputs, format: 'caption-slots' } } },
+        parse: reply => parseCaptionSlots(reply, typeof llm.prepareImagePrompt === 'function' && meta.outputs?.slotIds
+            ? { slotIds: meta.outputs.slotIds,
+                noCharacters: meta.imagePromptTask === 'background' || meta.imagePromptTask === 'wardrobe' }
+            : {}),
     }, llmSettings);
-    if (!result.ok) return { ok: false, error: `副 LLM 写提示词失败：${result.error}` };
+    if (!result.ok) return { ...result, error: `副 LLM 写提示词失败：${result.error}` };
     return { ok: true, caption: result.captions[0].caption, captions: result.captions };
 }
 
 // 新协议仅一次请求，不使用会丢失模板职责的温和重试或本地后补。
 export async function writeTemplateCaptionsWithLlm(llm, llmSettings, meta = {}) {
+    const context = imageWritingContext(meta);
+    if (!context.ok) return context;
+    meta = context.value;
+    const execute = (guarded, lease) => writeTemplateCaptions(llm,
+        lease?.state?.config?.autoIllustration?.llm || llmSettings, guarded);
+    return typeof llm?.runImageTask === 'function' ? llm.runImageTask(meta, execute) : execute(meta);
+}
+
+async function writeTemplateCaptions(llm, llmSettings, meta) {
     const task = checkPromptTask(meta.promptTask, meta.characterContext);
     if (!task.ok) return task;
     if (!task.value) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '动态写词缺少显式任务' };
@@ -87,15 +179,32 @@ export async function writeTemplateCaptionsWithLlm(llm, llmSettings, meta = {}) 
     const stale = () => meta.signal?.aborted || (typeof meta.shouldStart === 'function' && !meta.shouldStart());
     if (stale()) return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效' };
     const input = structuredClone({ promptTask: task.value, characterContext: meta.characterContext,
+        ...(meta.contextMode !== undefined && { contextMode: meta.contextMode }),
+        ...(meta.originalPrompt !== undefined && { originalPrompt: meta.originalPrompt }),
+        ...(meta.layout !== undefined && { layout: meta.layout }),
+        ...(meta.lore !== undefined && { lore: meta.lore }),
+        ...(meta.numberedText !== undefined && { numberedText: meta.numberedText }),
+        ...(meta.previousText !== undefined && { previousText: meta.previousText }),
         ...(meta.userPrompts !== undefined && { userPrompts: meta.userPrompts }),
         ...(meta.writingRequirements !== undefined && { writingRequirements: meta.writingRequirements }) });
+    const outputs = {
+        ...(task.value.slots && { slotIds: task.value.slots.map(slot => slot.slotId) }),
+        ...(meta.outputs !== undefined && meta.outputs), format: 'dna-template',
+        ...(task.value.purpose === 'sprite' && {
+            identityRequirements: spriteIdentityRequirements(task.value, input.characterContext) }),
+    };
+    const prepared = prepareImageWritingRequest(llm,
+        meta.imagePromptTask || (task.value.purpose === 'derived' ? 'expression' : task.value.purpose),
+        { ...input, description, outputs },
+        { system: meta.systemPrompt || DNA_TEMPLATE_WRITER_SYSTEM,
+            user: description + '\n本次任务与角色资料（仅作输入，不输出 JSON）：\n' + JSON.stringify(input) });
+    if (!prepared.ok) return prepared;
     let reply;
     try {
-        reply = await llm.request({ system: meta.systemPrompt || DNA_TEMPLATE_WRITER_SYSTEM,
-            user: description + '\n本次任务与角色资料（仅作输入，不输出 JSON）：\n' + JSON.stringify(input) },
+        reply = await llm.request(prepared.request,
         { ...llmSettings, ...(meta.signal && { signal: meta.signal }) });
-    } catch {
-        return { ok: false, reason: 'template-write-failed', error: '副 LLM 动态写词失败，未增加请求或发送图片' };
+    } catch (error) {
+        return secondaryLlmFailure(error);
     }
     if (stale()) return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效' };
     const parsed = parseTemplateCaptionSlots(reply, input);

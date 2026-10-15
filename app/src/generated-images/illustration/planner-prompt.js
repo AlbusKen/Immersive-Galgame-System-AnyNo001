@@ -13,7 +13,6 @@ export const CG_TEMPLATE_PLANNER_SYSTEM = [
 // 两条 CG 写词链消费同一份约束；发送端不再追加这些语义正文。
 export function cgWritingRequirements(settings, size, kind) {
     return { size, transparent: false, quality: 'High quality illustration.',
-        undesiredContent: settings.nai.negativePrompt,
         ...(kind === 'nsfw' && { sceneRequirements: settings.assets.templates.nsfwExtra }) };
 }
 

@@ -268,6 +268,13 @@ test('gate:loader-json:adds-temporary-magic-wand-entry-before-remote-bundle-load
     });
     vm.runInContext(loaderJson.content, context);
 
+    const entry = documentLike.magicMenu.querySelector('[data-igs-loader-entry="1"]');
+    assert.ok(entry);
+    assert.equal(entry.getAttribute('data-igs-magic-entry'), '1');
+    assert.equal(entry.getAttribute('data-igs-version'), 'loader');
+    assert.match(entry.innerHTML, /沉浸式Galgame系统/);
+    assert.deepEqual(alerts, []);
+});
 
 function createQrLoaderHarness(options = {}) {
     const loaderJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'loader', 'igs-loader.json'), 'utf8'));
@@ -411,14 +418,6 @@ test('gate:loader-qr:missing-or-throwing-qr-api-fails-open', () => {
     assert.equal(throwing.subscriptions.length, 0);
     assert.equal(throwing.alerts.length, 0);
     assert.equal(throwing.warnings.length >= 1, true);
-});
-
-    const entry = documentLike.magicMenu.querySelector('[data-igs-loader-entry="1"]');
-    assert.ok(entry);
-    assert.equal(entry.getAttribute('data-igs-magic-entry'), '1');
-    assert.equal(entry.getAttribute('data-igs-version'), 'loader');
-    assert.match(entry.innerHTML, /沉浸式Galgame系统/);
-    assert.deepEqual(alerts, []);
 });
 
 test('gate:loader-json:loads-main-commit-by-default-with-main-fallback', async () => {
