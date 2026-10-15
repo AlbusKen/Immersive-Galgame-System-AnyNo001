@@ -1103,10 +1103,10 @@ export function createIgsReaderHost(options = {}) {
         if (Number(current.turnOffset) > 0 && !current.awaitingReply) { noticeNewFloor(); return; }
         if (isEmbeddedReaderMode(current.mode)) {
             syncEmbeddedStreamMount(current);
-            enterEmbeddedLoading();
+            enterEmbeddedLoading({ observed: true });
             return;
         }
-        enterReplyWait(current);
+        enterReplyWait(current, { observed: true });
     }
 
     function resolveEmbeddedDocument(current) {
@@ -1376,7 +1376,8 @@ export function createIgsReaderHost(options = {}) {
         void refreshWaitStageModel(current);
     }
 
-    function enterReplyWait(current) {
+    // observed：观察器自己报的活动，本轮生命周期已武装；再 prepareForReply 会抹掉刚记下的活动与结束标记，等待层就退不掉。
+    function enterReplyWait(current, { observed = false } = {}) {
         if (!current) return;
         if (current.streamPhase !== 'streaming') {
             waitStage.close();
@@ -1385,7 +1386,7 @@ export function createIgsReaderHost(options = {}) {
             current.imagePolling = false;
             current.streamBaselineRaw = String(current.mountBaselineRaw || '');
             current.replyBaselineMessageId = current.contentMessageId;
-            streamObserver.prepareForReply();
+            if (!observed) streamObserver.prepareForReply();
         }
         current.streamPhase = 'streaming';
         current.awaitingReply = true;
@@ -1394,7 +1395,7 @@ export function createIgsReaderHost(options = {}) {
         mountWaitStage(current);
     }
 
-    function enterEmbeddedLoading() {
+    function enterEmbeddedLoading({ observed = false } = {}) {
         const current = state.activeReader;
         const mount = current && current.dom && current.dom.embeddedMount;
         if (!current || !isEmbeddedReaderMode(current.mode) || !mount || !mount.host) return;
@@ -1405,7 +1406,7 @@ export function createIgsReaderHost(options = {}) {
             current.imagePolling = false;
             current.streamBaselineRaw = String(current.mountBaselineRaw || '');
             current.replyBaselineMessageId = current.contentMessageId;
-            streamObserver.prepareForReply();
+            if (!observed) streamObserver.prepareForReply();
         }
         current.streamPhase = 'streaming';
         current.turnOffset = 0;
@@ -3450,6 +3451,7 @@ export function createIgsReaderHost(options = {}) {
             return floor;
         });
         const { text, segments } = prepared;
+        if (!segments.length) return { content: { segments: [] } };
         const normalizedIndex = Math.max(0, Math.min(segments.length - 1, Number(index) || 0));
         const segmentImageSlots = Array.isArray(payload.segmentImageSlots) && payload.segmentImageSlots.length
             ? payload.segmentImageSlots
@@ -3704,7 +3706,8 @@ export function createIgsReaderHost(options = {}) {
                     }
                 }
                 if (!chatPage && normalizeStageCastSettings(readerSettings.stageCast).enabled) {
-                    const castKeyOf = (name) => resolveCharacterKey(sceneAssets.characters, sceneAssets.characterAliases, name) || name;
+                    // 与同屏名单同一套主名换算（上传区 + 生成区）。
+                    const castKeyOf = (name) => prepared.keyOf(name);
                     const speakerKey = spriteChar ? castKeyOf(spriteChar) : '';
                     // 修罗场：恋爱对象先于最近开口的人入选，保证对象在台上（romanceDuo 关闭时不钉）。
                     const castPin = speakerKey && normalizeStageCastSettings(readerSettings.stageCast).romanceDuo
@@ -3714,6 +3717,7 @@ export function createIgsReaderHost(options = {}) {
                         speakerKey,
                         pin: castPin,
                         seats: STAGE_CAST_MAX_SEATS - (spriteImage ? 1 : 0),
+                        speakerTemp: Boolean(spriteImage && page.focusTemp),
                         resolve: (m) => {
                             const memberOutfit = outfitFor(m.character);
                             let hit = floorAssets.sprite(m.character, m.mood, memberOutfit);
@@ -3727,6 +3731,8 @@ export function createIgsReaderHost(options = {}) {
                             return image ? { character: hit.character || m.character, mood: hit.slot || m.mood, outfit: hit.outfit || '', image } : null;
                         },
                     });
+                    // 旁白点名的临时焦点不挤掉已开口坐满的人：这一页主立绘不上台。
+                    if (picked.hideSpeaker) spriteImage = null;
                     if (spriteImage && picked.speakerOrder != null) speakerCastOrder = picked.speakerOrder;
                     castSprites.push(...picked.members);
                 }

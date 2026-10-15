@@ -183,6 +183,7 @@ export function normalizeSceneAssets(value) {
     normalized.moodAutoClassify = normalizeBoolean(normalized.moodAutoClassify, false);
     normalized.nameFallback = normalizeBoolean(normalized.nameFallback, true);
     normalized.narrationNameSwitch = normalizeBoolean(normalized.narrationNameSwitch, true);
+    normalized.sceneCarryMode = ['strict', 'smart', 'loose'].includes(normalized.sceneCarryMode) ? normalized.sceneCarryMode : 'smart';
     normalizeAssetCards(normalized);
     return normalized;
 }

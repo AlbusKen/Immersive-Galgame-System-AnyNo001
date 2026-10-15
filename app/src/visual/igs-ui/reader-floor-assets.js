@@ -2,7 +2,7 @@ import { resolveSpriteAsset, resolveBackgroundAsset, resolveNudeSpriteAsset, isN
 import { resolveSpriteOutfit, outfitsOfCharacter } from '../../scene/character-outfits.js';
 import { resolveCharacterDna } from '../../scene/character-dna.js';
 import { classifySceneKey } from '../../scene/scene-directives.js';
-import { narrationCastLeft, otherNamesOf } from '../../scene/narration-sprite.js';
+import { narrationCastLeft, otherNamesOf, namesOf, NARRATION_HOLD_PAGES } from '../../scene/narration-sprite.js';
 import { STAGE_CAST_SCAN_LIMIT } from '../../scene/stage-cast.js';
 import { normalizeStageCastSettings } from './stage-direction-settings.js';
 import { isSystemRole } from './system-role.js';
@@ -70,13 +70,35 @@ function createAssetLookup(initialContext) {
         get urls() { return [...new Set([...entries.values()].map(entry => entry.hit.url).filter(Boolean))]; } };
 }
 
+// 临时座位排在开过口的人右侧，座位号只用于排序。
+const TEMP_SEAT_ORDER = 1000;
+
 // 名单、最近台词和换装时间线各建一次，按偏移取，避免每页回扫整楼。
 function prepareStageIndex(floor, settings) {
     const cast = normalizeStageCastSettings(settings.stageCast);
     const members = new Map(), speeches = new Map(), outfits = new Map(), stages = [];
     let order = 0;
+    const castable = name => cast.enabled && !isNonSpriteSpeaker(name) && !isSystemRole(name, settings.systemRole);
     for (const d of floor.outfitDirectives) {
-        if (d.type === 'scene') { members.clear(); order = 0; stages.push({ offset: d.offset, members: [] }); continue; }
+        // 换场景：只带走判定跟过来的人（与主立绘同一判定），座位先后照旧；标签写了在场名单时名单里的人上场，
+        // 名单超过座位时上一场景在台上的人优先，其次按名单顺序。仅凭同行 / 集体主语带过来的标 soft，没被写到就衰减。
+        if (d.type === 'scene') {
+            const reasons = new Map(typeof floor.carryOf === 'function' ? [...members.keys()].map(key => [key, floor.carryOf(d, key)]) : []);
+            const kept = [...members.values()].filter(m => reasons.get(m.character));
+            const rank = [...kept].sort((a, b) => a.order - b.order);
+            const fresh = (typeof floor.presentOf === 'function' ? floor.presentOf(d) : []).filter(key => !members.has(key) && castable(key))
+                .map((key, index) => ({ character: key, mood: '', order: kept.length + index, at: Number(d.offset) }));
+            members.clear();
+            for (const m of [...fresh].reverse()) members.set(m.character, m);
+            for (const m of kept) {
+                const soft = reasons.get(m.character) === 'company' || reasons.get(m.character) === 'group';
+                members.set(m.character, { ...m, order: rank.indexOf(m), ...(soft ? { soft: true } : {}) });
+            }
+            order = kept.length + fresh.length;
+            while (members.size > STAGE_CAST_SCAN_LIMIT) members.delete(members.keys().next().value);
+            stages.push({ offset: d.offset, members: [...members.values()].reverse() });
+            continue;
+        }
         if (d.type !== 'char' && d.type !== 'thought') continue;
         const key = floor.keyOf(d.character);
         if (!speeches.has(key)) speeches.set(key, []);
@@ -86,9 +108,10 @@ function prepareStageIndex(floor, settings) {
             if (!outfits.has(outfitKey)) outfits.set(outfitKey, []);
             outfits.get(outfitKey).push(d);
         }
-        if (!cast.enabled || isNonSpriteSpeaker(d.character) || isSystemRole(d.character, settings.systemRole)) continue;
+        if (!castable(d.character)) continue;
         const previous = members.get(key);
         members.delete(key);
+        // 开口即转为正式座位（去掉 soft），座位不变。
         members.set(key, { character: key, mood: String(d.mood || '').trim(), order: previous ? previous.order : order++, at: Number(d.offset) });
         if (members.size > STAGE_CAST_SCAN_LIMIT) members.delete(members.keys().next().value);
         stages.push({ offset: d.offset, members: [...members.values()].reverse() });
@@ -104,8 +127,17 @@ function prepareStageIndex(floor, settings) {
         }
     }
     floor.stageIndex = { stages, speeches, outfits };
-    const assets = settings._sceneAssets || {};
-    const otherNames = otherNamesOf(assets.characters, assets.characterAliases, '', [floor.userName]);
+    const castAliases = floor.castAliases || settings._sceneAssets?.characterAliases || {};
+    const otherNames = otherNamesOf(floor.castCharacters || settings._sceneAssets?.characters, castAliases, '', [floor.userName]);
+    const namesMemo = new Map();
+    const writes = (key, text) => {
+        if (!namesMemo.has(key)) namesMemo.set(key, namesOf(key, castAliases[key]));
+        return namesMemo.get(key).some(n => String(text || '').includes(n));
+    };
+    // 临时座位：旁白点名 / 感知上台、本场景还没开口的人，焦点移走后留在原座，按旁白沿用规则衰减（隔 2 页须再被写到），开口即转正。
+    // soft 陪衬（同行 / 集体主语带过来的）同样衰减；宽松档不标 soft，不衰减。
+    const temps = new Map(), softSeen = new Map(), softGone = new Set();
+    let tempOrder = TEMP_SEAT_ORDER, sceneMark;
     for (let i = 0; i < floor.pages.length; i++) {
         const page = floor.pages[i];
         const anchor = floor.latestSpeechByPage[i];
@@ -126,15 +158,48 @@ function prepareStageIndex(floor, settings) {
             const key = floor.keyOf(name);
             gone.set(key, Math.max(Number(goneAt), gone.get(key) ?? -1));
         }
-        page.cast = !(offset >= 0) || !cast.enabled ? [] : (lastBefore(stages, offset)?.members || []).filter(m => {
+        const sceneHere = floor.sceneOfPage ? floor.sceneOfPage[i] : null;
+        if (i > 0 && sceneHere !== sceneMark) {
+            for (const key of [...temps.keys()]) {
+                if (sceneHere && typeof floor.carriesAcross === 'function' && floor.carriesAcross(sceneHere, key)) temps.get(key).seen = i - 1;
+                else temps.delete(key);
+            }
+            softSeen.clear();
+            softGone.clear();
+        }
+        sceneMark = sceneHere;
+        const focus = page.spriteChar ? floor.keyOf(page.spriteChar) : '';
+        const staged = !(offset >= 0) || !cast.enabled ? [] : (lastBefore(stages, offset)?.members || []).filter(m => {
             if (m.character === page.narrationDroppedKey || (gone.has(m.character) && m.at < gone.get(m.character))) return false;
-            if (m.character === floor.keyOf(page.spriteChar)) return true;
+            if (m.soft) {
+                if (!softSeen.has(m.character)) softSeen.set(m.character, i - 1);
+                if (m.character === focus || writes(m.character, page.segmentBody)) softSeen.set(m.character, i);
+                if (softGone.has(m.character) || i - softSeen.get(m.character) > NARRATION_HOLD_PAGES) {
+                    softGone.add(m.character);
+                    return false;
+                }
+            }
+            if (m.character === focus) return true;
             const speech = lastBefore(speeches.get(m.character) || [], offset);
             if (!speech) return true;
             const end = floor.source.indexOf('\n', speech.offset);
-            return !narrationCastLeft({ name: m.character, aliases: assets.characterAliases?.[m.character] || [],
+            // 她 / 他 离场交给旁白点名的指代消解（认领到的人记在 narrationDroppedKey），陪衬各自只认写了名字的离场。
+            return !narrationCastLeft({ name: m.character, aliases: castAliases[m.character] || [], pronoun: false,
                 others: otherNames.filter(n => n !== m.character), text: floor.source.slice(end < 0 ? speech.offset : end, offset) });
         });
+        const seated = new Set(staged.map(m => m.character));
+        for (const [key, temp] of [...temps]) {
+            if (seated.has(key) || key === page.narrationDroppedKey) { temps.delete(key); continue; }
+            if (key === focus || writes(key, page.segmentBody)) temp.seen = i;
+            if (i - temp.seen > NARRATION_HOLD_PAGES) temps.delete(key);
+        }
+        page.focusTemp = Boolean(cast.enabled && offset >= 0 && focus && page.textType === 'narration' && !seated.has(focus));
+        if (page.focusTemp) {
+            const temp = temps.get(focus) || { character: focus, order: tempOrder++ };
+            temps.set(focus, { ...temp, mood: page.spriteMood || temp.mood || '', seen: i });
+        }
+        page.cast = !(offset >= 0) || !cast.enabled ? [] : [...staged,
+            ...[...temps.values()].map(t => ({ character: t.character, mood: t.mood, order: t.order, temp: true }))];
     }
 }
 

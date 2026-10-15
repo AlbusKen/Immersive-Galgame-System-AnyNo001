@@ -11,9 +11,9 @@
 
 `build:loader -- --release test-vX.Y.Z` 通过替换 loader 内部 `PINNED_REF` 常量生成固定文件。固定版不得被全局配置覆盖，不请求 main 或其他版本作为后备；失败明确报所需 tag，实际 API 版本也必须匹配。只有同来源和同版本实例可复用。自动版 JSON 仍与 loader 源文一致；固定版内容为同一源文仅替换内部固定 tag 常量。此节覆盖下文旧的全局 ref 注入和固定版 main 后备说明。
 
-## 用户明确禁止全量门禁（2026-10-15）
+## 精简后的检查范围
 
-禁止运行 `npm run gate`、`pnpm gate` 或改名、拆分、间接执行的等价全量流程；不自动运行整套 test / simulate / perf。只有用户明确重新授权才可恢复。本条覆盖本文件内所有旧门禁要求。`build` 只生成发布文件，不附带批量验收或自动启动检查。下载、语法和启动问题直接获取并执行实际发布文件，不以酒馆、手机调试或导出数据为前提。HTTP 200、构建成功和测试数量均不能替代实际下载和启动结果。
+已删除结构/静态/性能门禁脚本、批量测试入口和低价值断言，不保留原清单再默认跳过。行为用例的保留依据见 `../app/tests/README.md`；构建不附带全量检查。下载或启动故障直接核对实际发布响应与执行结果，不以 HTTP 200、构建成功或测试数量代替启动。
 
 本文件是未来 AI 处理“打包、发布、更新、上传、生成酒馆助手脚本 JSON”时的固定入口。换对话后，先读本文件，再读 `docs/RELEASE.md`。
 
@@ -130,10 +130,7 @@ npm run build:loader -- --release test-v<当前版本>
 
 `--release` 只接受与 `app/package.json` 一致的 `test-vX.Y.Z`，生成锁定该测试标签的 `沉浸式Galgame系统 test-vX.Y.Z.json`，并删除 loader/ 里所有旧的版本化导入件（只留最新一份）；推送时必须同时推送同名 tag，否则 jsDelivr 取不到会退回 @main。每次升版本后先生成对应导入件，再直接核对实际发布响应和启动结果。无参数的 `build:loader` 仍只更新固定入口和调试版。
 
-全量门禁入口已移除，不得按旧顺序拆开执行。
-
-不运行全量门禁；只改文档时只检查文档一致性。
-`npm run build` 会检查 `igs.bundle.js` 不含运行时 `import`；`npm run test` 也会通过 `gate:dist-bundle:is-self-contained-for-loader-cache-bust` 防止发布入口退化成源码转发壳。
+`npm.cmd run build` 负责产物完整性及自包含检查，不在测试中重复锁定相同源码写法。`gate-contract.test.js` 保留实际 bundle 冷启动、销毁与重启验证，按启动问题选用。只改文档时只检查相关说明和引用。
 
 ## loader JSON 格式
 
@@ -259,12 +256,3 @@ node -e "const fs=require('fs'); const a=JSON.parse(fs.readFileSync('loader/igs-
 - 原版 Immersive Galgame System 迁移注意事项：写入本文件或单独迁移文档。
 - 当前迁移说明：`docs/VISUAL_NOVEL_MIGRATION.md`
 - 不要写入 `奶龙工具箱/CHANGELOG.md`，除非修改的是工具箱本身的流程、Schema、CI 或知识库。
-
-## 未来实现清单
-
-- [x] 新增 `loader/igs-loader.js`。
-- [x] 新增生成 `loader/igs-loader.json` 的脚本。
-- [x] 给 loader JSON 增加反解校验。
-- [ ] 确认公开远程 bundle 地址。
-- [x] 在模拟测试中加入 loader 字段校验。
-- [ ] 发布前更新 README 版本日志与 `app/dist/manifest.json` 版本。

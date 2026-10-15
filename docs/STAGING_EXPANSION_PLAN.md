@@ -32,7 +32,7 @@
 | B10 | **数值条 gauge** | 无 | `.igs-gauge` + CSS 变量宽度，值变化用 B3 `rollNumber` | 并入 `fx-panel-kit.js` | SAN/HP、恩宠、体温、剩余时间 |
 | B11 | **气雾 mist（新）** | 无；粒子参考 V fx-daily-particles.js `startPetals` | 单个 `mist` 节点：几层径向渐变（实色渐变+blur filter），颜色由 CSS 变量传入，慢飘用 transform 一次性 WAAPI；low 画质静态，同页最多 3 团 | 并入 `fx-panel-kit.js` 旁 V `fx-mist.js` | 信息素、水汽、香气 |
 
-建议顺序：B1 -> B2 -> B3 -> B8 -> B4 -> B5 -> B6/B9/B10/B11 -> B7（随各包）。B1/B2 纯搬运，先单独提交，跑 `npm run gate` 证零回归。
+建议顺序：B1 -> B2 -> B3 -> B8 -> B4 -> B5 -> B6/B9/B10/B11 -> B7（随各包）。B1/B2 纯搬运，单独核对受影响的注册、解析与演出行为。
 
 ## 2. 分批计划
 
@@ -243,7 +243,7 @@
 
 ## 5. 验收
 
-通用：每批 `npm run gate` 通过（structure + static + test + simulate + perf + build）；新增测试名以 `gate:` 开头；README 更新日志与版本号同步（见 CLAUDE.md）；只推内测版。
+通用：只验证本批受影响的行为，不增加源码或 CSS 字面量检查；README 更新日志与版本号同步（见 CLAUDE.md）；只推内测版。
 
 | 批 | 新增/修改测试（T） | 断言要点 |
 |---|---|---|

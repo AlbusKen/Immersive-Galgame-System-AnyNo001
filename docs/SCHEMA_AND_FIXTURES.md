@@ -1,6 +1,6 @@
 # Schema、Fixtures 与模拟测试
 
-本项目用机器可读 schema、fixtures 和模拟测试降低 AI 修改风险。真实酒馆实机不作为当前验收要求。
+本项目保留运行时数据 schema 与真实行为回归所需的 fixtures。模拟结果与真实酒馆验收分开记录。
 
 ## Schema 落点
 
@@ -26,79 +26,19 @@
 
 fixtures 文件应短小、可读、可复用。需要大资源时只放 manifest 和占位 URL，不放真实图片包。
 
-## 模拟测试矩阵
+## 行为回归与证据
 
-| 编号 | 测试域 | 目标 |
-| --- | --- | --- |
-| `S0` | loader | loader 地址拼接、缓存版本、远程 bundle fallback |
-| `S1` | host | fake TavernHelper 消息读取、输入框写入、发送触发 |
-| `S2` | scene | 正文解析、时空栏、说话人、情绪、空文本回退 |
-| `S3` | resource match | 背景规则、立绘、头像和资源包命中 |
-| `S4` | visual | 桌面/移动布局、图层顺序、视觉模式切换 |
-| `S5` | choices | 选项浮窗、点击后写入输入框、取消和重复点击 |
-| `S6` | generated-images | provider 队列、轮询、失败重试、结果归一化 |
-| `S7` | shujuku | fake shujuku 增删改、刷新世界书、失败返回处理 |
-| `S8` | storage | IndexedDB/localStorage 迁移、Blob URL 生命周期 |
-| `S9` | registry | Mod / Preset / Pack 导入、权限声明、冲突检测 |
-| `S10` | api | `window.IGS` 公开 API 权限、错误返回和兼容别名 |
+保留范围统一见 `../app/tests/README.md`，不再维护逐域必跑矩阵或重复的门禁命令表。只选能验证当前行为风险的已有用例，不为覆盖率、数量或矩阵完整性补项。
 
-## 当前覆盖补充（v0.2.5）
-
-- `S8 storage`：新增 `app/fixtures/presets/preset-registry-snapshot.json`，覆盖预设 current 和 items 的持久化恢复。
-- `S9 registry`：新增 `app/fixtures/presets/text-presets-import-bundle.json` 与 `bad-current-overwrite-bundle.json`，覆盖文本预设导入、坏预设拒收和 current 守卫。
-- `S10 api`：文本预设公开分组继续覆盖 `register/unregister/get/list`，并补充 `setCurrent/getCurrent/export/exportAll` 契约。
-
-## 命令约定
-
-后续接入真实构建后，优先使用：
+例如，在 `app/` 验证阅读器准备缓存：
 
 ```text
-npm run gate
+node --test tests/reader-floor-preparation.test.js
 ```
 
-当前可执行单项命令：
+报告实际命令、退出结果和未覆盖的环境。未执行、失败或只有 fixtures 证据时，不声称真实酒馆、手机或 provider 已验收。
 
-```text
-npm run structure
-npm run static
-npm run test
-npm run simulate
-npm run perf
-npm run build
-```
-
-pnpm 目标命令：
-
-```text
-pnpm gate
-pnpm test
-pnpm simulate
-pnpm build
-pnpm perf
-```
-
-命令未接入或无法执行时，AI 不得声称测试通过。应改为说明：
-
-- 已做静态文档或调用链自检
-- 哪些模拟测试尚未接入
-- skipped 原因
-- 残余风险
-
-## 验证证据格式
-
-每次实现完成后，最终回复或本地记录至少写明：
-
-```text
-风险级别：R1/R2/R3/R4/R5
-静态证据：读取的 CONTRACT/docs/schema
-模拟证据：运行的 S0-S10 项或 skipped 原因
-命令证据：npm run gate 或 pnpm test/simulate/build/perf 的结果
-残余风险：未覆盖真实 provider、真实 shujuku 或性能边界时写清楚
-```
-
-本项目的“实机验真”由 `S0-S10` 的模拟矩阵替代。只有用户明确要求发布实测时，才临时增加真实酒馆或真实 provider 验证。
-
-## 图片重构验证（v0.36.39）
+## 图片数据边界（v0.36.39）
 
 | 数据 | Schema / 归属 | 回归重点 |
 | --- | --- | --- |

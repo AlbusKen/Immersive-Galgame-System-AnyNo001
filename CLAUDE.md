@@ -1,8 +1,10 @@
 # CLAUDE.md
 
-## 用户明确禁止全量门禁（2026-10-15）
+## 检查清单精简
 
-禁止运行 `npm run gate` / `pnpm gate`，也不得通过改名、拆开或间接调用执行等价全量门禁；不自动运行整套 test / simulate / perf。本条覆盖下文所有旧门禁要求，只有用户明确重新授权才可恢复。构建只生成发布文件；下载、语法和启动问题直接下载并执行实际发布文件，不要求先接入酒馆。不以构建、HTTP 200 或测试数量代替启动结果。
+实际删除无用、重复、仅锁定源码写法或 CSS 字面量的检查及其执行入口，不以默认跳过代替精简。保留能发现行为、数据、兼容性、安全、资源生命周期和启动故障的已有用例，范围见 `app/tests/README.md`。不为测试数量或覆盖率补用例，不改名恢复等价全量门禁。
+
+构建只生成发布文件；下载、语法和启动问题直接获取并执行实际发布文件，不要求先接入酒馆。不以构建、HTTP 200 或测试数量代替启动结果。
 
 本文件是 Claude Code 的项目指令文件。
 
@@ -18,12 +20,14 @@ Immersive Galgame System 是一个 SillyTavern（酒馆）的酒馆助手脚本�
 - 远程加载器：`loader/`
 - 文档：`docs/`
 
-## 验收命令
+## 开发命令
 
-```bash
-npm test        # 单元测试（tests/ 下除 simulate 外的全部 *.test.js）
-npm run simulate # 模拟测试（tests/simulate.test.js）
-npm run build   # 构建 bundle
+在 `app/` 下执行：
+
+```text
+node --test tests/reader-floor-preparation.test.js  # 按问题选择已有行为用例
+npm.cmd run build                                # 构建 bundle
+npm.cmd run preview:records                      # 资料页预览
 ```
 
 ## 版本号同步清单
@@ -55,7 +59,7 @@ npm run build   # 构建 bundle
 
 ## Bug 修复闭环
 
-1. 复现并修复，执行本问题必要的定向验证；全量门禁仍禁用。
+1. 复现并修复，执行能证明本问题行为的定向验证；不恢复已删除的检查项。
 2. 升 patch、同步文档，构建 bundle 与 `--release test-vX.Y.Z` loader，记录实际执行结果。
 3. 提交并推送 main；创建 `git tag -a test-vX.Y.Z` 并推送，核对分支和标签。
 4. 真实酒馆与手机未终验时明确记录边界；测试标签不代表设备验收。后续发现问题则升号提交新的测试标签，不覆盖旧标签。
@@ -71,7 +75,7 @@ npm run build   # 构建 bundle
 
 - 无注释优先，只在 WHY 不明显时加一行注释
 - 不加 JSDoc、不加 TODO 注释
-- 测试名以 `gate:` 前缀开头
+- 测试名描述所保护的行为，既有前缀不作为删留依据
 - ES Module 语法，Node 原生 test runner
 
 ## 场景素材模式相关文件

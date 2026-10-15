@@ -1209,12 +1209,3 @@ test('gate:settings-dialog:character-dropdown-confirms-and-keeps-selection', asy
     panel.overlay.querySelector('[data-settings-dialog="cancel"]').dispatch('click');
     assert.equal(await cancelled, null);
 });
-
-test('gate:settings-style:dialog-options-stack-without-a-mobile-breakpoint', async () => {
-    const { getPageTemplate } = await import('../src/visual/igs-ui/settings-tabs.js');
-    const { getSettingsStyleText } = await import('../src/visual/igs-ui/settings-style.js');
-    assert.match(getPageTemplate('style'), /igs-settings-row igs-switch-stack igs-dialog-style-options/);
-    const css = getSettingsStyleText();
-    assert.match(css, /\n\.igs-settings-row\.igs-dialog-style-options\{[^}]*flex-direction:column;align-items:stretch/);
-    assert.match(css, /\.igs-settings-row\.igs-dialog-style-options>\*\{flex:none;width:100%;box-sizing:border-box\}/);
-});

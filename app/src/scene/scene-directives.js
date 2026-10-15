@@ -4,11 +4,20 @@ import { sceneTimeBucket } from './time-bucket.js';
 import { IGS_DIRECTIVE_START_RE, matchOutfitDirectiveAt, splitIgsDirectiveLines } from './directive-tags.js';
 
 // 指令可独占整行，也可紧跟在正文之后（同一行内混排），因此不做行首锚定。
-const SCENE_RE = /\[igs-scene:([^|\]]+)\|([^|\]]+)\|([^|\]]+)(?:\|([^\]]*))?\]/;
+const SCENE_RE = /\[igs-scene:([^|\]]+)\|([^|\]]+)\|([^|\]]+)(?:\|([^|\]]*))?(?:\|([^\]]*))?\]/;
+// 第 5 段（可选）：此刻在场的角色名，逗号/顿号/空格分隔；原样名字，由调用方解析成角色主名。
+export function parseScenePresentNames(raw) {
+    const out = [];
+    for (const part of String(raw || '').split(/[,，、;；\s]+/)) {
+        const name = part.trim();
+        if (name && !out.includes(name)) out.push(name);
+    }
+    return out;
+}
 const CHAR_RE = /\[igs-char:([^|\]]+)\|([^|\]]+)\|([^|\]]+)\]/;
 const THOUGHT_RE = /\[igs-thought:([^|\]]+)\|([^|\]]+)\|([^|\]]+)\]/;
 // 锚定在当前位置的版本：用于「紧贴当前位置」的指令识别。
-const SCENE_AT_RE = /^\[igs-scene:([^|\]]+)\|([^|\]]+)\|([^|\]]+)(?:\|([^\]]*))?\]/;
+const SCENE_AT_RE = /^\[igs-scene:([^|\]]+)\|([^|\]]+)\|([^|\]]+)(?:\|([^|\]]*))?(?:\|([^\]]*))?\]/;
 // 台词/心里话漏写 "]" 时以行尾收口，与正文格式化规则一致；表情栏可省略（两栏写法视为没写表情）。
 const CHAR_AT_RE = /^\[igs-char:([^|\]]+)\|(?:([^|\]]*)\|)?([^|\]]+)(?:\]|$)/;
 const THOUGHT_AT_RE = /^\[igs-thought:([^|\]]+)\|(?:([^|\]]*)\|)?([^|\]]+)(?:\]|$)/;
@@ -74,6 +83,7 @@ export function extractSceneDirectives(text, options = {}) {
                     time: m[2].trim(),
                     weather: m[3].trim(),
                     nsfw: String(m[4] || '').trim().toLowerCase() === 'nsfw',
+                    present: parseScenePresentNames(m[5]),
                     segmentIndex: segmentCount,
                     lineIndex,
                     offset: cursor,
@@ -150,6 +160,7 @@ export function resolveSceneAtSourceOffset(source, position) {
         time: m[2].trim(),
         weather: m[3].trim(),
         nsfw: String(m[4] || '').trim().toLowerCase() === 'nsfw',
+        present: parseScenePresentNames(m[5]),
         character: '', mood: '', dialogue: '', thought: '', lastDirectiveType: 'scene',
     };
 }

@@ -526,7 +526,9 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
         ${checkbox('bridge.sceneAssets.nameFallback', sceneAssets.nameFallback !== false, '名字兜底匹配')}
         <div class="igs-source-filter-note">名字只写对一部分（如「小雨」对「林小雨」）也认作同一人；「路人A」「路人B」只差编号的不会混。</div>
         ${checkbox('bridge.sceneAssets.narrationNameSwitch', sceneAssets.narrationNameSwitch !== false, '旁白点名切换立绘')}
-        <div class="igs-source-filter-note">旁白开头三个字内出现角色名时，立绘换成这个角色。</div>
+        <div class="igs-source-filter-note">旁白开头点名、写到看见某人或以她/他指代时，立绘换成此人。</div>
+        ${field('bridge.sceneAssets.sceneCarryMode', '换场景立绘', selectInput('bridge.sceneAssets.sceneCarryMode', sceneAssets.sceneCarryMode || 'smart', [['strict', '严格'], ['smart', '智能'], ['loose', '宽松']]))}
+        <div class="igs-source-filter-note">换场景时，原立绘是否随行。严格：须明写同行或新场景首页即出场；智能：依正文判断；宽松：除非写明分开或时间跳转，否则保留。</div>
         ${checkbox('bridge.sceneAssets.unifiedSpriteLayout', sceneAssets.unifiedSpriteLayout, '统一角色立绘位置')}
         ${checkbox('bridge.sceneAssets.spriteEnhance.enabled', spriteEnhance.enabled === true, '立绘增强（手机较耗电）')}
         ${checkbox('readerSettings.spriteGenderScale.enabled', spriteGenderScale.enabled, '按性别区分默认高度')}

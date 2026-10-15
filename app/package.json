@@ -1,14 +1,9 @@
 {
   "name": "igs-app",
-  "version": "0.36.73",
+  "version": "0.36.74",
   "private": true,
   "type": "module",
   "scripts": {
-    "structure": "node scripts/gate-structure.js",
-    "static": "node scripts/gate-static.js",
-    "test": "node --test \"tests/!(simulate).test.js\" tests/settings-notice.test.js tests/settings-panel-ux.test.js",
-    "simulate": "node --test tests/simulate.test.js",
-    "perf": "node scripts/perf-smoke.js",
     "preview:records": "node scripts/record-pages-preview.mjs",
     "build": "node scripts/build.js",
     "build:fonts": "node scripts/split-fonts.js",
