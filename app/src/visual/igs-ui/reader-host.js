@@ -673,7 +673,7 @@ export function createIgsReaderHost(options = {}) {
             runtime: null,
             toastTimer: null,
             imagePollToken: 0,
-            assetLoadRequests: new Set(),
+            assetLoadRequests: new Map(),
         };
         const current = state.activeReader;
         current.progressArmed = progressRuntime.navigating;
@@ -951,15 +951,22 @@ export function createIgsReaderHost(options = {}) {
         // 等解码完再补地址会先把背景清成空的，播 CG 时整屏闪一下。
         const inline = /^(?:data:|blob:)/i.test(source);
         if (!current.assetLoadRequests.has(source)) {
-            current.assetLoadRequests.add(source);
+            const request = {};
+            current.assetLoadRequests.set(source, request);
             const loading = imageResourceCache.load(source);
             const immediate = imageResourceCache.get(source);
             loading.then(() => {
+                if (current.assetLoadRequests.get(source) !== request) return;
                 current.assetLoadRequests.delete(source);
                 if (inline || state.activeReader !== current) return;
+                // 读取结束不等于出现可显示的新图；读空或被预算淘汰时不能自行重绘、重读。
+                const loaded = imageResourceCache.get(source);
+                if (!loaded || loaded === immediate) return;
                 const content = current.snapshot && current.snapshot.content;
                 if (!pageUsesAsset(content, source)) return;
                 updateMountedReader(current.snapshot);
+            }, () => {
+                if (current.assetLoadRequests.get(source) === request) current.assetLoadRequests.delete(source);
             });
             if (immediate) return immediate;
         }

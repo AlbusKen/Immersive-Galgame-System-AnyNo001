@@ -224,7 +224,8 @@ export function createAssetGenerationService(deps) {
                     return value;
                 }, { persist: false });
                 if (tempCache.epoch() !== generation || cache.token(key) !== stamp) return;
-                if (value) { failedImages.delete(id); emit({ imageId: id, reason: 'image-loaded' }); }
+                if (value) failedImages.delete(id);
+                if (cache.peek(key)) emit({ imageId: id, reason: 'image-loaded' });
             })
                 .catch(error => {
                     if (!stopped && tempCache.epoch() === generation && (stamp == null || cache.token(key) === stamp || error.message === 'image-load-timeout')) noteImageFailure(id, error);
@@ -251,7 +252,7 @@ export function createAssetGenerationService(deps) {
                 if (small && cache.token(key) === stamp) await thumbStore.put(id, small, stamp);
                 return small || full;
             });
-            if (value && tempCache.epoch() === generation && cache.token(key) === stamp) emit({ imageId: id, reason: 'image-loaded' });
+            if (value && tempCache.epoch() === generation && cache.token(key) === stamp && cache.peek(key)) emit({ imageId: id, reason: 'image-loaded' });
         } finally { release(); }
     }
 
