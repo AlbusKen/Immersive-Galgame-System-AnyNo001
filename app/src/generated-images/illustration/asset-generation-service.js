@@ -92,7 +92,12 @@ export function createAssetGenerationService(deps) {
         }).finally(() => { preparing = null; });
         return preparing;
     }
-    async function displayRecord(id) {
+    // 本机已有记录时先用它显示，记录恢复（全表扫描 + 拉网络备份）放后台，不让每次打开的第一张图都等它。
+    async function displayRecord(id, onEarly) {
+        if (!prepared && !stopped && typeof store.peekImageRecord === 'function') {
+            const local = await store.peekImageRecord(id).catch(() => null);
+            if (local) { onEarly?.(); void ready().catch(() => {}); return local; }
+        }
         await ready().catch(error => { if (stopped || typeof store.getImageRecord !== 'function') throw error; });
         return typeof store.getImageRecord === 'function' ? store.getImageRecord(id) : null;
     }
@@ -217,9 +222,9 @@ export function createAssetGenerationService(deps) {
         if (!pendingImages.has(id) && !imageFailure(url)) {
             pendingImages.add(id);
             const generation = tempCache.epoch();
-            let stamp = null;
-            // 恢复记录会失效旧像素引用，必须先完成恢复再取得读图 token。
-            displayRecord(id).then(async record => {
+            let stamp = null, early = false;
+            // 恢复记录会失效旧像素引用，必须先完成恢复再取得读图 token；先用本机记录读的，读完若被恢复作废就通知重读一次。
+            displayRecord(id, () => { early = true; }).then(async record => {
                 if (stopped || tempCache.epoch() !== generation) return;
                 stamp = cache.token(key);
                 const value = await cache.load(key, async () => {
@@ -227,7 +232,8 @@ export function createAssetGenerationService(deps) {
                     if (!value) throw new Error('image-empty');
                     return value;
                 }, { persist: false });
-                if (tempCache.epoch() !== generation || cache.token(key) !== stamp) return;
+                if (tempCache.epoch() !== generation) return;
+                if (cache.token(key) !== stamp) { if (early) emit({ imageId: id, reason: 'image-loaded' }); return; }
                 if (value) failedImages.delete(id);
                 if (cache.peek(key)) emit({ imageId: id, reason: 'image-loaded' });
             })

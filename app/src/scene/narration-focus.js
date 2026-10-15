@@ -106,7 +106,8 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         : token.kind === 'name' ? token.key
             : token.kind === 'pronoun' ? resolvePronoun(token.word, focus) : '';
 
-    function read(text, { focus = '' } = {}) {
+    // loose：舞台上没人可沿用时（楼首页、人都走了），名字不在开头也认，取全页最早出现的那个。
+    function read(text, { focus = '', loose = false } = {}) {
         const body = String(text || '').replace(QUOTE_RE, '');
         const sentences = body.split(SENTENCE_RE).filter((s) => s.trim());
         let pick = null;
@@ -118,20 +119,22 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
             pick = p.seen.kind === 'name' || p.seen.kind === 'you' ? p.seen.key || '' : '';
             break;
         }
-        if (pick === null) {
-            const plain = probeOf(body);
-            let bestAt = LEAD_REACH + (plain.match(CONNECTIVE_RE)?.[0].length || 0);
+        const plain = probeOf(body);
+        const earliestName = (reach) => {
+            let found = null, bestAt = reach;
             for (const e of entries) {
                 const at = plain.indexOf(e.probe);
                 if (at < 0 || at >= bestAt || numbered(e.probe, plain.slice(at + e.probe.length))) continue;
                 if (NAME_BEFORE_RE.test(plain.slice(Math.max(0, at - 2), at)) || NAME_AFTER_RE.test(plain.slice(at + e.probe.length))) continue;
                 // 「小雪的照片」「白墨还没来」「听说小雪……」：写到了，人不在眼前。
-                const first = sentences[0] || '';
-                const written = first.indexOf(e.name);
-                if (written >= 0 && mentionIsAbsent(first, written, written + e.name.length)) continue;
-                pick = e.key; bestAt = at;
+                const sentence = sentences.find((s) => s.includes(e.name)) || '';
+                const written = sentence.indexOf(e.name);
+                if (written >= 0 && mentionIsAbsent(sentence, written, written + e.name.length)) continue;
+                found = e.key; bestAt = at;
             }
-        }
+            return found;
+        };
+        if (pick === null) pick = earliestName(LEAD_REACH + (plain.match(CONNECTIVE_RE)?.[0].length || 0));
         if (pick === null && youLead && userKey) {
             const lead = (sentences[0] || '').replace(/^[\s\p{P}\p{S}]+/u, '').replace(CONNECTIVE_RE, '').replace(/^[\s\p{P}\p{S}]+/u, '');
             if (lead[0] === '你' && !YOU_MODIFIER_RE.test(lead)) pick = userKey;
@@ -147,6 +150,14 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         if (pick === null) {
             const head = (sentences[0] || '').trimStart().match(PRONOUN_HEAD_RE);
             if (head) pick = resolvePronoun(head[0], focus);
+        }
+        if (!pick && loose) {
+            // 台上没人：「你听见她……」宾语认不出时给感知者，再不行取全页最早的名字。
+            const by = perceived.find(Boolean)?.by;
+            const lead = (sentences[0] || '').replace(/^[\s\p{P}\p{S}]+/u, '').replace(CONNECTIVE_RE, '').replace(/^[\s\p{P}\p{S}]+/u, '');
+            if (by?.kind === 'you' || (lead[0] === '你' && !YOU_MODIFIER_RE.test(lead))) pick = youLead && userKey ? userKey : pick;
+            else if (by?.kind === 'name') pick = by.key;
+            if (!pick) pick = earliestName(Infinity);
         }
         // 话题主语按句推进：感知句记感知者与宾语（被动句的主语是被感知者），其余记句首的人；「你」打头不改话题。
         for (let n = 0; n < sentences.length; n++) {

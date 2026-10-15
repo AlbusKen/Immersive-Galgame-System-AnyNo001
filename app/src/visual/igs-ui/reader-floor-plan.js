@@ -420,7 +420,8 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         }
         if (textType === 'narration' && !spriteChar && sceneAssets.narrationNameSwitch !== false) {
             const focus = normalizedIndex > 0 && pages[normalizedIndex - 1].spriteChar ? castKeyOf(pages[normalizedIndex - 1].spriteChar) : '';
-            const named = namer.read(currentText, { focus });
+            // 上一页台上没人（楼首页、人都走了）：名字不在开头也认，免得开场旁白空立绘。
+            const named = namer.read(currentText, { focus, loose: !focus });
             if (named) {
                 spriteChar = named;
                 spriteMood = narrationMood(currentText, named) || lastMoodByKey.get(named) || '';

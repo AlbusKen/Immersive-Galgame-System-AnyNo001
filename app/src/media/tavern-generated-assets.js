@@ -47,6 +47,8 @@ export function withTavernGeneratedAssetFiles(store, globalObject = globalThis) 
         restore: journal.restore,
         hydrateImage: files.hydrate,
         getImageRecord: raw,
+        // 只读本机记录、不等恢复：给阅读器先显示用，没有时由调用方回到 getImageRecord。
+        peekImageRecord: id => store.getImage(id),
         async listImages() { await journal.restore(); return store.listImages(); },
         async listAssets() { await journal.restore(); return store.listAssets(); },
         async listFloors() { await journal.restore(); return store.listFloors(); },

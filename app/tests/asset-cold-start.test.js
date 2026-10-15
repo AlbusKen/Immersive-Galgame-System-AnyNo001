@@ -127,3 +127,28 @@ test('gate:assets:indexed-metadata-cursor-is-scoped-ordered-and-paginated', asyn
     const previous = await f.store.queryAssets({ chatId: 'chat', beforeKey: 'b', limit: 1 });
     assert.deepEqual(previous.records.map(row => row.key), ['a']);
 });
+
+test('gate:assets:second-open-shows-local-records-without-waiting-for-backup-recovery', async t => {
+    const f = await fixture(t);
+    await f.store.restore();
+    await stopMediaJournals(f.host); await mediaFileGcFor(f.host).stop();
+    // 第二次打开：本机库已有记录，网络备份迟迟不回。
+    const host = f.server.host(f.host.indexedDB), cache = localImageCacheFor(host);
+    const store = withTavernGeneratedAssetFiles(createIndexedDbGeneratedAssetStore(host), host);
+    const notifications = [];
+    const service = createAssetGenerationService({
+        store, mediaCache: cache,
+        messageHost: { getChatId: () => 'chat', on: () => () => {} },
+        getSettings: () => ({ sceneAssets: { enabled: true } }),
+        events: { emit: (_name, detail) => notifications.push(detail) },
+    });
+    let release;
+    f.server.gateRead = new Promise(resolve => { release = resolve; });
+    t.after(async () => { release(); service.stop(); await stopMediaJournals(host); await mediaFileGcFor(host).stop(); await cache.destroy(); });
+    service.resolveUrl('igs-gen:hero');
+    await settleMedia(); await settleMedia();
+    assert.ok(notifications.some(row => row.imageId === 'hero' && row.reason === 'image-loaded'), '本机已有记录时不等网络备份恢复');
+    assert.ok(cache.peek('asset:hero'));
+    release(); await settleMedia(); await settleMedia();
+    assert.ok(cache.peek('asset:hero'), '恢复完成后图仍在');
+});
