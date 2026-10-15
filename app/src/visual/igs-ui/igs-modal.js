@@ -221,7 +221,7 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
             originalImageUrl: labels.originalImageUrl || '',
             onCancel: labels.onCancel,
         };
-        return new Promise((resolve) => {
+        const result = new Promise((resolve) => {
             entry.resolve = resolve;
             pending = entry;
             if (!mount(entry)) {
@@ -229,6 +229,9 @@ export function createIgsModal({ getHost = () => null, getTheme = () => '', glob
                 resolve(cancelValue(entry));
             }
         });
+        // 取消只结算本次弹窗，迟到任务不能关闭后来打开的弹窗。
+        result.cancel = () => settle(entry, cancelValue(entry));
+        return result;
     }
 
     return {

@@ -1191,6 +1191,9 @@ test('gate:assets:reader-shows-saved-items-before-generation-finishes', async ()
                 JSON.stringify({ view, match: content().spriteMatch, speaker: content().speaker }));
             assert.equal(content().spriteMatch.source, 'temp');
             assert.equal(content().spriteOutfit, '');
+            const sprite = document.getElementById('igs-sprite');
+            assert.ok(sprite);
+            assert.notEqual(sprite.style.display, 'none', '未采用候选已显示在舞台');
             assert.deepEqual(bridge, before, '逐项显示不采用候选、登记衣装或设置默认');
             await service.setStatus('chat-live|char|Alice', 'chat');
             assert.equal(content().spriteImage, 'data:image/png;base64,ALICE');
@@ -1209,6 +1212,48 @@ test('gate:assets:reader-shows-saved-items-before-generation-finishes', async ()
         }
     }
 });
+
+test('gate:assets:reader-hydrates-review-sprite-for-matching-named-outfit', async () => {
+    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    const document = createFakeDocument(), store = createMemoryGeneratedAssetStore();
+    const candidate = await spriteAdoptionFixture();
+    const outfit = candidate.outfitSnapshot.characters[0].name;
+    const raw = `[igs-char:Alice|平和|${outfit}|Hello.]`;
+    const floor = { chatId: 'chat-named', messageId: 40, swipeId: 0, text: raw };
+    const assets = { enabled: true, characters: { Alice: {} },
+        characterOutfits: { Alice: { [outfit]: { moods: {} } } } };
+    const before = structuredClone(assets);
+    await store.putImage(candidate);
+    await store.putAsset({ key: 'chat-named|char|Alice', chatId: floor.chatId,
+        floorKey: 'chat-named|40|0', type: 'sprite', name: 'Alice', status: 'review',
+        imageId: candidate.id, outfitSnapshot: candidate.outfitSnapshot });
+    let update;
+    const service = createAssetGenerationService({ store,
+        messageHost: { getChatId: () => floor.chatId }, nai: {},
+        getSettings: () => ({ sceneAssets: assets }),
+        events: { emit: (_name, detail) => update?.(detail) } });
+    const host = createIgsReaderHost({ global: { document }, generatedAssets: service,
+        getUnifiedSettings: () => ({ bridge: { sceneAssets: assets }, readerSettings: {} }),
+        getIllustrationSource: () => floor,
+        onGeneratedAssetUpdated: listener => { update = listener; return () => { update = null; }; } });
+    try {
+        const opened = host.openReader({ messageId: 40, message: { id: 40, text: raw }, raw }, { mode: 'pc' });
+        assert.equal(opened.ok, true);
+        const content = () => host.getState().activeReader.snapshot.content;
+        for (let i = 0; i < 60 && !content().spriteImage; i++) await new Promise(resolve => setTimeout(resolve, 5));
+        assert.equal(content().spriteImage, candidate.dataUrl, JSON.stringify(content().spriteMatch));
+        assert.equal(content().spriteMatch.source, 'temp');
+        assert.equal(content().spriteMatch.requestedOutfit, outfit);
+        assert.equal(content().spriteOutfit, outfit);
+        assert.notEqual(document.getElementById('igs-sprite').style.display, 'none');
+        assert.equal(service.getRecord('chat-named|char|Alice').status, 'review');
+        assert.equal(service.tempSpriteForOutfit('Alice', '礼服'), '');
+        assert.deepEqual(assets, before);
+    } finally { host.destroy(); }
+});
+
 
 
 test('gate:assets:reader-manual-retries-settled-floor', async () => {
@@ -10610,7 +10655,7 @@ test('gate:simulation:toolbar-split-moves-nav-buttons-under-dialog', async () =>
 });
 
 
-for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`gate:cg-consistency:reader-phone-${decision}`, async () => {
+for (const decision of ['accept', 'cancel', 'stop', 'modal-stop', 'close', 'switch']) test(`gate:cg-consistency:reader-phone-${decision}`, async () => {
     const document = createFakeDocument({ innerWidth: 390, innerHeight: 844 });
     const raw = '当前 CG 的正文。\n[igs-img:7]';
     const calls = [];
@@ -10626,7 +10671,7 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
             describeConsistency: () => ({ ok: true }),
             async redrawConsistency(query, options) {
                 calls.push(['run', query]);
-                assert.equal(document.querySelector('.igs-page-modal'), null, '生成期间不弹模态框');
+                assert.ok(document.querySelector('.igs-page-modal'), '生成期间显示进度框');
                 options.onProgress({ phase: 'write', done: 0, total: 3 });
                 started();
                 await new Promise((resolve) => {
@@ -10651,7 +10696,8 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
         assert.match(button.getAttribute('aria-label'), /角色一致性重绘/);
         const pending = opened.controller.invokeAction('consistency-cg');
         await ready;
-        assert.equal(document.querySelector('.igs-page-modal'), null, '无前置确认或进度弹窗');
+        assert.match(document.querySelector('.igs-page-modal-msg').textContent, /一致性重绘：写提示词 0\/3/);
+        assert.equal(document.querySelector('[data-igs-modal="cancel"]').textContent, '停止');
         const strip = document.getElementById('igs-gen-strip');
         assert.ok(strip);
         assert.equal(strip.getAttribute('data-state'), 'busy');
@@ -10662,6 +10708,7 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
         assert.equal(calls.filter(([name]) => name === 'run').length, 1);
         assert.deepEqual(calls[0][1], { chatId: 'fixture-reader', messageId: 5, swipeId: 0, slot: 7 });
         if (decision === 'stop') assert.equal((await opened.controller.invokeAction('consistency-cg')).reason, 'cancelled');
+        else if (decision === 'modal-stop') clickModal('cancel');
         else if (decision === 'close') host.closeReader();
         else if (decision === 'switch') {
             host.replaceReader({ messageId: 6, message: { id: 6, text: raw }, raw });

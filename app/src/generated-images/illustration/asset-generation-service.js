@@ -214,6 +214,16 @@ export function createAssetGenerationService(deps) {
         return tempUrl(currentTempRecords().get(tempAssetKeyOf(tempChatId, { type: 'sprite', name })));
     }
 
+    // 命名衣装只匹配本图实际生成快照，不把输入基线或模型元数据当成已生成衣装。
+    function tempSpriteForOutfit(name, outfit) {
+        const record = currentTempRecords().get(tempAssetKeyOf(tempChatId, { type: 'sprite', name }));
+        const url = tempUrl(record);
+        const snapshot = record?.outfitSnapshot;
+        if (!url || !outfit || snapshot?.version !== 1 || !Array.isArray(snapshot.characters)) return '';
+        const characters = snapshot.characters.filter(c => c.characterKey === name);
+        return characters.length === 1 && characters[0].name === outfit ? url : '';
+    }
+
     // 同步取图：命中内存直接返回；否则异步从 IndexedDB 补并在补完后通知重渲染。
     function resolveUrl(url) {
         if (!isGeneratedAssetUrl(url)) return String(url || '');
@@ -1626,7 +1636,7 @@ export function createAssetGenerationService(deps) {
     return {
         processMessage, resolveUrl, resolveThumbUrl, thumbSourceId, tempBackground, tempSceneTime, tempSprite, listReview, listTemp, setStatus, deleteImages, getImageDataUrl, getImagePrompt, saveImagePrompt, readStoredImage, writeStoredImage, importAssetImage,
         generateExpressionSet, generateExpressionImage, paintExpressionCaptions, generateSceneVariants, generateCharacterSprite, generateCharacterAvatar, writeWardrobePrompt, paintWardrobeReference,
-        getEditableImage, saveMatteEdit, imageAvailability, retryImageRead, clearImageReadFailures,
+        getEditableImage, saveMatteEdit, imageAvailability, retryImageRead, clearImageReadFailures, tempSpriteForOutfit,
         getRecord: (key) => currentTempRecords().get(key) || null,
         start() {
             if (offRendered) return;

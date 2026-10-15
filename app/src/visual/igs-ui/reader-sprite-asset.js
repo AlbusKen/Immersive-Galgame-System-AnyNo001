@@ -5,11 +5,13 @@ export function resolveReaderSpriteAsset(character, mood, ctx = {}, outfit = '')
     const hit = resolveSpriteAsset(character, mood, ctx, outfit);
     const name = String(character || '').trim();
     const requested = String(outfit || '').trim();
+    const explicit = requested && !['默认', '原装'].includes(requested);
+    const lookup = explicit ? ctx.tempSpriteForOutfit : ctx.tempSprite;
     if (hit.url || !name || isNonSpriteSpeaker(name)
-        || (requested && !['默认', '原装'].includes(requested))
         || !['appearance-character-missing', 'default-outfit-unset', 'outfit-image-empty', 'outfit-image-missing'].includes(hit.reason)
-        || typeof ctx.tempSprite !== 'function') return hit;
-    const url = ctx.tempSprite(hit.character || name) || (hit.character !== name ? ctx.tempSprite(name) : '');
+        || typeof lookup !== 'function') return hit;
+    const find = key => explicit ? lookup(key, requested) : lookup(key);
+    const url = find(hit.character || name) || (hit.character !== name ? find(name) : '');
     if (!isGeneratedAssetUrl(url)) return hit;
     try {
         if (ctx.isMissingImage?.(url)) return hit;
@@ -18,5 +20,5 @@ export function resolveReaderSpriteAsset(character, mood, ctx = {}, outfit = '')
         if (status && !['available', 'unverified', 'loading'].includes(status)) return hit;
     } catch { return hit; }
     return { ...hit, url, slot: '默认', source: 'temp', quality: 'temp',
-        outfit: '', selectionSource: 'chat-temp', reason: '', needsGeneration: false };
+        outfit: explicit ? requested : '', selectionSource: 'chat-temp', reason: '', needsGeneration: false };
 }

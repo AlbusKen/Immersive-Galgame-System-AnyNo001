@@ -899,6 +899,7 @@ export function createIgsReaderHost(options = {}) {
                         tempBackground: generatedAssets ? generatedAssets.tempBackground : null,
                         tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
                         tempSprite: generatedAssets ? generatedAssets.tempSprite : null,
+                        tempSpriteForOutfit: generatedAssets ? generatedAssets.tempSpriteForOutfit : null,
                     },
                 }),
             };
@@ -3120,6 +3121,7 @@ export function createIgsReaderHost(options = {}) {
             tempBackground: generatedAssets ? generatedAssets.tempBackground : null,
             tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
             tempSprite: generatedAssets ? generatedAssets.tempSprite : null,
+            tempSpriteForOutfit: generatedAssets ? generatedAssets.tempSpriteForOutfit : null,
         };
         const sceneDirectives = Array.isArray(extracted.sceneDirectives) ? extracted.sceneDirectives
             : Array.isArray(payload.sceneDirectives) ? payload.sceneDirectives : [];

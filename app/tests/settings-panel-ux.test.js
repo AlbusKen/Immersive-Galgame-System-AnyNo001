@@ -672,17 +672,21 @@ test('gate:page-modal:transformed-host-does-not-become-the-screen', async () => 
     assert.equal(await pending, true);
 });
 
-test('gate:page-modal:一致性完成后双图审核且不弹生成确认或进度', async () => {
+test('gate:page-modal:一致性进度更新后交接双图审核', async () => {
     const { runCgConsistencyAction } = await import('../src/visual/igs-ui/cg-consistency-action.js');
     for (const accept of [true, false]) {
         const doc = makeDoc();
         const modal = createIgsModal({ getHost: () => doc.body, global: { document: doc } });
-        modal.confirm = modal.progress = () => { throw new Error('不应显示生成提示框'); };
+        modal.confirm = () => { throw new Error('无衣装回退不额外确认'); };
         const accepted = [], discarded = [];
         const service = {
             describeConsistency: () => ({ ok: true }),
-            async redrawConsistency() {
-                assert.equal(modal.isOpen(), false);
+            async redrawConsistency(_query, options) {
+                assert.equal(modal.isOpen(), true);
+                assert.match(doc.body.querySelector('.igs-page-modal-msg').textContent, /准备/);
+                options.onProgress({ phase: 'paint', done: 1, total: 3 });
+                assert.match(doc.body.querySelector('.igs-page-modal-msg').textContent, /局部重绘 1\/3/);
+                assert.equal(doc.body.querySelector('[data-igs-modal="cancel"]').textContent, '停止');
                 return { ok: true, candidateId: 'candidate', dataUrl: 'candidate-image', originalDataUrl: 'original-image' };
             },
             async acceptConsistency(id) { accepted.push(id); return { ok: true, reason: 'accepted' }; },
@@ -717,6 +721,7 @@ for (const confirm of [false, true]) test(`衣装预检：UI集中确认与释�
         cancelConsistency(id) { calls.push(id); },
     };
     const modal = { async confirm(message) { confirms.push(message); return confirm; },
+        progress() { return { update() {}, close() {} }; },
         async confirmImage() { return false; }, cancel() {} };
     const result = await runCgConsistencyAction({ service, query: {}, modal,
         signal: new AbortController().signal, stillCurrent: () => true });
