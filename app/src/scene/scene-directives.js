@@ -400,7 +400,34 @@ export function resolveCharacterKey(characters, characterAliases, characterName)
         const values = Array.isArray(aliases[key]) ? aliases[key] : [];
         if (values.some((value) => String(value || '').trim() === target)) return key;
     }
-    return null;
+    return characterNameFallback ? fuzzyCharacterKey(characters, aliases, target) : null;
+}
+
+// 名字兜底（设置「名字兜底匹配」，默认开）：阅读器按设置拨这个开关。
+let characterNameFallback = true;
+export function setCharacterNameFallback(on) {
+    characterNameFallback = on !== false;
+}
+
+// 一方包含另一方且重合不少于 2 字才算；多出的部分只是编号（A / B / 2 / 甲乙）时不算，
+// 免得「路人A」认成「路人B」或「路人」。命中不止一个角色时视为有歧义，不匹配。
+const NAME_MARKER_RE = /^[\sA-Za-z0-9０-９Ａ-Ｚａ-ｚ甲乙丙丁戊己庚辛#＃_\-－·・.]+$/;
+function nameContains(a, b) {
+    const [long, short] = a.length >= b.length ? [a, b] : [b, a];
+    if (Array.from(short).length < 2 || long === short || !long.includes(short)) return false;
+    return !NAME_MARKER_RE.test(long.replace(short, ''));
+}
+
+function fuzzyCharacterKey(characters, aliases, target) {
+    if (Array.from(target).length < 2) return null;
+    let found = null;
+    for (const key of Object.keys(characters)) {
+        const names = [key, ...(Array.isArray(aliases[key]) ? aliases[key] : [])].map((v) => String(v || '').trim());
+        if (!names.some((name) => name && nameContains(target, name))) continue;
+        if (found) return null;
+        found = key;
+    }
+    return found;
 }
 
 // 场景别名沿用 scenes[名].words 存储；先精确命中主名称，再按别名归约。

@@ -1,5 +1,6 @@
 import { createNarrationSpriteTracker, otherNamesOf } from '../../scene/narration-sprite.js';
 import { extractSceneDirectives, resolveCharacterKey, narrativeRanges, prepareIllustrationPages } from '../../scene/scene-directives.js';
+import { DEFAULT_MOOD_GROUPS } from '../../scene/mood-groups.js';
 import { createOutfitResolver } from '../../scene/character-outfits.js';
 import { extractFxDirectives, createFxPageResolver } from '../../scene/fx-directives.js';
 import { applyDiceToHits } from '../../scene/battle-context.js';
@@ -143,13 +144,59 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         if (!keyMemo.has(name)) keyMemo.set(name, resolveCharacterKey(sceneAssets?.characters, sceneAssets?.characterAliases, name) || name);
         return keyMemo.get(name);
     };
+    // 本楼说过话 / 有心理活动的 + 前 3 个 AI 楼的；宿主没给前楼名单时（null）不拦。
+    const castNearby = Array.isArray(payload.recentCast)
+        ? new Set([...charThoughtDirectives.map(d => d.character), ...payload.recentCast].filter(Boolean).map(keyOf))
+        : null;
     const thoughtCharacters = new Set(charThoughtDirectives.filter(d => d.type === 'thought').map(d => keyOf(d.character)));
     const othersMemo = new Map();
     const othersFor = key => {
         if (!othersMemo.has(key)) othersMemo.set(key, otherNamesOf(sceneAssets?.characters, sceneAssets?.characterAliases, key, [userName]));
         return othersMemo.get(key);
     };
+    let leadNames = null;
+    const narrationLeadName = (text) => {
+        if (!leadNames) {
+            const aliasMap = sceneAssets?.characterAliases && typeof sceneAssets.characterAliases === 'object' ? sceneAssets.characterAliases : {};
+            const userKey = userName ? keyOf(userName) : '';
+            leadNames = Object.keys(sceneAssets?.characters || {}).filter((key) => key !== userKey)
+                .flatMap((key) => [key, ...(Array.isArray(aliasMap[key]) ? aliasMap[key] : [])])
+                .map((n) => String(n || '').trim())
+                .map((name) => ({ name, probe: name.replace(/[\s\p{P}\p{S}]/gu, '') }))
+                .filter(({ probe }) => Array.from(probe).length >= 2)
+                .sort((a, b) => b.probe.length - a.probe.length);
+        }
+        const plain = String(text || '').replace(/[\s\p{P}\p{S}]/gu, '');
+        let best = null, bestAt = 3;
+        for (const { name, probe } of leadNames) {
+            const at = plain.indexOf(probe);
+            // 「路人」不认领「路人A」：名字后面紧跟编号说明是另一个人。
+            if (at < 0 || at >= bestAt) continue;
+            if (/[一-鿿]$/.test(probe) && /^[A-Za-z0-9０-９Ａ-Ｚａ-ｚ甲乙丙丁]/.test(plain.slice(at + probe.length))) continue;
+            best = name; bestAt = at;
+        }
+        return best;
+    };
+    // 旁白点名后的情绪：旁白里出现的情绪词（情绪组 + 该角色自己的表情槽名，两字起）取最靠前的一个。
+    let groupMoodWords = null;
+    const narrationMood = (text, name) => {
+        if (!groupMoodWords) {
+            const groups = Array.isArray(sceneAssets?.moodGroups) && sceneAssets.moodGroups.length ? sceneAssets.moodGroups : DEFAULT_MOOD_GROUPS;
+            groupMoodWords = groups.flatMap((g) => [g && g.label, ...(Array.isArray(g && g.words) ? g.words : [])]);
+        }
+        const slots = Object.keys(sceneAssets?.characters?.[keyOf(name)] || {});
+        const body = String(text || '');
+        let best = '', bestAt = Infinity;
+        for (const raw of [...slots, ...groupMoodWords]) {
+            const word = String(raw || '').trim();
+            if (Array.from(word).length < 2 || word === '默认') continue;
+            const at = body.indexOf(word);
+            if (at >= 0 && (at < bestAt || (at === bestAt && word.length > best.length))) { best = word; bestAt = at; }
+        }
+        return best;
+    };
     let lastBubble = null;
+    const lastMoodByKey = new Map();
     let narrationTracker = null;
     const pages = [];
     for (let normalizedIndex = 0; normalizedIndex < segments.length; normalizedIndex++) {
@@ -258,6 +305,16 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         // visible bubble lines). Background still follows directive accumulation.
         let spriteChar = bubbleSpeaker;
         spriteMood = bubbleMood;
+        // 旁白点名（默认开）：开头三个字内（标点不算）出现角色名，立绘换成这个人，后面的旁白接着沿用。
+        // 情绪：旁白里的情绪词 → 这个人本楼上次的情绪 → 默认。本楼和前 3 个 AI 楼都没露面的（久违提到）不出立绘。
+        if (textType === 'narration' && !spriteChar && sceneAssets.narrationNameSwitch !== false) {
+            const named = narrationLeadName(currentText);
+            if (named && (castNearby === null || castNearby.has(keyOf(named)))) {
+                spriteChar = named;
+                spriteMood = narrationMood(currentText, named) || lastMoodByKey.get(keyOf(named)) || '';
+                lastBubble = { speaker: named, mood: spriteMood, index: normalizedIndex };
+            }
+        }
         // 旁白直接继承已准备的最近说话页，不再回扫前面的所有页。
         let inheritFrom = -1;
         if (!spriteChar && lastBubble) {
@@ -307,6 +364,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
             spriteMood = sceneStateForBg.mood || '';
         }
         if (classified && classified.speaker) lastBubble = { ...classified, index: normalizedIndex };
+        if (spriteChar && spriteMood) lastMoodByKey.set(keyOf(spriteChar), spriteMood);
         pages.push({ textType, bubbleSpeaker, bubbleMood, segmentBody, systemSpeaker, spriteChar, spriteMood,
             narrationDropped, narrationDroppedKey, spriteLeft, currentOffset: offsets[normalizedIndex], sceneStateForBg,
             sceneDread: (lastBefore(dread, offsets[normalizedIndex] < 0 ? source.length : offsets[normalizedIndex], false)?.value) ?? payload.inheritedDread ?? null });

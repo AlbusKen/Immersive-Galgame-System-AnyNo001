@@ -11,7 +11,7 @@ import { applyVoiceBark, canonicalName, noteFormGender, setActiveFormGenders } f
 import { createSettingsHost } from './settings-host.js';
 import { normalizeBridgeConfig, normalizeReaderSettings } from './settings-host-normalize.js';
 import { stripIllustrationMarkers } from '../../scene/scene-directives.js';
-import { resolveCharacterKey } from '../../scene/scene-directives.js';
+import { resolveCharacterKey, setCharacterNameFallback } from '../../scene/scene-directives.js';
 import { recordOutfitReview, dropConfirmedOutfitReview, removeOutfitReview } from '../../scene/outfit-review-store.js';
 import { assetOwnerKey, draftAssetLibrary, ensureCardLibrary, relocateLegacyCard, rememberAssetScope, resolveAssetScope, sceneAssetsForContext } from '../../scene/asset-scope.js';
 import { getSillyTavernContext } from '../../host/tavern-helper-adapter.js';
@@ -4788,6 +4788,7 @@ export function createIgsReaderHost(options = {}) {
             ? sceneAssetsForContext(bridge.sceneAssets, getSillyTavernContext(options.global || globalThis))
             : null;
         const worldview = resolveWorldview(sceneAssets);
+        setCharacterNameFallback(!sceneAssets || sceneAssets.nameFallback !== false);
         readerSettings.dialogSkin = effectiveDialogSkin(readerSettings.dialogSkin, sceneAssets);
         Object.assign(readerSettings, applyFxWorldview(readerSettings, worldview, { carryPhone: Boolean(sceneAssets && sceneAssets.carryPhone === true) }));
         // 演出与聊天层据此换皮：_ancientEra 保留给既有古风分支，_worldview 供西幻 / 科幻 / 末日换皮。

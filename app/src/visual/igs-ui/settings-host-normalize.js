@@ -181,6 +181,8 @@ export function normalizeSceneAssets(value) {
     normalized.unifiedSpriteLayout = normalizeBoolean(normalized.unifiedSpriteLayout, false);
     normalized.moodFuzzyMatch = normalizeBoolean(normalized.moodFuzzyMatch, false);
     normalized.moodAutoClassify = normalizeBoolean(normalized.moodAutoClassify, false);
+    normalized.nameFallback = normalizeBoolean(normalized.nameFallback, true);
+    normalized.narrationNameSwitch = normalizeBoolean(normalized.narrationNameSwitch, true);
     normalizeAssetCards(normalized);
     return normalized;
 }
