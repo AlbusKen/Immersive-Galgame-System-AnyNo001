@@ -4,7 +4,6 @@
     const REPOSITORY = 'Anyno001/Immersive-Galgame-System-AnyNo001';
     const PINNED_REF = '';
     const DEFAULT_REF = 'main';
-    const MAIN_BASE = `https://cdn.jsdelivr.net/gh/${REPOSITORY}@main`;
     const MAIN_BRANCH_URL = `https://api.github.com/repos/${REPOSITORY}/branches/main`;
     const LATEST_REF_CACHE_KEY = 'igs:loader:latest-ref';
     const LATEST_REF_TTL_MS = 60 * 60 * 1000;
@@ -100,20 +99,22 @@
         let lastError = null;
 
         for (const attempt of attempts) {
-            const cssUrl = withCacheBust(`${attempt.base}/app/dist/igs.bundle.css`, attempt);
+            const cssBase = attempt.fetched ? `https://cdn.jsdelivr.net/gh/${REPOSITORY}@${attempt.ref}` : attempt.base;
+            const cssUrl = withCacheBust(`${cssBase}/app/dist/igs.bundle.css`, attempt);
             for (const bundleFile of bundleFiles) {
                 const scriptUrl = withCacheBust(`${attempt.base}/app/dist/${bundleFile}`, attempt);
                 if (shouldProbeBundleAttempt(attempt, config)) {
                     const probe = await probeBundleUrl(scriptUrl);
                     if (!probe.ok) {
                         lastError = probe.error || new Error(`remote bundle not available: ${scriptUrl}`);
-                        console.warn(config.locked ? '[IGS Loader] 固定版本不可用，停止加载。' : '[IGS Loader] 远程 bundle 探测失败，尝试下一个地址。', attempt.ref, scriptUrl, lastError);
+                        console.warn('[IGS Loader] 当前地址不可用，尝试同版本备用地址。', attempt.ref, scriptUrl, lastError);
                         continue;
                     }
                 }
                 try {
                     injectCss(cssUrl);
-                    await injectScript(scriptUrl, config.version);
+                    if (attempt.fetched) await injectFetchedScript(scriptUrl, config.version);
+                    else await injectScript(scriptUrl, config.version);
                     if (attempt.ref === config.latestRef && !config.latestFromCache) rememberLatestRef(attempt.ref);
                     root[INSTANCE_KEY] = {
                         repository: REPOSITORY, loadedAt: Date.now(), status: 'ready', reused: false,
@@ -127,7 +128,7 @@
                     lastError = error;
                     await releaseRuntime(root.IGS || root.ImmersiveGalgameSystem);
                     clearTraceElements();
-                    console.warn(config.locked ? '[IGS Loader] 固定版本加载失败，停止加载。' : '[IGS Loader] 远程 bundle 加载失败，尝试下一个地址。', attempt.ref, scriptUrl, error);
+                    console.warn('[IGS Loader] 当前地址加载失败，尝试同版本备用地址。', attempt.ref, scriptUrl, error);
                 }
             }
             if (attempt.ref === config.latestRef) forgetLatestRef(attempt.ref);
@@ -162,20 +163,12 @@
                 cacheBust: config.cacheBust,
             },
         ];
-        if (config.locked) return attempts;
-        if (!config.hasCustomBase && config.latestRef && config.latestRef !== config.ref) {
+        if (!config.hasCustomBase) {
             attempts.push({
-                ref: config.latestRef,
-                base: `https://cdn.jsdelivr.net/gh/${REPOSITORY}@${config.latestRef}`,
-                cacheBust: false,
-                fallbackOf: config.ref,
-            });
-        }
-        if (!config.hasCustomBase && config.ref !== 'main') {
-            attempts.push({
-                ref: 'main',
-                base: MAIN_BASE,
-                cacheBust: true,
+                ref: config.ref,
+                base: `https://raw.githubusercontent.com/${REPOSITORY}/${config.ref}`,
+                cacheBust: config.cacheBust,
+                fetched: true,
                 fallbackOf: config.ref,
             });
         }
@@ -184,6 +177,7 @@
 
     // 自动发现的提交 SHA 不探测：加载失败时 onerror 会落到下一个地址，省一次 HEAD。
     function shouldProbeBundleAttempt(attempt, config) {
+        if (attempt.fetched) return false;
         if (config.hasCustomBase) return true;
         return attempt.ref !== 'main' && attempt.ref !== config.latestRef;
     }
@@ -587,6 +581,42 @@
         link.href = href;
     }
 
+    async function injectFetchedScript(src, expectedVersion = '') {
+        const fetchFn = getFetch();
+        if (!fetchFn) throw new Error('当前环境无法下载备用程序。');
+        const Controller = root.AbortController || globalThis.AbortController;
+        let source;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const controller = new Controller();
+            const timer = setHostTimeout(() => controller.abort(), 20000);
+            let terminal = false;
+            try {
+                const response = await fetchFn(src, { cache: 'no-store', signal: controller.signal });
+                terminal = response && response.status === 404;
+                if (!response || !response.ok) throw new Error(`备用程序下载失败：HTTP ${response && response.status || 'unknown'}`);
+                source = await response.text();
+                break;
+            } catch (error) {
+                if (terminal || attempt === 1) throw error;
+            } finally {
+                clearHostTimeout(timer);
+            }
+        }
+        const version = /^\/\/ Generated by app\/scripts\/build\.js\.[^\n]*\n\/\/ IGS version: (\d+\.\d+\.\d+)\r?\n/.exec(source)?.[1];
+        if (!version || (expectedVersion && version !== expectedVersion)) {
+            throw new Error(`备用地址未返回所需 IGS 程序（要求 ${expectedVersion || '有效程序'}，实际 ${version || '错误正文'}）。`);
+        }
+        // raw 的 MIME 不能直接作为模块；保留原始资源基址，避免 blob 地址破坏图片和音频路径。
+        const Url = root.URL || globalThis.URL;
+        const BlobType = root.Blob || globalThis.Blob;
+        const blobUrl = Url.createObjectURL(new BlobType([source.replace(/\bimport\.meta\.url\b/g, JSON.stringify(src))], { type: 'text/javascript' }));
+        try {
+            await injectScript(blobUrl, version);
+        } finally {
+            Url.revokeObjectURL(blobUrl);
+        }
+    }
+
     function injectScript(src, expectedVersion = '') {
         const existing = doc.querySelector(`#${SCRIPT_ID}`);
         const runtimeReady = () => {
@@ -599,9 +629,11 @@
         return new Promise((resolve, reject) => {
             const script = doc.createElement('script');
             let settled = false;
+            let timer;
             const finish = (error) => {
                 if (settled) return;
                 settled = true;
+                clearHostTimeout(timer);
                 root.removeEventListener?.('error', onRuntimeError);
                 script.onload = null;
                 script.onerror = null;
@@ -629,6 +661,7 @@
                 finish(new Error(`remote script load failed: ${src}`));
             };
             root.addEventListener?.('error', onRuntimeError);
+            timer = setHostTimeout(() => finish(new Error(`remote script load timeout: ${src}`)), 15000);
             doc.head.appendChild(script);
         });
     }
@@ -636,7 +669,7 @@
     async function reconcileExistingRuntime(config) {
         const api = root.IGS || root.ImmersiveGalgameSystem;
         const previous = root[INSTANCE_KEY];
-        const sameSource = previous?.repository === REPOSITORY && previous?.activeRef === config.ref && previous?.activeBase === config.base;
+        const sameSource = previous?.repository === REPOSITORY && buildLoadAttempts(config).some((attempt) => previous?.activeRef === attempt.ref && previous?.activeBase === attempt.base);
         const sameVersion = !config.version || api?.version === config.version;
         if (api && typeof api.ensureMagicWandEntry === 'function' && typeof api.openSettings === 'function'
             && typeof api.openLatestAvailable === 'function' && sameSource && sameVersion) {
@@ -737,6 +770,12 @@
         const setter = root && typeof root.setTimeout === 'function'
             ? root.setTimeout.bind(root)
             : setTimeout;
-        setter(callback, ms);
+        return setter(callback, ms);
+    }
+
+    function clearHostTimeout(timer) {
+        const clear = typeof root.clearTimeout === 'function' ? root.clearTimeout.bind(root)
+            : typeof clearTimeout === 'function' ? clearTimeout : null;
+        if (clear) clear(timer);
     }
 })();
