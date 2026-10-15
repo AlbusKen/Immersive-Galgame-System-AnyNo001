@@ -1213,21 +1213,22 @@ test('gate:assets:reader-shows-saved-items-before-generation-finishes', async ()
     }
 });
 
-test('gate:assets:reader-hydrates-review-sprite-for-matching-named-outfit', async () => {
+for (const registered of [false, true]) test(`gate:assets:reader-hydrates-review-sprite-for-matching-named-outfit-${registered}`, async () => {
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
     const document = createFakeDocument(), store = createMemoryGeneratedAssetStore();
     const candidate = await spriteAdoptionFixture();
     const outfit = candidate.outfitSnapshot.characters[0].name;
-    const raw = `[igs-char:Alice|平和|${outfit}|Hello.]`;
+    const raw = `[igs-char:小爱|平和|${outfit}|Hello.]`;
     const floor = { chatId: 'chat-named', messageId: 40, swipeId: 0, text: raw };
     const assets = { enabled: true, characters: { Alice: {} },
-        characterOutfits: { Alice: { [outfit]: { moods: {} } } } };
+        characterAliases: { Alice: ['小爱'] },
+        characterOutfits: registered ? { Alice: { [outfit]: { moods: {} } } } : {} };
     const before = structuredClone(assets);
     await store.putImage(candidate);
-    await store.putAsset({ key: 'chat-named|char|Alice', chatId: floor.chatId,
-        floorKey: 'chat-named|40|0', type: 'sprite', name: 'Alice', status: 'review',
+    await store.putAsset({ key: 'chat-named|char|小爱', chatId: floor.chatId,
+        floorKey: 'chat-named|40|0', type: 'sprite', name: '小爱', status: 'review',
         imageId: candidate.id, outfitSnapshot: candidate.outfitSnapshot });
     let update;
     const service = createAssetGenerationService({ store,
@@ -1248,7 +1249,9 @@ test('gate:assets:reader-hydrates-review-sprite-for-matching-named-outfit', asyn
         assert.equal(content().spriteMatch.requestedOutfit, outfit);
         assert.equal(content().spriteOutfit, outfit);
         assert.notEqual(document.getElementById('igs-sprite').style.display, 'none');
-        assert.equal(service.getRecord('chat-named|char|Alice').status, 'review');
+        assert.equal(service.getRecord('chat-named|char|小爱').status, 'review');
+        assert.equal(service.tempSpriteForOutfit('小爱', outfit), `igs-gen:${candidate.id}`);
+        assert.equal(service.tempSpriteForOutfit('Alice', outfit), `igs-gen:${candidate.id}`);
         assert.equal(service.tempSpriteForOutfit('Alice', '礼服'), '');
         assert.deepEqual(assets, before);
     } finally { host.destroy(); }

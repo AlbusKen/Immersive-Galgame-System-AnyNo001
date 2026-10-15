@@ -159,25 +159,31 @@ test('gate:builtin-entry:背景 task 无人物无 DNA，实际发送后跨连接
     assert.deepEqual(assets, before);
 });
 
-test('gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词且保留原衣装', async t => {
+for (const scenario of ['legacy', 'named', 'renamed', 'invalid-at'])
+test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词且保留原衣装-${scenario}`, async t => {
     const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
     const assets = { characters: { Alice: {} }, characterDna: {}, characterOutfits: {}, wardrobe: {} };
     const before = structuredClone(assets);
     const h = builtinImageHarness({ reply(input) {
         const row = input.promptTask.characters[0];
-        return ['slotid: 1', 'at: 1', 'prompt_mode: dna_template', 'outfit_mode: template',
+        return ['slotid: 1', `at: ${scenario === 'invalid-at' ? 999 : 1}`,
+            'prompt_mode: dna_template', 'outfit_mode: template',
             'scene: Alice meets a friend in a cafe.', 'scene_uc: blurry',
             `char: 0.3,0.5 | <<dna:${row.token}>> <<outfit:${row.token}>> and waves.`,
             `char_uc: <<dna_uc:${row.token}>>`, 'meta_kind: 0 | named',
             `meta_key: 0 | ${row.characterKey}`, `meta_token: 0 | ${row.token}`, 'meta_frame: 0 | half_body',
-            'meta_outfit_name: 0 | Coat', 'meta_outfit_description: 0 | wears a blue coat',
+            `meta_outfit_name: 0 | ${scenario === 'legacy' ? 'Coat' : scenario === 'renamed' ? 'Blue coat' : '蓝色外套'}`,
+            'meta_outfit_description: 0 | wears a blue coat',
             'meta_identity: 0 | Alice, an adult woman with silver hair and blue eyes,',
             'meta_signature: 0 | silver hair'].join('\n');
     } });
     t.after(() => h.dispose());
     Object.assign(h.bridge.autoIllustration, { interludeEnabled: true, interludeMaxCount: 1 });
-    let text = '[igs-scene:咖啡馆|白天|晴]\nAlice在咖啡馆向朋友挥手。\n[igs-char:Alice|喜悦|你好。]';
+    let text = scenario === 'legacy'
+        ? '[igs-scene:咖啡馆|白天|晴]\nAlice在咖啡馆向朋友挥手。\n[igs-char:Alice|喜悦|你好。]'
+        : '[igs-scene:咖啡馆|白天|晴]\n[igs-char:Alice|喜悦|蓝色外套|你好。]\nAlice向朋友挥手。'
+            + '\n[igs-scene:家中|夜晚|晴]\n[igs-char:Alice|平和|晚礼服|晚上好。]';
     const floor = () => ({ chatId: 'builtin-cg', messageId: 5, swipeId: 0, isAi: true, isLatest: true, text });
     const host = { getChatId: () => 'builtin-cg', readFloor: floor, readPreviousAiTexts: () => [],
         async writeFloor(_id, next) { text = next; return { ok: true }; }, on: () => () => {},
@@ -186,6 +192,14 @@ test('gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
     const service = createAutoIllustrationService({ nai: h.backend, llm: h.llm, store,
         messageHost: host, getSettings: () => h.bridge.autoIllustration, getSceneAssets: () => assets, report() {} });
     const result = await service.processMessage(5, { manual: true });
+    if (scenario === 'renamed' || scenario === 'invalid-at') {
+        assert.equal(result.ok, false, JSON.stringify(result));
+        assert.match(result.error, scenario === 'renamed' ? /衣装模板校验失败：outfit\.name/ : /字段=at/);
+        assert.equal(h.writes.length, 1);
+        assert.equal(h.wires.length, 0, '错名或无效生成点不补发、不绘图');
+        assert.deepEqual(assets, before);
+        return;
+    }
     assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.count, 1);
     assert.equal(h.writes.length, 1); assert.equal(h.wires.length, 1);
 
@@ -197,9 +211,13 @@ test('gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
     assert.equal(original.outfitAnchor.version, 1);
     assert.ok(Number.isSafeInteger(original.outfitAnchor.offset));
     assert.deepEqual(original.outfitAnchor.characters,
-        [{ characterKey: 'Alice', requestedOutfit: '', effectiveOutfit: 'Coat',
-            requirementSource: 'none', source: 'none', reason: '', effectiveSource: 'snapshot' }]);
+        scenario === 'legacy'
+            ? [{ characterKey: 'Alice', requestedOutfit: '', effectiveOutfit: 'Coat',
+                requirementSource: 'none', source: 'none', reason: '', effectiveSource: 'snapshot' }]
+            : [{ characterKey: 'Alice', requestedOutfit: '蓝色外套', effectiveOutfit: '蓝色外套',
+                requirementSource: 'tag', source: 'tag', reason: 'outfit-unregistered', effectiveSource: 'snapshot' }]);
     assert.equal(original.outfitSnapshot.characters[0].source, 'candidate');
+    assert.equal(original.outfitSnapshot.characters[0].name, scenario === 'legacy' ? 'Coat' : '蓝色外套');
     assert.deepEqual(assets, before, '普通 CG 不登记永久 DNA 或衣装');
     assets.characterDna.Alice = { version: 2, views: characterViewsFixture('Alice, an adult with black hair,') };
     const rerollAssets = structuredClone(assets);

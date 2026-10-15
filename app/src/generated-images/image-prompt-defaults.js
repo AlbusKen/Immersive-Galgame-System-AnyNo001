@@ -3,7 +3,7 @@ import { promptDefaultState } from '../presets/prompt-default-operations.js';
 import { SPRITE_HALF_BODY_RULE } from './prompt-registry.js';
 
 export const IMAGE_PROMPT_DEFAULT_ID = 'igs-imagegen-default-v1';
-export const IMAGE_PROMPT_DEFAULT_VERSION = 11;
+export const IMAGE_PROMPT_DEFAULT_VERSION = 12;
 
 const FRAME = [
     '你为视觉小说制作 NovelAI 图像提示词。只完成本次显式任务，不续写剧情，不自行增加生成点或人物。',
@@ -21,6 +21,7 @@ const FRAME = [
     '检验新身份主语：只更换衣装或表情时，这段文字是否仍成立？若否，将相关穿戴物移到服装字段，将喜怒、镇定或严肃表情、警戒状态、视线方向和姿态移到 Char 动态。身份不写 wearing/wears、服装材质、装备清单或当次表情，也不以裸体描述代替固定外貌。',
     '以上分工用于本次新身份提取；已保存 DNA、衣装说明、触发词和权重仍按契约保真复用，不擅自清洗或重新生成已完整或锁定的身份。仅显式一致性 appearance_correction 使用任务级身份支持，不将完整永久 DNA 或身体比例强制展开到本次图中；永久资料不变。按实际景别表达可见特征，不因裁切否认画外特征。',
     '当次衣装优先于默认服装，已保存衣装名和说明逐字使用，不改写、翻译或补全；缺服装说明时在同次回复建立独立服装 DNA：先保留正文与资料明确部分，再设计未指定的视觉细节，后续差分复用本次定稿，不每次重新发挥。',
+    '衣装名称是正文服装栏与角色资料的绑定键，不属于可补全的视觉描述。只要本次 outfit.name 或生成点对应的正文服装栏已有名称，meta_outfit_name 就逐字沿用该原名，即使尚未入柜或说明为空；中文名保持中文，不翻译成英文、不扩写、不另造套装名。只有正文和本次资料均未提供名称时才命名。CG 按所选生成点的衣装时间线取原名，不把楼末衣装套到前段；自动立绘沿用本次角色资料中绑定的出场衣装。英文要求适用于 meta_outfit_description，不要求衣装名英文。',
     '新服装 DNA 按单件组织可复用的视觉锚点：每件衣物把已知主色与辅色直接绑定到对应部位，保留材质及哑光／光泽、内外层关系、领型、袖型、长度、剪裁、开合、边饰和纹样。不要用 elegant outfit、dark clothes 或 matching accessories 代替来源中明确的颜色和结构；不把光照色当作固有颜色。',
     '新装饰描述保留有依据的数量、颜色、材质、形状、大小和准确佩戴位置，左右以穿着者自身为准；区分领口蝴蝶结、胸针、腰带扣、耳饰与发饰，不用泛称配饰带过。同套多张差分复用同一份衣装说明，不按情绪重配颜色或换饰品。',
     '衣装逐件按颜色＋材质或表面质感＋款式剪裁＋局部细节组织自然语言，再写内外层和穿戴位置；上装、下装、外层护甲、腰带、袜鞋各自绑定颜色，不能只给护甲写 black 却把警服和腰带留为泛称。已知破损写部位、形状和仍覆盖范围，不用一个 torn 代替全部损坏细节。整套服装 DNA 不随镜头删件；只有本图直接衣装正文按可见范围取用。',
@@ -188,7 +189,7 @@ const IMAGE_OUTPUT_PROTOCOL = [
     '衣装旁路字段与角色占位使用同一 token 绑定。已保存衣装名和英文说明逐字保留；新衣装的名字与穿着谓语单独输出，不把身份、动作或表情写入服装 DNA。',
     'named/reference 的 meta_kind、meta_key、meta_token、meta_frame 必须逐项非空并匹配输入；两项 meta_outfit_* 必须各写一次，空值不是省略字段。',
     '所有 meta_* 的行内值都以本图 Char 索引 | 开始，角色键、token、景别也不能省略索引。输入提供 outputs.rows 时使用各行 captionIndex；没有 rows 时按本图 char 顺序从0连续编号。reference 是 meta_kind 的取值，不是字段名；不输出 reference:、reference_uc: 或独立 reference inset 行。',
-    '首次立绘或新衣装没有可复用的非空说明时，meta_outfit_name 与 meta_outfit_description 都必须非空。输入已有衣装名时沿用；名称不用 默认、原装、__proto__、constructor、prototype，不含 |、] 或换行，说明是有依据的完整英文穿着谓语，不含动作、身份或占位符。',
+    '首次立绘或新衣装没有可复用的非空说明时，meta_outfit_name 与 meta_outfit_description 都必须非空。衣装名逐字沿用本次 outfit.name 或生成点对应正文服装栏的原名，不因缺说明而改名或翻译；只有两者均未提供名称时才命名。名称不用 默认、原装、__proto__、constructor、prototype，不含 |、] 或换行，说明是完整英文穿着谓语，不含动作、身份或占位符。',
     '有名保存衣装必须原样写 meta_outfit_name；只有本次 outfit 或 outfits 中该名称已有非空说明时，meta_outfit_description 才可为空复用，若填写必须逐字照抄。',
     '新默认只来自本次显式命名 outfit/outfits，不从 dna.defaultAppearance 或旧原装图推断；缺命名衣装说明不以空字段伪装复用。consistency 的 named 逐字使用本次 characterContext.outfit：显式校正为预检后的有效衣装，旧任务为其原快照；reference 的两项衣装字段仍各写一次空值。',
     '本图按 char 出现顺序从 0 连续编号，每个索引的每个 meta_* 字段恰好一次，不在末尾重复汇总。同名 named/reference 各占独立 Char、索引和 token；reference 的 meta_outfit_name/meta_outfit_description 在自己的索引各写一次空值，不复制 named 衣装。输入只列一个 slot 时只输出该 slot，不照搬其他轮次。meta_region 可选，不造定位。',

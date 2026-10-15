@@ -133,7 +133,7 @@ export const DNA_TEMPLATE_WRITER_SYSTEM = [
     '任务若提供 slots，每个 slotid 只绑定该项 tokens 指定的全部角色，不带入其他 slot 的人物；没有 slots 时 sprite/derived 每图绑定全部任务角色，CG 按实际出镜取允许池子集。',
     'scene 用英文句子描述共同场景、人数、互动、取景和光线，不含身份令牌或各人的固定外貌清单。',
     '具名 char 使用输入 token 的 <<dna:token>> 一次作为主语；衣装模板任务后接本人的 <<outfit:token>>，再写动作与表情，不在正文重复衣装说明。未启用衣装模板的旧任务仍直接写衣装谓语。不要再复制固定外貌，不替换普通名字或对别人的提及。',
-    '衣装名与英文穿着谓语作为独立服装 DNA 写入 meta_outfit_name、meta_outfit_description。已有当次衣装说明或角色 outfits 按保存值原样引用，不改写、翻译或补全；缺服装 DNA 的新装在同次回复提供有依据的名称和说明，不新增请求。Char 保持角色占位符、服装占位符与当次动态的模板结构，不重写完整衣装正文。裸体和 form 保留显式语义。consistency 逐字使用本次 characterContext.outfit：显式校正为预检冻结的有效衣装，其他旧任务仍为原 CG 快照，不自行换装。',
+    '衣装名与英文穿着谓语作为独立服装 DNA 写入 meta_outfit_name、meta_outfit_description。本次 outfit.name 或对应正文服装栏已有名称时逐字沿用原名，尚未入柜或缺说明也不改名、不翻译、不另造英文名；只有正文和本次资料均未命名时才命名。已有当次衣装说明或角色 outfits 按保存值原样引用，不改写、翻译或补全；缺说明的新装在同次回复保留已知设定并补全未指定的颜色、材质、剪裁和层次，不新增请求。Char 保持角色占位符、服装占位符与当次动态的模板结构，不重写完整衣装正文。裸体和 form 保留显式语义。consistency 逐字使用本次 characterContext.outfit：显式校正为预检冻结的有效衣装，其他旧任务仍为原 CG 快照，不自行换装。',
     'char 可写 x,y | 正文，坐标在 0 到 1；自身身份 UC 可用 <<dna_uc:token>> 一次，其余负面要求在当次正文中完成。',
     '每个 Char 以本图实际 char 出现顺序从 0 连续编号，单行绑定 meta_kind: 索引 | named/generic/object/reference。named/reference 还须各写 meta_key、meta_token、meta_frame、meta_outfit_name、meta_outfit_description；每个索引的每个字段恰好一次，不在末尾重复汇总。slotid、原图角色序号和 token 中数字都不是本图索引。',
     '所有 meta_* 都以本图 Char 索引 | 开始，meta_key、meta_token、meta_frame 也不能省略索引。清单提供 captionIndex 时使用它，例如 meta_key: 0 | 输入角色键、meta_token: 0 | 输入token、meta_frame: 0 | 输入景别；reference 使用自己的索引。reference 是 meta_kind 的取值，不输出 reference:、reference_uc: 或独立 reference inset 行。',

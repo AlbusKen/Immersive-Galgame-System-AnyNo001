@@ -23,6 +23,7 @@ import { prepareCharacterCaption } from '../character-caption.js';
 import { BUILTIN_PROMPTS } from '../prompt-registry.js';
 import { usesCharacterTemplates, characterPromptTask, singleCharacterContext, preflightCharacterTask, savedExpressionTemplate, characterTemplateInput, characterPromptRecovery } from './character-prompt-task.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
+import { cgCharacterState } from './cg-character-bindings.js';
 
 export const GENERATED_ASSET_UPDATED_EVENT = 'igs:generated-asset-updated';
 const IMAGE_CACHE_LIMIT = 60;
@@ -210,18 +211,31 @@ export function createAssetGenerationService(deps) {
         return record ? { url: tempUrl(record) } : null;
     }
 
+    function tempSpriteRecord(name) {
+        const assets = readSettings().sceneAssets;
+        const keyOf = value => buildCharacterContext([value], assets)[0]?.characterKey;
+        const key = keyOf(name);
+        if (!key) return null;
+        const matches = [...currentTempRecords().values()].filter(record => record.type === 'sprite'
+            && tempUrl(record) && keyOf(record.name) === key);
+        // 历史别名记录只在唯一绑定时复用，不按 Map 顺序猜候选。
+        return matches.length === 1 ? { record: matches[0], characterKey: key } : null;
+    }
+
     function tempSprite(name) {
-        return tempUrl(currentTempRecords().get(tempAssetKeyOf(tempChatId, { type: 'sprite', name })));
+        return tempUrl(tempSpriteRecord(name)?.record);
     }
 
     // 命名衣装只匹配本图实际生成快照，不把输入基线或模型元数据当成已生成衣装。
     function tempSpriteForOutfit(name, outfit) {
-        const record = currentTempRecords().get(tempAssetKeyOf(tempChatId, { type: 'sprite', name }));
+        const match = tempSpriteRecord(name);
+        const record = match?.record;
         const url = tempUrl(record);
         const snapshot = record?.outfitSnapshot;
-        if (!url || !outfit || snapshot?.version !== 1 || !Array.isArray(snapshot.characters)) return '';
-        const characters = snapshot.characters.filter(c => c.characterKey === name);
-        return characters.length === 1 && characters[0].name === outfit ? url : '';
+        if (!url || !outfit || snapshot?.version !== 1 || !Array.isArray(snapshot.characters)
+            || snapshot.characters.length !== 1) return '';
+        const character = snapshot.characters[0];
+        return character.characterKey === match.characterKey && character.name === outfit ? url : '';
     }
 
     // 同步取图：命中内存直接返回；否则异步从 IndexedDB 补并在补完后通知重渲染。
@@ -589,9 +603,14 @@ export function createAssetGenerationService(deps) {
             }
         }
         // 整次点击先冻结全部身份；下一批不重新读取已改变的资料。
+        const story = template ? cgCharacterState(floor.text, items.map(item => item.need.name), s.sceneAssets,
+            typeof messageHost.readPreviousAiTexts === 'function'
+                ? messageHost.readPreviousAiTexts(floor.messageId, 3) : []) : null;
         const contexts = template ? new Map(items.map((item) => {
-            const c = buildCharacterContext([item.need.name], s.sceneAssets)[0];
-            return [item.need.name, singleCharacterContext(c.characterKey, c.dna, undefined, s.sceneAssets)[0]];
+            const c = story.atFirstAppearance(item.need.name);
+            return [item.need.name, singleCharacterContext(c.characterKey, c.dna,
+                c.outfit.name ? { name: c.outfit.name, prompt: c.outfit.description } : undefined,
+                s.sceneAssets)[0]];
         })) : null;
         const putSpriteRecord = async (item, result) => {
             const key = tempAssetKeyOf(floor.chatId, item.need);

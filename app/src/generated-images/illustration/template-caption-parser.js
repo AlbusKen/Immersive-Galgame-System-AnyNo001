@@ -35,7 +35,7 @@ const position = (slotId, captionIndex) => ({
     ...(Number.isInteger(captionIndex) && captionIndex >= 0 && captionIndex < 16 && { captionIndex }) });
 const side = (base, chars) => ({ caption: { base_caption: base, char_captions: chars } });
 
-export function parseTemplateCaptionSlots(text, { promptTask, characterContext } = {}) {
+export function parseTemplateCaptionSlots(text, { promptTask, characterContext, characterContextForEntry } = {}) {
     const task = checkPromptTask(promptTask, characterContext);
     if (!task.ok) return task;
     if (!task.value) return fail('PROMPT_MODE_CONFLICT', 'promptTask', 'missing');
@@ -164,7 +164,16 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext }
             if (!size || !size.slice(1).every((v) => Number(v) >= 64 && Number(v) <= 4096 && Number(v) % 64 === 0)) return reject('size');
             entry.width = Number(size[1]); entry.height = Number(size[2]);
         }
-        const checked = checkPromptOutput(entry, task.value, characterContext);
+        // CG 选点后按该点冻结的正文衣装核验；不能先拿楼末衣装拒绝前段合法回复。
+        let context = characterContext;
+        if (characterContextForEntry !== undefined) {
+            if (task.value.purpose !== 'cg' || typeof characterContextForEntry !== 'function')
+                return reject('characterContext', 'invalid');
+            try { context = characterContextForEntry(entry); }
+            catch { return reject('at', 'invalid'); }
+            if (!Array.isArray(context)) return reject('at', 'invalid');
+        }
+        const checked = checkPromptOutput(entry, task.value, context);
         if (!checked.ok) return atBlock(checked, block);
         Object.assign(entry, checked.value);
         captions.push(entry);

@@ -8,7 +8,7 @@ export function resolveReaderSpriteAsset(character, mood, ctx = {}, outfit = '')
     const explicit = requested && !['默认', '原装'].includes(requested);
     const lookup = explicit ? ctx.tempSpriteForOutfit : ctx.tempSprite;
     if (hit.url || !name || isNonSpriteSpeaker(name)
-        || !['appearance-character-missing', 'default-outfit-unset', 'outfit-image-empty', 'outfit-image-missing'].includes(hit.reason)
+        || !['appearance-character-missing', 'default-outfit-unset', 'outfit-unregistered', 'outfit-image-empty', 'outfit-image-missing'].includes(hit.reason)
         || typeof lookup !== 'function') return hit;
     const find = key => explicit ? lookup(key, requested) : lookup(key);
     const url = find(hit.character || name) || (hit.character !== name ? find(name) : '');

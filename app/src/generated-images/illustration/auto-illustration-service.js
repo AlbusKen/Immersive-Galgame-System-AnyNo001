@@ -665,8 +665,14 @@ export function createAutoIllustrationService(deps) {
                 frame: cgFramePrompt(cgSize(s)),
             });
             if (template) {
+                const offsetForEntry = entry => {
+                    const paragraph = Number.isSafeInteger(entry.at) && numbered.paragraphs[entry.at - 1];
+                    if (!paragraph) throw new Error('invalid-cg-paragraph');
+                    return floor.text.split('\n').slice(0, paragraph.lineIndex + 1).join('\n').length;
+                };
                 const written = await writeTemplateCaptionsWithLlm(llm, s.llm, { ...task,
                     imagePromptTask: 'cg',
+                    characterContextForEntry: entry => characterState.at(offsetForEntry(entry)),
                     outputs: { selection: 'numbered-text', maxSlots: decision.want, exact: decision.exact,
                         paragraphCount: numbered.paragraphs.length },
                     ...(typeof llm?.prepareImagePrompt === 'function' && s.llm.prompts.illustration !== PLANNER_SYSTEM_PROMPT
@@ -692,8 +698,7 @@ export function createAutoIllustrationService(deps) {
                             break;
                         }
                         ats.add(entry.at);
-                        const paragraph = numbered.paragraphs[entry.at - 1];
-                        const offset = floor.text.split('\n').slice(0, paragraph.lineIndex + 1).join('\n').length;
+                        const offset = offsetForEntry(entry);
                         const context = characterState.at(offset);
                         const checked = preflightCgCaption(entry, task.promptTask, context);
                         slots.push({ ...entry, slot: entry.slotId, promptTask: task.promptTask,

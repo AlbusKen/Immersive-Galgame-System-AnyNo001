@@ -2238,7 +2238,8 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
     const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
     const { createImageBackend } = await import('../src/generated-images/image-backend.js');
     const { promptSnapshotFromBody, prefixFinalArtist } = await import('../src/generated-images/final-caption.js');
-    for (const unreadable of [false, true]) {
+    for (const [unreadable, renamed, inherited] of [
+        [false, false, false], [true, false, false], [false, true, false], [false, false, true]]) {
         const store = createMemoryGeneratedAssetStore(), inputs = [], paints = [];
         const lore = [{ name: 'Alice', text: '银发蓝眼，穿蓝色外套。' }];
         const bridge = { imageApi: { mode: 'nai' }, autoIllustration: {
@@ -2254,7 +2255,8 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
                 `char: <<dna:${c.token}>> <<outfit:${c.token}>> smiles.`, 'char_uc:',
                 'meta_kind: 0 | named', `meta_key: 0 | ${c.characterKey}`,
                 `meta_token: 0 | ${c.token}`, 'meta_frame: 0 | half_body',
-                'meta_outfit_name: 0 | 日常', 'meta_outfit_description: 0 | wears a blue coat',
+                `meta_outfit_name: 0 | ${renamed ? 'Blue coat' : '蓝色外套'}`,
+                'meta_outfit_description: 0 | wears a blue coat',
                 ...['full_body', 'half_body', 'portrait'].map(frame =>
                     `meta_dna_${frame}: 0 | Alice, an adult woman with silver hair and blue eyes,`),
             ].join('\n');
@@ -2268,8 +2270,10 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
                         parameters: prefixFinalArtist(slot.caption, artist) }, artist) };
             } } });
         const service = createAssetGenerationService({ llm, nai: backend, store,
-            messageHost: { ...fakeHost('[igs-char:Alice|平静|你好。]'),
-                readPreviousAiTexts: () => ['她走进房间。'],
+            messageHost: { ...fakeHost(inherited ? '[igs-char:Alice|平静|你好。]'
+                : '[igs-char:Alice|平静|蓝色外套|你好。]\n[igs-char:Alice|平静|晚礼服|晚上好。]'),
+                readPreviousAiTexts: () => inherited
+                    ? ['[igs-char:Alice|平静|蓝色外套|她走进房间。]'] : ['她走进房间。'],
                 async readCharacterLore(names) {
                     assert.deepEqual(names, ['Alice']);
                     if (unreadable) throw new Error('fake-lore-read');
@@ -2282,16 +2286,29 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
             assert.deepEqual([inputs.length, paints.length], [0, 0]);
             continue;
         }
+        if (renamed) {
+            assert.equal(result.ok, false);
+            assert.equal(paints.length, 0, '衣装名称被改写时不绘图');
+            assert.equal(await store.getImage('builtin-sprite'), null);
+            continue;
+        }
         assert.equal(result.ok, true, result.error);
         assert.deepEqual([inputs.length, paints.length], [1, 1]);
         assert.deepEqual(inputs[0].lore, lore);
         assert.match(inputs[0].numberedText, /你好/);
-        assert.equal(inputs[0].previousText, '她走进房间。');
+        assert.match(inputs[0].previousText, /她走进房间/);
         assert.equal(inputs[0].userPrompts.writing, '用户自定义写词要求');
         const image = await store.getImage('builtin-sprite');
         assert.equal(image.dnaCandidates.characters[0].characterKey, 'Alice');
         assert.ok(image.identityContext);
         assert.ok(image.outfitContext);
+        assert.equal(image.outfitContext[0].outfit.name, '蓝色外套', '首次出场衣装不被楼末换装覆盖');
+        assert.equal(image.outfitSnapshot.characters[0].name, '蓝色外套');
+        const record = service.getRecord('chat-1|char|Alice');
+        assert.equal(record.status, 'review');
+        assert.deepEqual(record.outfitSnapshot, image.outfitSnapshot);
+        assert.equal(service.tempSpriteForOutfit('Alice', '蓝色外套'), 'igs-gen:builtin-sprite');
+        assert.equal(service.tempSpriteForOutfit('Alice', '晚礼服'), '');
         assert.equal(image.promptRecipe.mode, 'dna_template');
         assert.ok(image.sentPrompt);
         assert.deepEqual(bridge.sceneAssets.characterDna, {}, '生成候选尚未采用，不提前登记 DNA');

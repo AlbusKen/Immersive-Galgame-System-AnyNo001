@@ -158,7 +158,14 @@ export function cgCharacterState(text, names, assets, previousTexts = [], readCl
         });
         return { version: 1, offset, characters };
     };
-    return { context, at, timeline, anchorAt };
+    // 自动立绘也复用正文衣装解析；一人一张时绑定首次出场，不套用楼末换装。
+    const atFirstAppearance = name => {
+        const key = canonical(name);
+        const first = directives.find(d => (d.type === 'char' || d.type === 'thought')
+            && canonical(d.character) === key);
+        return at(first?.offset ?? -1).find(c => c.characterKey === key);
+    };
+    return { context, at, timeline, anchorAt, atFirstAppearance };
 }
 
 // 只完善本次新 CG 已有的锚点；历史记录与手改 final 不回填、不重新解释正文。
