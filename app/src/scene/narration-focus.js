@@ -3,6 +3,7 @@ import { namesOf, QUOTE_RE, ABSENT_RE, MEDIA_RE, MEDIA_AFTER_RE, mentionIsAbsent
 // 旁白页立绘给谁（每楼一个，按页序调用）：
 // - 感知句「你听见小雪在哭」「严尚义盯着白墨看」给被感知的人（宾语）；「白墨被严尚义看到」给被字前的主语；
 // - 否则看开头三个字内（标点不算）的名字；youLead 时「你」开头给主角（「你的」「你身后」等修饰不算）；
+// - 开头小句没写到人（穿过门口，你……）时取逗号后的名字或「你」；
 // - 否则开头的她 / 他：先归话题主语（topic，最近一句旁白的施事者），性别冲突再归画面上的人或上一句宾语，都对不上不猜。
 // 名字含别名与三四字名的后两字；同一位置取最长的（尚义嬷嬷 先于 尚义），都换回主名。
 // read 返回主名，'' 表示这一页不点名（沿用照旧）。allow(key) 决定能不能上立绘（主角须有素材、其他人须近期露面）。
@@ -17,6 +18,7 @@ const SENTENCE_RE = /[。！？!?…\n]/;
 // 宾语前可跳过的修饰（不远处的、站在门口的）最多几个字。
 const OBJECT_REACH = 8;
 const LEAD_REACH = 3;
+const CLAUSE_LEAD_RE = /^([^，,、；;]{1,10})[，,、]\s*/;
 // 名字是常用词的子串（下小雨了、小雨点、小雨过后）：前后文像天气 / 量词时不当人名。
 const NAME_BEFORE_RE = /(?:下|场|阵|细|飘|毛毛)$/;
 const NAME_AFTER_RE = /^(?:点(?![头了点着击开亮燃])|滴|天|过(?![来去头身])|后(?![退仰撤背来方面排])|季)/;
@@ -131,6 +133,14 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         if (pick === null && youLead && userKey) {
             const lead = (sentences[0] || '').replace(/^[\s\p{P}\p{S}]+/u, '');
             if (lead[0] === '你' && !YOU_MODIFIER_RE.test(lead)) pick = userKey;
+        }
+        if (pick === null) {
+            // 「穿过门口，你推开门」：开头小句省略主语、本身没写到人时，取逗号后的主语。
+            const first = (sentences[0] || '').trimStart();
+            const m = first.match(CLAUSE_LEAD_RE);
+            const t = m && !m[1].includes('我') && !lastToken(m[1]) ? tokenAt(first, m[0].length) : null;
+            if (t?.kind === 'you' && youLead && userKey) pick = userKey;
+            if (t?.kind === 'name' && !NAME_AFTER_RE.test(first.slice(t.end)) && !mentionIsAbsent(first, t.start, t.end)) pick = t.key;
         }
         if (pick === null) {
             const head = (sentences[0] || '').trimStart().match(PRONOUN_HEAD_RE);

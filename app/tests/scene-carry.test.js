@@ -79,6 +79,19 @@ test('感知句：立绘给被感知的人', () => {
     assert.equal(bare.read('你被小雪看到了。'), '');
 });
 
+test('旁白点名：开头小句省略主语时取逗号后的你 / 名字，小句自己写到人时不取', () => {
+    const lead = namer({ youLead: true });
+    assert.equal(lead.read('穿过门口，你推开了教室的门。'), '林远');
+    assert.equal(lead.read('雨越下越大，你撑开了伞。'), '林远');
+    assert.equal(namer().read('穿过门口，你推开了教室的门。'), '');
+    assert.equal(lead.read('推开门，小雪愣住了。'), '小雪');
+    assert.equal(lead.read('推开门，你们走了进去。'), '');
+    assert.equal(lead.read('推开门，你的手在抖。'), '');
+    assert.equal(lead.read('我转过身，你愣住了。'), '');
+    assert.equal(lead.read('白墨转过身，你愣住了。'), '白墨');
+    assert.equal(lead.read('走着走着，小雪的照片掉在地上。'), '');
+});
+
 test('感知句排除：不在场 / 否定 / 媒介 / 代词 / 泛指 / 引号 / 不在近期名单', () => {
     for (const t of ['小雪想起看到白墨的那天。', '你仿佛看到了白墨。', '你好像听见白墨在喊。', '你梦见白墨。']) assert.notEqual(namer().read(t), '白墨', t);
     for (const t of ['小雪没看到白墨。', '你没听见白墨说话。', '你看不见白墨。', '你找不到白墨。']) assert.notEqual(namer().read(t), '白墨', t);
