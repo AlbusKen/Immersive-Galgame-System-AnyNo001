@@ -94,13 +94,13 @@ assertLoaderButtonConfig(parsed.button, path.relative(projectRoot, jsonPath));
 console.log(`loader:build ok ${path.relative(projectRoot, jsonPath)}`);
 
 // 发布：只留最新一个版本化导入文件，锁定到这个版本的 tag（jsDelivr 的 @tag 地址不变，不受 @main 缓存影响），旧的全删。
-const RELEASE_FILE_RE = /^(?:酒馆助手脚本-)?沉浸式Galgame系统.* (?:test-)?v\d+\.\d+\.\d+\.json$/;
+const RELEASE_FILE_RE = /^(?:酒馆助手脚本-)?沉浸式Galgame系统.* (?:test-v|v)?\d+\.\d+\.\d+(?:-test)?\.json$/;
 const releaseArgIndex = process.argv.indexOf('--release');
 if (releaseArgIndex !== -1) {
     const releaseRef = process.argv[releaseArgIndex + 1];
     const version = JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8')).version;
-    if (releaseRef !== `test-v${version}`) {
-        throw new Error(`--release requires test-v${version}, matching app/package.json.`);
+    if (releaseRef !== `${version}-test`) {
+        throw new Error(`--release requires ${version}-test, matching app/package.json.`);
     }
     for (const name of fs.readdirSync(loaderRoot)) {
         if (RELEASE_FILE_RE.test(name)) fs.unlinkSync(path.join(loaderRoot, name));
@@ -108,13 +108,13 @@ if (releaseArgIndex !== -1) {
     writePinnedLoader(releaseRef);
 }
 
-// 固定版 loader 按需生成：`node scripts/build-loader.js --pin test-v0.36.63 v0.23.21`
+// 固定版 loader 按需生成：`node scripts/build-loader.js --pin 0.36.66-test v0.23.21`
 // 不传 --pin 时只更新自动更新版 + debug 版，不生成任何 pinned（避免每次升号堆文件）。
 const pinArgIndex = process.argv.indexOf('--pin');
 if (pinArgIndex !== -1) {
-    const refs = process.argv.slice(pinArgIndex + 1).filter((arg) => /^(?:test-)?v\d+\.\d+\.\d+$/.test(arg));
+    const refs = process.argv.slice(pinArgIndex + 1).filter((arg) => /^(?:\d+\.\d+\.\d+-test|(?:test-)?v\d+\.\d+\.\d+)$/.test(arg));
     if (!refs.length) {
-        throw new Error('--pin requires at least one test-vX.Y.Z or historical vX.Y.Z ref.');
+        throw new Error('--pin requires at least one X.Y.Z-test or historical vX.Y.Z ref.');
     }
     for (const ref of refs) {
         writePinnedLoader(ref);

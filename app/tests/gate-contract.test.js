@@ -167,13 +167,13 @@ test('gate:loader-json:matches loader source and references public bundle', () =
     assert.match(loaderJson.content, /QR_BUTTON_NAME = 'Gal模拟'/);
     assert.match(loaderJson.content, /getButtonEvent\(QR_BUTTON_NAME\)/);
     // 发布产物只留最新一个，锁定到当前版本的 tag，不追 main（避开 CDN 缓存），与自动更新版同一份源码。
-    const pinnedRef = `v${readJson('package.json').version}`;
-    const releaseFiles = fs.readdirSync(path.join(projectRoot, 'loader')).filter((name) => / v\d+\.\d+\.\d+\.json$/.test(name));
+    const pinnedRef = `${readJson('package.json').version}-test`;
+    const releaseFiles = fs.readdirSync(path.join(projectRoot, 'loader')).filter((name) => / \d+\.\d+\.\d+-test\.json$/.test(name));
     assert.deepEqual(releaseFiles, [`沉浸式Galgame系统 ${pinnedRef}.json`]);
     const pinnedJson = JSON.parse(fs.readFileSync(path.join(projectRoot, 'loader', releaseFiles[0]), 'utf8'));
     assert.equal(pinnedJson.name, `沉浸式Galgame系统 ${pinnedRef}`);
-    assert.match(pinnedJson.content, new RegExp(`IGS_LOADER_REF=["']${pinnedRef.replace(/\./g, '\\.')}["']`));
-    assert.ok(pinnedJson.content.endsWith(loaderJson.content));
+    assert.match(pinnedJson.content, new RegExp(`const PINNED_REF = ${JSON.stringify(pinnedRef).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.equal(pinnedJson.content, loaderJson.content.replace("const PINNED_REF = '';", `const PINNED_REF = ${JSON.stringify(pinnedRef)};`));
     assert.deepEqual(pinnedJson.button, loaderJson.button);
 });
 

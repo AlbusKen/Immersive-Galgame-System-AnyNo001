@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../../loader/igs-loader.js', import.meta.url), 'utf8');
 const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-const ref = `test-v${version}`;
+const ref = `${version}-test`;
 const fixedContent = JSON.parse(fs.readFileSync(new URL(`../../loader/沉浸式Galgame系统 ${ref}.json`, import.meta.url), 'utf8')).content;
 const base = `https://cdn.jsdelivr.net/gh/Anyno001/Immersive-Galgame-System-AnyNo001@${ref}`;
 const instanceKey = '__IGS_AUTO_UPDATE_LOADER__';

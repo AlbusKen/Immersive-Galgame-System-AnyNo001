@@ -145,7 +145,7 @@
             : { ref: '', fromCache: false };
         const latestRef = latest.ref || null;
         const ref = explicitRef || latestRef || DEFAULT_REF;
-        const version = /^(?:test-)?v(\d+\.\d+\.\d+)$/.exec(ref)?.[1] || '';
+        const version = /^(?:test-v|v)?(\d+\.\d+\.\d+)(?:-test)?$/.exec(ref)?.[1] || '';
         const locked = Boolean(PINNED_REF || version);
         const defaultBase = `https://cdn.jsdelivr.net/gh/${REPOSITORY}@${ref}`;
         const hasCustomBase = !PINNED_REF && Boolean(userConfig.base || root.IGS_LOADER_BASE);
