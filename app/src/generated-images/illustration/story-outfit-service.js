@@ -1,4 +1,4 @@
-// 剧情衣装候选：确认后后台先入库再生成立绘，复用在途写词与已完成图片。
+// 剧情衣装候选：发现时仅登记，用户选择后才写词、入库及按需生成立绘。
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
 import { createOutfitResolver, isValidOutfitName, isBuiltinNudeOutfit } from '../../scene/character-outfits.js';
 import { assetOwnerKey, effectiveSceneAssets, ensureCardLibrary } from '../../scene/asset-scope.js';
@@ -13,11 +13,11 @@ const fields = ['characters', 'characterDna', 'characterOutfits'];
 const fail = (reason, error = '衣装处理未完成，候选保留，请重试') => ({ ok: false, reason, error });
 
 export function createStoryOutfitService(deps) {
-    const candidates = new Map(), jobs = new Map(), adoptions = new Map(), deferred = new Set();
+    const candidates = new Map(), adoptions = new Map(), deferred = new Set();
     let disposed = false;
     const loaded = loadStoryOutfitCandidates(deps.storage);
     if (loaded.ok) for (const row of loaded.items) candidates.set(row.id, { ...row,
-        saved: row.status === 'saved', status: row.status === 'saved' ? 'saved' : row.prompt ? 'ready' : 'failed' });
+        saved: row.status === 'saved', status: row.status === 'saved' ? 'saved' : row.prompt ? 'ready' : 'pending' });
     const current = (row) => {
         const ctx = deps.getContext(row);
         return !disposed && ctx && ctx.scopeKey === row.scopeKey && ctx.floorKey === row.floorKey
@@ -31,17 +31,13 @@ export function createStoryOutfitService(deps) {
         return result;
     };
     const notify = () => { if (!disposed) deps.onChanged?.(); };
-    const exclusive = (row, action) => {
-        if (jobs.has(row.id)) return jobs.get(row.id);
-        const pending = Promise.resolve().then(action).catch(() => fail('story-outfit-failed'))
-            .then(result => {
-                if (!result?.ok) { row.status = 'failed'; row.reason = result?.reason || 'story-outfit-failed'; }
-                return result;
-            })
-            .finally(() => { jobs.delete(row.id); row.busy = false; notify(); });
-        row.busy = true;
-        jobs.set(row.id, pending);
-        return pending;
+    // 正式衣装与首次立绘审核各有采用入口；这里只排除同人物、同衣装，不借其他衣装图。
+    const handled = (row) => {
+        const ctx = deps.getContext(row);
+        if (!ctx) return false;
+        const assets = effectiveSceneAssets(ctx.root, ctx.scopeKey);
+        return Boolean(createOutfitResolver(assets)(row.character, row.word)
+            || deps.assets.tempSpriteForOutfit?.(row.character, row.word));
     };
     async function write(row) {
         if (!current(row)) return fail('stale-target');
@@ -72,7 +68,7 @@ export function createStoryOutfitService(deps) {
         // CG 完成可在服务创建后暂存新候选；同步时不覆盖在途任务和同图恢复状态。
         for (const row of fresh.items) {
             if (!candidates.has(row.id)) candidates.set(row.id, { ...row,
-                saved: row.status === 'saved', status: row.status === 'saved' ? 'saved' : row.prompt ? 'ready' : 'failed' });
+                saved: row.status === 'saved', status: row.status === 'saved' ? 'saved' : row.prompt ? 'ready' : 'pending' });
         }
         const ctx = deps.getContext();
         if (!ctx || !Number.isSafeInteger(ctx.messageId) || !ctx.floorKey || !ctx.sourceHash) return fail('stale-target');
@@ -91,14 +87,16 @@ export function createStoryOutfitService(deps) {
             const row = { id, character, word, ownerKey, scopeKey: ctx.scopeKey, floorKey: ctx.floorKey,
                 sourceHash: ctx.sourceHash, messageId: ctx.messageId, status: 'pending' };
             candidates.set(id, row);
-            void exclusive(row, () => write(row));
+            const saved = persist(row);
+            if (!saved.ok) return saved;
         }
         return { ok: true };
     }
 
     function list({ includeDeferred = false } = {}) {
         return [...candidates.values()].filter(row => current(row) && (!deps.isVisible || deps.isVisible(row))
-            && (includeDeferred || (!deferred.has(row.id) && !adoptions.has(row.id) && row.status !== 'saved')) && row.status !== 'done')
+            && (includeDeferred || (!deferred.has(row.id) && !adoptions.has(row.id) && row.status !== 'saved'))
+            && row.status !== 'done' && (row.saved || !handled(row)))
             .map(row => ({ ...row, choices: [
                 { value: 'save', label: '仅入库衣柜' },
                 { value: 'sprite', label: row.imageId ? '入库并采用已生成立绘' : '入库并用保存 DNA 生成立绘' },
@@ -141,6 +139,9 @@ export function createStoryOutfitService(deps) {
     }
     async function adopt(row, withSprite) {
         if (!current(row)) return fail('stale-target');
+        if (!row.saved && handled(row)) return { ok: true, alreadyHandled: true,
+            // 临时图可能被丢弃：保留候选来源，但不在此重复写词或生图。
+            saved: false };
         if (!row.prompt) {
             const written = await write(row);
             if (!written.ok) return written;
@@ -214,15 +215,18 @@ export function createStoryOutfitService(deps) {
     }
 
     return { observe, list,
-        retry(id) { const row = candidates.get(id); return row ? exclusive(row, () => row.prompt ? persist(row) : write(row)) : Promise.resolve(fail('not-found')); },
+        retry(id) {
+            const row = candidates.get(id);
+            if (!row) return Promise.resolve(fail('not-found'));
+            if (!row.mode) return Promise.resolve(fail('choice-required'));
+            return this.adopt(id, row.mode);
+        },
         adopt(id, mode) {
             const row = candidates.get(id);
             if (!row || !['save', 'sprite'].includes(mode)) return Promise.resolve(fail('invalid-action'));
             if (adoptions.has(id)) return adoptions.get(id);
-            const writing = jobs.get(id);
             row.mode = mode;
             const pending = Promise.resolve().then(async () => {
-                if (writing) { const result = await writing; if (!result?.ok) return result; }
                 return adopt(row, mode === 'sprite');
             }).catch(() => fail('story-outfit-failed')).then(result => {
                 if (!result?.ok) {

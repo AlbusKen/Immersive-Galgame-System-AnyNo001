@@ -205,14 +205,16 @@ async function storyBuiltinFixture(mode = 'success') {
 }
 
 for (const choice of ['save', 'sprite']) {
-    test(`gate:builtin-story:提取中确认-${choice} 隐藏确认并复用在途，重复确认零双发`, async t => {
+    test(`gate:builtin-story:选择后提取-${choice} 隐藏确认，重复确认零双发`, async t => {
         const s = await storyBuiltinFixture(), { f } = s; t.after(() => s.dispose());
         f.waitWriting();
         assert.equal(s.service.observe([{ character: 'Alice', unknownOutfit: '礼服' }]).ok, true);
         const id = s.service.list()[0].id;
-        await waitFor(() => f.gates.length === 1);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual([f.writes.length, f.wires.length, f.gates.length], [0, 0, 0], '选择前不写词或绘图');
         const first = s.service.adopt(id, choice), duplicate = s.service.adopt(id, choice);
         assert.equal(first, duplicate); assert.equal(s.service.list().length, 0);
+        await waitFor(() => f.gates.length === 1);
         assert.equal(f.writes.length, 1); assert.deepEqual(s.root(), s.original);
         f.waitWriting(false); f.release();
         assert.equal((await first).ok, true); assert.equal((await duplicate).ok, true);
@@ -225,6 +227,55 @@ for (const choice of ['save', 'sprite']) {
         if (choice === 'sprite') assert.ok(await f.open().readStoredImage(library.characterOutfits.Alice.礼服.moods.平和.slice(8)));
     });
 }
+
+test('gate:builtin-story:首次立绘审核及默认衣装入库不重复提取或绘图', async () => {
+    const { createStoryOutfitService } = await import('../src/generated-images/illustration/story-outfit-service.js');
+    const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
+    const { spriteAdoptionFixture } = await import('./helpers/prompt-provenance.js');
+    const { prepareSpriteIdentityAdoption } = await import('../src/scene/character-identity.js');
+    const storage = createMemoryStorage(), store = createMemoryGeneratedAssetStore();
+    const candidate = await spriteAdoptionFixture();
+    const word = candidate.outfitSnapshot.characters[0].name;
+    let root = { enabled: true, characters: { Alice: {} }, characterAliases: { Alice: ['小爱'] } };
+    let chatId = '';
+    const assets = createAssetGenerationService({ store, nai: {},
+        messageHost: { getChatId: () => chatId }, getSettings: () => ({ sceneAssets: root }) });
+    let writes = 0, paints = 0, commits = 0;
+    const service = createStoryOutfitService({ storage, assets: { ...assets,
+        async writeWardrobePrompt() { writes++; assert.fail('首次立绘衣装不再次写词'); },
+        async generateExpressionSet() { paints++; assert.fail('首次立绘衣装不再次绘图'); },
+    }, getContext: () => ({ root, scopeKey: '', floorKey: 'first-sprite|3|0',
+        messageId: 3, sourceHash: 'first-sprite-source' }),
+    commit() { commits++; assert.fail('应沿首次立绘入口采用，不另入库'); } });
+    try {
+        const directives = [{ character: '小爱', unknownOutfit: word },
+            { character: 'Alice', unknownOutfit: '另一套衣装' }];
+        assert.equal(service.observe(directives).ok, true);
+        const id = service.list().find(row => row.word === word).id;
+        await store.putImage(candidate);
+        await store.putAsset({ ...candidate, key: 'first-sprite|char|小爱', chatId: 'first-sprite',
+            floorKey: 'first-sprite|3|0', type: 'sprite', name: '小爱', status: 'review' });
+        chatId = 'first-sprite'; assets.listTemp();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.deepEqual(service.list().map(row => row.word), ['另一套衣装'],
+            '同名首次立绘已生成，其他新衣装仍等待选择');
+        const late = await service.adopt(id, 'sprite');
+        assert.equal(late.alreadyHandled, true, '迟到确认也不能重发');
+        await assets.setStatus('first-sprite|char|小爱', 'discarded');
+        assert.ok(service.list().some(row => row.word === word), '丢弃首次立绘后恢复候选');
+        // 已生成图的采用资料仍交正式入口核验，不由剧情衣装流程重画。
+        const adopted = prepareSpriteIdentityAdoption(root, 'Alice', candidate.id, candidate);
+        assert.equal(adopted.ok, true, adopted.reason);
+        root = { ...root, ...adopted.patch };
+        assert.equal(root.characterDefaultOutfits.Alice.outfitName, word);
+        assert.ok(Object.values(root.characterOutfits.Alice[word].moods).includes(`igs-gen:${candidate.id}`));
+        assert.deepEqual(service.list().map(row => row.word), ['另一套衣装']);
+        assert.equal((await service.adopt(id, 'sprite')).alreadyHandled, true);
+        service.observe(directives);
+        assert.deepEqual(service.list().map(row => row.word), ['另一套衣装'], '旧候选与重复观察均不重弹');
+        assert.deepEqual([writes, paints, commits], [0, 0, 0]);
+    } finally { service.dispose(); }
+});
 
 for (const mode of ['write-failed', 'save-failed', 'paint-failed', 'recovery-save-failed', 'image-save-failed']) {
     test(`gate:builtin-story:失败恢复-${mode} 按入柜阶段保留状态`, async t => {

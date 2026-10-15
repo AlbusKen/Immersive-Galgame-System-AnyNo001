@@ -12,6 +12,7 @@ import { renderWorldviewRow } from './worldview-fields.js';
 import { renderQualityRow } from './render-quality-fields.js';
 import { isGeneratedAssetUrl, normalizeGeneratedLibrary } from '../../scene/asset-match.js';
 import { createOutfitResolver } from '../../scene/character-outfits.js';
+import { readDefaultOutfit, pickOutfitSprite } from '../../scene/character-appearance.js';
 import { renderEventCgList } from './settings-event-cg.js';
 import { CHARACTER_ADD_MENU, renderDnaCandidateBar, renderDnaOnlyCharacterList, kindModelPicker } from './settings-fields.js';
 import { NSFW_COUNT_MAX, CONSISTENCY_MODEL_OPTIONS, normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
@@ -503,7 +504,11 @@ export function createSettingsRenderer({ normalizeUnifiedSettings, options, rere
                 select: assetSelect('characters'),
                 lead: scopeFilterBar('characters'),
                 renderList: (subset) => renderCharacterAssetList(subset, charListOptions),
-                thumbOf: (name, moods) => resolveGenerated(firstUrl(Object.values(moods || {}).concat([(sceneAssets.statusAvatars || {})[name]]))),
+                thumbOf: (name, moods) => {
+                    const selected = readDefaultOutfit(sceneAssets, name);
+                    const sprite = selected.ok && pickOutfitSprite(selected.entry, '平和', sceneAssets);
+                    return resolveGenerated(sprite?.url || firstUrl(Object.values(moods || {}).concat([(sceneAssets.statusAvatars || {})[name]])));
+                },
             });
             const generatedArgs = {
                 library: normalizeGeneratedLibrary(sceneAssets.generated),

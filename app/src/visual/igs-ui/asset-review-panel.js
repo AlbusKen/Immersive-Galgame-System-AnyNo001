@@ -40,9 +40,9 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         label.textContent = `「${ask.character}」穿了「${ask.word}」`;
         const status = doc.createElement('div');
         if (ask.id) {
-            status.textContent = ask.busy ? '正在提取本楼衣装，可先选择加入方式…'
+            status.textContent = ask.busy ? '正在处理已选择的入库方式…'
                 : ask.reason ? `处理未完成（${ask.reason}），候选保留`
-                : ask.imageId ? '立绘已生成，等待入库' : ask.prompt ? '衣装描述已准备，确认后才入库' : '衣装描述尚未完成';
+                : ask.imageId ? '立绘已生成，等待入库' : ask.prompt ? '衣装描述已准备，确认后才入库' : '选择入库后才提取服装描述；仅选择生成立绘时才绘图';
             body.appendChild(status);
             if (ask.prompt) { const detail = doc.createElement('details');
                 const summary = doc.createElement('summary'); summary.textContent = '查看衣装描述';
@@ -60,7 +60,7 @@ export function renderAssetReviewPanel(container, items = [], handlers = {}) {
         }
         const actions = doc.createElement('div');
         actions.className = 'igs-asset-review-actions';
-        const acts = [['ok', '加入'], ...(ask.id && !ask.prompt ? [['retry', '重试写词']] : []), ['later', '稍后']];
+        const acts = [['ok', '加入'], ['later', '稍后']];
         select.disabled = !ask.id && Boolean(ask.busy);
         let submitted = false;
         for (const [act, text] of acts) {

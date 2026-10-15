@@ -899,16 +899,18 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
             const directives = [{ character: 'Alice', unknownOutfit: '礼服' }];
             assert.equal(service.observe(directives).ok, true);
             const id = service.list()[0].id;
-            await service.retry(id);
             service.observe(directives);
-            assert.equal(h.writes.length, 1, '翻页不重复提取衣装');
-            assert.equal(h.writes[0].messageId, 39);
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(h.writes.length, 0, '发现与翻页不提取衣装');
+            assert.equal((await service.retry(id)).reason, 'choice-required');
             assert.deepEqual(root, before, '确认前不改衣柜');
             service.defer(id); assert.equal(service.list().length, 0);
             assert.equal(service.list({ includeDeferred: true }).length, 1);
             service.dispose(); service = createStoryOutfitService(deps);
             assert.equal(service.list()[0].id, id, '重启按冻结身份恢复');
             const result = await service.adopt(id, mode === 'save' ? 'save' : 'sprite');
+            assert.equal(h.writes.length, 1, '选择后只提取一次衣装');
+            assert.equal(h.writes[0].messageId, 39);
             if (['wire-changed', 'stale', 'missing-dna'].includes(mode)) {
                 assert.equal(result.ok, false, mode); assert.equal(result.saved, true); assert.equal(result.reopen, false);
                 const library = root.cards['card:Source'];

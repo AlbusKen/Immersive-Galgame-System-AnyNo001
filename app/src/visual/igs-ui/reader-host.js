@@ -4370,7 +4370,9 @@ export function createIgsReaderHost(options = {}) {
         const storyAsks = lastPage ? storyOutfits?.list() || [] : [];
         const allStoryAsks = storyOutfits?.list({ includeDeferred: true }) || [];
         const outfitAsks = lastPage ? [...storyAsks, ...pendingOutfitAsks.filter(ask =>
-            !allStoryAsks.some(row => row.character === ask.character && row.word === ask.word))] : [];
+            !createOutfitResolver(snapshot.readerSettings?._sceneAssets || {})(ask.character, ask.word)
+            && !service.tempSpriteForOutfit?.(ask.character, ask.word)
+            && !allStoryAsks.some(row => row.character === ask.character && row.word === ask.word))] : [];
         if (!items.length && !outfitAsks.length) {
             if (container) container.setAttribute('hidden', '');
             return;
@@ -4440,7 +4442,7 @@ export function createIgsReaderHost(options = {}) {
                     pendingOutfitAsks.splice(i, 1);
             if (state.activeReader) rerenderActiveReader();
         }
-        if (result?.ok && picked !== 'retry') {
+        if (result?.ok && !result.alreadyHandled && picked !== 'retry') {
             imageNotice('success', picked === 'sprite' ? '衣装和对应立绘已入库' : '衣装已入库衣柜');
         } else if (!result?.ok) {
             const code = typeof result?.reason === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(result.reason) ? result.reason : 'story-outfit-failed';

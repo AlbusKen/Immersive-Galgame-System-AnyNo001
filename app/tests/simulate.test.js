@@ -10802,20 +10802,23 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'infli
         assert.ok(button); assert.equal(button.disabled, false); return button.dispatchEvent({ type: 'click', target: button }); };
     try {
         assert.equal(open().ok, true); await flush();
-        assert.equal(writes, 1); assert.equal(saves, 0);
+        assert.equal(writes, 0); assert.equal(paints, 0); assert.equal(saves, 0);
         assert.deepEqual(settings.bridge.sceneAssets, before);
         if (choice === 'later') {
             await click('later');
             assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), '');
             assert.equal(loadStoryOutfitCandidates(storage).items.length, 1);
-            open(); await flush(); assert.equal(writes, 1);
+            open(); await flush(); assert.equal(writes, 0, '稍后与重开均不自动写词');
         }
         const select = document.getElementById('igs-asset-review').querySelector('select');
-        assert.equal(select.disabled, false, '写词在途也可选择去向');
+        assert.equal(select.disabled, false, '用户先选择入库方式');
+        assert.equal(document.querySelector('[data-outfit-ask-act="retry"]'), null);
         select.value = ['save', 'later', 'inflight-save'].includes(choice) ? 'save' : 'sprite';
         click('ok');
         assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), '', '点击同步收起，不等待后台完成');
         if (holdWrite) {
+            await flush();
+            assert.equal(writes, 1, '用户确认后才进入写词');
             assert.equal(saves, 0); assert.equal(paints, 0);
             if (choice === 'switch-writing') card = 'Other';
             releaseWrite();
