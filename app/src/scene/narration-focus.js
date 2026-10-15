@@ -19,6 +19,8 @@ const SENTENCE_RE = /[。！？!?…\n]/;
 const OBJECT_REACH = 8;
 const LEAD_REACH = 3;
 const CLAUSE_LEAD_RE = /^([^，,、；;]{1,10})[，,、]\s*/;
+// 「接着你」「然后白墨」：句首连接词不占开头的位置。
+const CONNECTIVE_RE = /^(?:紧接着|接着|然后|随后|于是|这时候?|此时|突然|忽然|同时|只见|而|但|可是?|不过)/;
 // 名字是常用词的子串（下小雨了、小雨点、小雨过后）：前后文像天气 / 量词时不当人名。
 const NAME_BEFORE_RE = /(?:下|场|阵|细|飘|毛毛)$/;
 const NAME_AFTER_RE = /^(?:点(?![头了点着击开亮燃])|滴|天|过(?![来去头身])|后(?![退仰撤背来方面排])|季)/;
@@ -118,7 +120,7 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         }
         if (pick === null) {
             const plain = probeOf(body);
-            let bestAt = LEAD_REACH;
+            let bestAt = LEAD_REACH + (plain.match(CONNECTIVE_RE)?.[0].length || 0);
             for (const e of entries) {
                 const at = plain.indexOf(e.probe);
                 if (at < 0 || at >= bestAt || numbered(e.probe, plain.slice(at + e.probe.length))) continue;
@@ -131,7 +133,7 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
             }
         }
         if (pick === null && youLead && userKey) {
-            const lead = (sentences[0] || '').replace(/^[\s\p{P}\p{S}]+/u, '');
+            const lead = (sentences[0] || '').replace(/^[\s\p{P}\p{S}]+/u, '').replace(CONNECTIVE_RE, '').replace(/^[\s\p{P}\p{S}]+/u, '');
             if (lead[0] === '你' && !YOU_MODIFIER_RE.test(lead)) pick = userKey;
         }
         if (pick === null) {

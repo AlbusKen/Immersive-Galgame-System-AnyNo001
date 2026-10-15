@@ -81,6 +81,11 @@ export function createFloorSourceLocator(source) {
 
 // 旁白里常见、情绪词库没收的说法，换成默认情绪组名。
 const NARRATION_MOOD_HINTS = Object.freeze({ 怒火: '愤怒', 恼怒: '愤怒', 气得: '愤怒', 动怒: '愤怒', 怒气: '愤怒', 恼火: '愤怒', 怒意: '愤怒' });
+// 旁白里的情绪词只认神态写法（委屈地、一脸委屈、有些委屈、小雪委屈）；「那些委屈」「见惯试探」是名词，不换表情。
+const MOOD_NEGATE_RE = /(?:不|没|没有|并不|毫不|毫无|从不|别)$/;
+const MOOD_FORM_AFTER_RE = /^(?:地|得|着|起来|极了|不已)/;
+const MOOD_FORM_BEFORE_RE = /(?:一脸|满脸|满面|写满了?|露出|透着|感到|觉得|显得|变得|几分|有些|有点儿?|很|十分|非常|越发|愈发|更加|格外|一阵)$/;
+const MOOD_SUBJECT_TAIL = '(?:微微|轻轻|忍不住|不禁|顿时|立刻|突然|忽然|瞬间|终于|又|也|还)?$';
 
 const normalizeFingerprint = (s) => stripBilingualTranslation(s)
     .replace(/\*（[^）]*）\*/g, '').replace(/[\[\]\*（）]/g, '').replace(/\s+/g, '').trim();
@@ -247,7 +252,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         return carryMemo.get(memoKey);
     };
     const carriesAt = (d, key) => Boolean(carryOf(d, key));
-    // 旁白点名后的情绪：旁白里出现的情绪词（情绪组 + 该角色自己的表情槽名，两字起）取最靠前的一个。
+    // 旁白点名后的情绪：旁白里以神态写法出现的情绪词（情绪组 + 该角色自己的表情槽名，两字起）取最靠前的一个；没有就沿用上一句。
     let groupMoodWords = null;
     const narrationMood = (text, name) => {
         if (!groupMoodWords) {
@@ -257,11 +262,19 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         }
         const slots = Object.keys(castCharacters[castKeyOf(name)] || {});
         const body = String(text || '');
+        const own = String(name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const subjectRe = new RegExp(`(?:${own ? `${own}|` : ''}[她他你])${MOOD_SUBJECT_TAIL}`);
+        const isForm = (at, end) => {
+            const before = body.slice(Math.max(0, at - 8), at);
+            if (MOOD_NEGATE_RE.test(before)) return false;
+            return MOOD_FORM_AFTER_RE.test(body.slice(end)) || MOOD_FORM_BEFORE_RE.test(before) || subjectRe.test(before);
+        };
         let best = '', bestAt = Infinity;
         for (const raw of [...slots, ...groupMoodWords]) {
             const word = String(raw || '').trim();
             if (Array.from(word).length < 2 || word === '默认') continue;
-            const at = body.indexOf(word);
+            let at = body.indexOf(word);
+            while (at >= 0 && at <= bestAt && !isForm(at, at + word.length)) at = body.indexOf(word, at + 1);
             if (at >= 0 && (at < bestAt || (at === bestAt && word.length > best.length))) { best = word; bestAt = at; }
         }
         return NARRATION_MOOD_HINTS[best] || best;

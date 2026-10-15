@@ -90,6 +90,10 @@ test('旁白点名：开头小句省略主语时取逗号后的你 / 名字，�
     assert.equal(lead.read('我转过身，你愣住了。'), '');
     assert.equal(lead.read('白墨转过身，你愣住了。'), '白墨');
     assert.equal(lead.read('走着走着，小雪的照片掉在地上。'), '');
+    assert.equal(lead.read('接着你推开了门。'), '林远');
+    assert.equal(lead.read('然后，你推开了门。'), '林远');
+    assert.equal(lead.read('紧接着白墨站了起来。'), '白墨');
+    assert.equal(lead.read('紧接着严尚义站了起来。'), '严尚义');
 });
 
 test('感知句排除：不在场 / 否定 / 媒介 / 代词 / 泛指 / 引号 / 不在近期名单', () => {
@@ -171,6 +175,17 @@ test('楼层：生成区别名点名并当页离场', () => {
     const { floor: stay } = floorOf(['白墨|平和|你好。', '尚义推开门。', '她恼怒地皱眉。']);
     assert.deepEqual(sprites(stay), ['白墨', '严尚义', '严尚义']);
     assert.equal(stay.pages[2].spriteMood, '愤怒');
+});
+
+test('楼层：旁白情绪词只认神态写法，名词用法沿用上一句', () => {
+    const moodOf = (line) => floorOf(['白墨|平和|嗯。', line]).floor.pages[1].spriteMood;
+    assert.equal(moodOf('白墨故意不说那些委屈。'), '平和');
+    assert.equal(moodOf('白墨见惯试探。'), '平和');
+    assert.equal(moodOf('白墨并不委屈。'), '平和');
+    assert.equal(moodOf('白墨委屈地低下头。'), '委屈');
+    assert.equal(moodOf('白墨试探地问了一句。'), '试探');
+    assert.equal(moodOf('白墨有些委屈。'), '委屈');
+    assert.equal(moodOf('白墨顿时愣住。'), '愣住');
 });
 
 test('楼层：感知宾语换焦点，她 / 他按话题主语消解，代词离场只下被认领的人', () => {
