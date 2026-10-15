@@ -244,16 +244,27 @@ export function prepareReaderFloorAssets(floor, { payload, readerSettings, asset
     const outfitCache = new Map();
     const scenes = floor.outfitDirectives.filter(d => d.type === 'scene');
     const inheritedOutfits = payload.inheritedOutfits;
+    // 楼首换了场（地点或时段与上一楼不同）：本楼还没写到这人的衣服时，取同一场景里往后第一次写的；没换场沿用上一楼。
+    const headScene = scenes[0] || null;
+    const prevScene = floor.inheritedSceneState;
+    const headChanged = Boolean(headScene && (!prevScene
+        || String(headScene.scene || '').trim() !== String(prevScene.scene || '').trim()
+        || String(headScene.time || '').trim() !== String(prevScene.time || '').trim()));
+    const headSceneEnd = scenes[1] ? scenes[1].offset : Infinity;
     function outfitFor(index, character) {
         const page = floor.pages[index];
         const key = outfitsOfCharacter(sceneAssets.characterOutfits, sceneAssets.characterAliases, character).key || character;
-        const tag = lastBefore(floor.stageIndex.outfits.get(key) || [], page.outfitOffset);
+        const tags = floor.stageIndex.outfits.get(key) || [];
+        let tag = lastBefore(tags, page.outfitOffset);
         const scene = lastBefore(scenes, page.outfitOffset);
+        const ahead = !tag && headChanged && scene === headScene
+            ? tags.find(d => d.offset >= headScene.offset && d.offset < headSceneEnd) || null : null;
+        if (ahead) tag = ahead;
         const cacheKey = JSON.stringify([key, tag?.offset ?? -1, scene?.offset ?? -1]);
         if (!outfitCache.has(cacheKey)) {
             const rawScene = String(page.sceneStateForBg?.scene || '').trim();
             outfitCache.set(cacheKey, resolveSpriteOutfit({ directives: [scene, tag].filter(Boolean), character,
-                offset: page.outfitOffset, inheritedOutfits, sceneAssets,
+                offset: ahead ? ahead.offset : page.outfitOffset, inheritedOutfits, sceneAssets,
                 scene: [classifySceneKey(sceneAssets.scenes, rawScene).key || '', rawScene],
                 readClues: tableData.outfitClues,
                 resolveDna: name => resolveCharacterDna(sceneAssets.characterDna, name)?.dna || null }));

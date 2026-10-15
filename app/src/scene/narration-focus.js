@@ -119,7 +119,7 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
         // 场景标签和正文同页（「[igs-scene:…]你听着……」）时先剥掉，否则句首认不出人。
         const body = String(text || '').replace(/\[igs-[^\]\n]*\]?/g, '').replace(QUOTE_RE, '');
         const sentences = body.split(SENTENCE_RE).filter((s) => s.trim());
-        let pick = null;
+        let pick = null, mention = false;
         // 每句只算一次感知，选人和推进话题共用。
         const perceived = sentences.map((s) => perceive(s));
         for (const p of perceived) {
@@ -168,7 +168,7 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
             const lead = (sentences[0] || '').replace(/^[\s\p{P}\p{S}]+/u, '').replace(CONNECTIVE_RE, '').replace(/^[\s\p{P}\p{S}]+/u, '');
             if (by?.kind === 'you' || (lead[0] === '你' && !YOU_MODIFIER_RE.test(lead))) pick = youLead && userKey ? userKey : pick;
             else if (by?.kind === 'name') pick = by.key;
-            if (!pick) pick = earliestName(Infinity);
+            if (!pick) { pick = earliestName(Infinity); mention = Boolean(pick); }
         }
         // 话题主语按句推进：感知句记感知者与宾语（被动句的主语是被感知者），其余记句首的人；「你」打头不改话题。
         for (let n = 0; n < sentences.length; n++) {
@@ -186,7 +186,8 @@ export function createNarrationNamer({ characters = {}, aliases = {}, userKey = 
             const key = t && t.kind !== 'you' ? keyOf(t, focus) : '';
             if (key) { topic = key; object = ''; }
         }
-        return pick && allow(pick) ? pick : '';
+        // mention：只是句中顺口提到（不是句首主语 / 感知者 / 被看见的人），allow 可据此要求近期露过面。
+        return pick && allow(pick, { mention }) ? pick : '';
     }
     return {
         read,

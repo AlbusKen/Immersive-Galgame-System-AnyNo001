@@ -250,3 +250,32 @@ test('段落以场景标签开头、按句分页：同段每页都沿用 User �
         payload: { raw: source, recentCast: [] }, scene: { speaker: '' }, readerSettings, userName: '林远' });
     assert.deepEqual(floor.pages.map(p => p.spriteChar), ['', '哪吒', '哪吒', '哪吒']);
 });
+
+test('近期没开口的人：句首主语 / 感知者算本楼露面照常上立绘，句中顺口提到仍要近期露过面', () => {
+    const run = (segs) => {
+        const source = segs.join('\n');
+        const readerSettings = { _sceneAssets: { enabled: true, userCharacter: '哪吒', characters: { 哪吒: { 平和: 'a' }, 尚仪嬷嬷: { 平和: 'b' } } }, stageCast: { enabled: true } };
+        return prepareReaderFloor({ text: source, segments: segs, extracted: { sceneDirectives: extractSceneDirectives(source).directives, markerLayoutSource: source },
+            payload: { raw: source, recentCast: [] }, scene: { speaker: '' }, readerSettings, userName: '林远' }).pages.map(p => p.spriteChar);
+    };
+    assert.deepEqual(run(['夜色深沉。', '尚仪嬷嬷立在床幔外，听见你的吩咐，屈膝应下。']), ['', '尚仪嬷嬷']);
+    assert.deepEqual(run(['夜色深沉。', '殿内烛火摇曳，案上搁着尚仪嬷嬷送来的点心。']), ['', '']);
+});
+
+test('楼首换场：本楼还没写到衣服时取同场景往后第一次写的；没换场沿用上一楼', async () => {
+    const { prepareReaderFloorAssets } = await import('../src/visual/igs-ui/reader-floor-assets.js');
+    const outfits = (inheritedSceneState) => {
+        const raw = ['[igs-scene:寝殿|深夜|晴]', '你翻了个身。', '[igs-char:哪吒|困倦|睡衣|好困。]'];
+        const segs = ['你翻了个身。', '[哪吒]：好困。'];
+        const source = raw.join('\n');
+        const characterOutfits = { 哪吒: { 睡衣: { 平和: 'p' }, 朝服: { 平和: 'c' } } };
+        const readerSettings = { _sceneAssets: { enabled: true, userCharacter: '哪吒', characters: { 哪吒: { 平和: 'a' } }, characterOutfits }, stageCast: { enabled: true } };
+        const payload = { raw: source, recentCast: [], inheritedSceneState, inheritedOutfits: { 哪吒: '朝服' } };
+        const floor = prepareReaderFloor({ text: segs.join('\n'), segments: segs, extracted: { sceneDirectives: extractSceneDirectives(source).directives, markerLayoutSource: source },
+            payload, scene: { speaker: '' }, readerSettings, userName: '林远' });
+        const lookup = prepareReaderFloorAssets(floor, { payload, readerSettings, assetMatchCtx: {}, tableData: { revision: 0, prepareCharacters() {}, outfitClues: null } });
+        return lookup.outfitFor(0, '哪吒').outfit;
+    };
+    assert.equal(outfits({ scene: '正殿', time: '白天' }), '睡衣');
+    assert.equal(outfits({ scene: '寝殿', time: '深夜' }), '朝服');
+});

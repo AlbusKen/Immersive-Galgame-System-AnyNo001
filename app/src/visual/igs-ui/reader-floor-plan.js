@@ -189,7 +189,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         return genderMemo.get(key);
     };
     const hasSprites = key => Object.keys(castCharacters[key] || {}).length > 0;
-    // 旁白点名：主角要有素材才上；其他人要在名单里且本楼或前 3 个 AI 楼露过面（宿主没给前楼名单时不拦）。
+    // 旁白点名：主角要有素材才上；其他人要在名单里。句首主语 / 感知者 / 被看见的人算本楼露面；只是句中顺口提到的，须本楼或前 3 个 AI 楼露过面（宿主没给前楼名单时不拦）。
     // 指定了 User 立绘时，「你」开头的旁白页也换成主角（第二人称故事）。
     // 已离场、还没被写回来的人：旁白再提他的名字也不上立绘（开口，或这一页正文写他回来了才解除）。
     const goneKeys = new Set();
@@ -201,7 +201,7 @@ export function prepareReaderFloor({ text, segments, extracted, payload, scene, 
         return !probe.gone;
     };
     const namer = createNarrationNamer({ characters: castCharacters, aliases: castAliases, userKey, userNames: selfNames, genderOf, youLead: Boolean(userCharKey),
-        allow: key => (!goneKeys.has(key) || wroteBack(key)) && (key === userKey ? hasSprites(key) : Object.hasOwn(castCharacters, key) && (castNearby === null || castNearby.has(key))) });
+        allow: (key, { mention = false } = {}) => (!goneKeys.has(key) || wroteBack(key)) && (key === userKey ? hasSprites(key) : Object.hasOwn(castCharacters, key) && (castNearby === null || castNearby.has(key) || !mention)) });
     // 换场景时谁跟过来（见 carriesAcrossScene）：每个场景标签、每个人只判一次，主立绘与同屏陪衬共用结果。
     const carryMode = ['strict', 'smart', 'loose'].includes(sceneAssets?.sceneCarryMode) ? sceneAssets.sceneCarryMode : 'smart';
     // 段落以场景标签开头（「[igs-scene:…]你听着……」）时，标签和这一页同处一个偏移，这一页已属新场景。
