@@ -26,7 +26,8 @@ JS-Slash-Runner（酒馆助手）Immersive Galgame System 项目。
 - 当前整合分支：`integrate/igs-upstream-with-local-nai`；以本地存档 `fb5fd3a` 整合远端 `main` 的 `7d86952`。源码整合及受影响的模拟回归已完成，验证结果与本地存档边界见下文；PR #8 仍对应此前整树快照，不是本轮结果。
 - 保留内置 NAI、角色／场景固定种子、命名衣装与 DNA、唯一默认映射、一致性重绘、来源追溯和 revision/token 拒收边界；吸收阅读器准备、统一媒体缓存、资源生命周期、设置导航与宿主通道更新。
 - 命名衣装由 `characterDefaultOutfits` 指定默认；不接入会清空旧原装槽的迁移动作。旧记录保持原形，不从旧槽自动建立新默认。
-- 本轮完成本地源码整合、bundle 重建与 Git 存档，不推送、不更新 PR、不打标签。`app/dist/igs.bundle.js` 和 `app/dist/igs.bundle.debug.js` 已由整合源码生成；此前本地 JSON 和远端发布产物均不能视为本轮整合产物，真实酒馆、手机和收费服务尚未验证。
+- 本轮完成本地源码整合、bundle 重建及本地导入 JSON 打包，不推送、不更新 PR、不打标签。`app/dist/igs.bundle.js` 和 `app/dist/igs.bundle.debug.js` 已由整合源码生成；真实酒馆、手机和收费服务尚未验证。
+- 当前酒馆导入件：工作区根 `.limcode/outputs/igs-local/酒馆助手脚本-沉浸式Galgame系统（本地代码） v0.36.87.json`。既有本地打包脚本成功，649 个模块、10,040,891 字节，SHA-256 `6b4852d18d7b2c31c29846d7fcfbfedf8a1014ff19517ad91ac24dfb833254c1`。主程序内嵌本地 `d703854` 的已构建 bundle；样式、字体和默认素材固定引用上游 `7d86952`，仍需联网。导入前备份资料，停用其他 IGS 脚本并刷新页面；仅启用这一份。脚本成功回执作为打包依据，未追加独立产物验收；旧 v0.36.8 JSON 及远端发布文件不是当前整合包。
 - 最新验证：此前 `unit.test.js` 249/249、`simulate.test.js` 295/295 通过；资源恢复期间源码未变，沿用这两项结果。当前提交所需字体、背景、BGM 和语气音对象已从配置的 Git remote 分批补齐并离线检出，`npm.cmd run build` 成功；重建后的 `gate-contract.test.js` 30/30 通过，失败／取消／跳过均为 0，覆盖 bundle 冷启动、ESM 导入与生命周期行为。本地验证不代表远程发布或真实宿主验收。
 - 功能取舍、接口迁移、验证及本地构建恢复详见 [本地上游整合记录](docs/LOCAL_UPSTREAM_INTEGRATION.md)。
 
