@@ -20,7 +20,13 @@ export function builtinImageHarness(options = {}) {
     let waitWriting = false, waitImages = false, active = 0, maxActive = 0;
     const pause = () => new Promise(resolve => gates.push(resolve));
     const llm = createImagePromptLlm({ async request(request, settings) {
-        const input = JSON.parse(request.messages[2].content);
+        const inputs = request.messages.flatMap(message => {
+            try { const value = JSON.parse(message.content);
+                return value?.outputs?.format ? [value] : []; }
+            catch { return []; }
+        });
+        assert.equal(inputs.length, 1, '隔离端口必须取得唯一任务资料');
+        const [input] = inputs;
         writes.push({ request, settings, input }); events.push('write');
         options.beforeWrite?.(input);
         const reply = options.reply ? options.reply(input)

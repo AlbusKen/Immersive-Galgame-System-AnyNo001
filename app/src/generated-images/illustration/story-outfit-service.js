@@ -1,8 +1,10 @@
+import { adoptCharacterSeed } from '../../scene/generation-seeds.js';
 // 剧情衣装候选：发现时仅登记，用户选择后才写词、入库及按需生成立绘。
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
 import { createOutfitResolver, isValidOutfitName, isBuiltinNudeOutfit } from '../../scene/character-outfits.js';
 import { assetOwnerKey, effectiveSceneAssets, ensureCardLibrary } from '../../scene/asset-scope.js';
 import { prepareStoryOutfitAdoption, prepareOutfitAdoption } from '../../scene/outfit-identity.js';
+import { prepareInitialDefaultOutfitSelection } from '../../scene/character-appearance.js';
 import { loadStoryOutfitCandidates, saveStoryOutfitCandidate, removeStoryOutfitCandidate, storyOutfitId } from '../../scene/outfit-review-store.js';
 import { normalizeCharacterDna, readCharacterDnaView } from '../../scene/character-dna.js';
 import { GENERATED_ASSET_URL_PREFIX, setGeneratedExpressionNote } from '../../scene/asset-match.js';
@@ -41,9 +43,10 @@ export function createStoryOutfitService(deps) {
     };
     async function write(row) {
         if (!current(row)) return fail('stale-target');
+        row.status = 'writing';
         const saved = persist(row);
         if (!saved.ok) return saved;
-        row.status = 'writing'; notify();
+        notify();
         const context = deps.getContext(row);
         const result = await deps.assets.writeWardrobePrompt({ character: row.character, outfit: row.word,
             ...(context?.text !== undefined && { sourceText: context.text }),
@@ -201,6 +204,11 @@ export function createStoryOutfitService(deps) {
             const url = `${GENERATED_ASSET_URL_PREFIX}${row.imageId}`;
             if (outfit.moods?.平和 && outfit.moods.平和 !== url) return fail('outfit-image-slot-exists');
             outfit.moods = { ...outfit.moods, 平和: url };
+            const selection = prepareInitialDefaultOutfitSelection(target, row.character, row.word,
+                image => image === url ? 'available' : 'unverified');
+            if (!selection.ok) return selection;
+            Object.assign(target, selection.patch);
+            Object.assign(target, adoptCharacterSeed(target, row.character, record.seed));
             plan.changed = true;
         }
         const result = withSprite ? await commit(row, plan, ctx.root) : { ok: true };

@@ -6,12 +6,14 @@ import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { readCaptionIdentity } from '../character-caption.js';
 import { checkPromptTask, checkPromptOutput, isSceneOnlyPromptOutput } from '../../schemas/prompt-recipe.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
+import { cgSelectedOutfitAnchor } from './cg-outfit-catalog.js';
 
 // CG 是允许池，不套用立绘批次的必需角色 slots；每图由 recipe 显式选角色和景别。
-export function cgPromptTask(context) {
+export function cgPromptTask(context, { outfitSelection } = {}) {
     const characterContext = structuredClone(context);
     return { characterContext, promptTask: { version: 1, mode: 'dna_template', purpose: 'cg',
         outfitMode: 'template',
+        ...(outfitSelection !== undefined && { outfitSelection }),
         characters: characterContext.map((c, index) => ({ characterKey: c.characterKey,
             token: `r${index.toString(36)}`, kind: 'named' })) } };
 }
@@ -69,6 +71,7 @@ export function cgPaintRequests(slots, assets) {
                     request.characterContext = currentCgContext(request, assets);
                     request.promptTask = { version: 1, mode: 'dna_template', purpose: 'cg',
                         ...(request.promptRecipe.outfitMode && { outfitMode: request.promptRecipe.outfitMode }),
+                        ...(request.promptRecipe.outfitSelection && { outfitSelection: request.promptRecipe.outfitSelection }),
                         characters: request.promptRecipe.bindings.filter((b) => b.kind === 'named')
                             .map(({ characterKey, token }) => ({ characterKey, token, kind: 'named' })) };
                 }
@@ -103,7 +106,8 @@ export function currentCgContext(record, assets) {
             : record.characterMeta?.characters?.find((m) => m.characterKey === c.characterKey)?.outfit
                 || { name: '', description: '' };
         // 原图衣装快照是本次重画的服装来源，不与后来编辑的同名衣柜混用。
-        const outfits = snapshot
+        // catalog 直接从绑定展开；outfits 保留真实衣柜基线供候选采用核验。
+        const outfits = snapshot && record.promptRecipe.outfitSelection !== 'catalog'
             ? c.outfits.filter(saved => saved.name !== snapshot.name)
                 .concat({ name: snapshot.name, description: snapshot.description }) : c.outfits;
         return { ...c, outfits, outfit: structuredClone(outfit) };
@@ -173,6 +177,8 @@ export function completedCgOutfitAnchor(request, result) {
     if (!result?.ok || request.promptEdited === true || request.edited === true
         || request.outfitAnchor?.version !== 1 || !Array.isArray(request.outfitAnchor.characters)
         || result.outfitSnapshot?.version !== 1 || !Array.isArray(result.outfitSnapshot.characters)) return {};
+    if (request.promptRecipe?.outfitSelection === 'catalog')
+        return { outfitAnchor: cgSelectedOutfitAnchor(result, request.outfitAnchor.offset) };
     return { outfitAnchor: { ...structuredClone(request.outfitAnchor), characters: request.outfitAnchor.characters.map(c => {
         const matches = result.outfitSnapshot.characters.filter(saved => saved.characterKey === c.characterKey);
         return matches.length === 1 ? { ...c, effectiveOutfit: matches[0].name, effectiveSource: 'snapshot' } : { ...c };

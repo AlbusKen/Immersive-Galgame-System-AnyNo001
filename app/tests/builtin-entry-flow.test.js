@@ -4,8 +4,10 @@ import { createAssetGenerationService } from '../src/generated-images/illustrati
 import { createIndexedDbGeneratedAssetStore } from '../src/media/generated-asset-store.js';
 import { createMemoryStorage } from '../src/storage/preset-store.js';
 import { createTransactionalIdb } from './helpers/transactional-idb.js';
-import { characterViewsFixture } from './helpers/prompt-provenance.js';
+import { characterViewsFixture, spriteDataReply } from './helpers/prompt-provenance.js';
 import { builtinImageHarness } from './helpers/builtin-image-harness.js';
+import { characterPromptTask } from '../src/generated-images/illustration/character-prompt-task.js';
+import { parseSpriteData } from '../src/generated-images/illustration/sprite-data.js';
 
 function entryFixture(options = {}) {
     const h = builtinImageHarness(options), indexedDB = createTransactionalIdb();
@@ -45,6 +47,169 @@ test('gate:builtin-entry:首次立绘同次 DNA 候选，权威回读采用才�
     const entry = saved.characterOutfits.Alice[clothing.name];
     assert.equal(entry.moods.平和, `igs-gen:${image.id}`);
     assert.equal(saved.wardrobe[entry.wardrobe].prompt, clothing.description);
+    assert.deepEqual(f.assets, before);
+});
+
+test('gate:builtin-entry:同名衣装删除角色后同楼补全并入库建立新默认', async t => {
+    const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
+    const { readDefaultOutfit } = await import('../src/scene/character-appearance.js');
+    const storage = createMemoryStorage();
+    const floor = { chatId: 'builtin-entry', messageId: 4, swipeId: 0, isAi: true, isLatest: true,
+        text: '[igs-char:Alice|平静|干净便服|你好。]' };
+    const assets = { enabled: true, characters: { Alice: {} }, scenes: {},
+        characterDna: { Alice: { version: 2, views: characterViewsFixture(), personality: '' } },
+        characterOutfits: { Alice: {
+            破损衣物: { wardrobe: 'old-torn', moods: { 平和: 'old-torn.png' } },
+            干净便服: { wardrobe: 'old-clean', moods: { 平和: 'old-clean.png' } },
+        } }, characterDefaultOutfits: { Alice: { version: 1, outfitName: '破损衣物' } },
+        wardrobe: { 'old-torn': { prompt: 'wears a torn gray jacket' },
+            'old-clean': { prompt: 'wears a blue cotton shirt' } } };
+    const f = entryFixture({ assets,
+        messageHost: { getChatId: () => floor.chatId, readFloor: () => floor,
+            readPreviousAiTexts: () => [], on: () => () => {} },
+        reply: input => spriteDataReply(input, { outfitName: '干净便服',
+            outfitDescription: 'wears a clean navy cotton shirt and trousers' }) });
+    t.after(() => f.dispose());
+    f.bridge.autoIllustration.assets = { spriteEnabled: true, backgroundEnabled: false };
+    const settings = { draft: { bridge: { sceneAssets: assets }, readerSettings: {} }, asyncState: {} };
+    const ctx = { state: { activeSettings: settings },
+        options: { global: { alert() {} }, generatedAssets: f.service },
+        dialogs: { confirm: async () => true, prompt: async (_message, value) => value, alert() {} },
+        persistSettingsDraft() {
+            storage.setItem('recreated-assets', JSON.stringify(assets)); return { ok: true };
+        }, rerenderSettings: () => ({ ok: true }) };
+    const removed = await handleSettingsAction('scene-remove-char:Alice', ctx);
+    assert.equal(removed.ok, true);
+    assert.equal(assets.characters.Alice, undefined);
+    assert.equal(assets.characterOutfits.Alice, undefined);
+    assert.equal(assets.characterDna.Alice, undefined);
+    assert.equal(readDefaultOutfit(assets, 'Alice').reason, 'default-outfit-unset');
+    const before = structuredClone(assets);
+    const generated = await f.service.processMessage(4, { manual: true });
+    assert.equal(generated.ok, true, JSON.stringify(generated));
+    assert.deepEqual([f.writes.length, f.wires.length], [1, 1]);
+    assert.equal(f.writes[0].input.characterContext[0].outfit.name, '干净便服');
+    assert.deepEqual(assets, before, '候选未采用前不登记默认');
+    const [record] = f.service.listReview('builtin-entry|4|0');
+    const image = await f.open().readStoredImage(record.imageId);
+    assert.equal(image.characterMeta.characters[0].outfit.name, '干净便服');
+    assert.equal(image.outfitSnapshot.characters[0].name, '干净便服');
+    const adopted = await handleSettingsAction(`gen-temp-accept:${encodeURIComponent(record.key)}`, ctx);
+    assert.equal(adopted.ok, true, JSON.stringify(adopted));
+    const saved = JSON.parse(storage.getItem('recreated-assets'));
+    assert.equal(readDefaultOutfit(saved, 'Alice').outfitName, '干净便服');
+    assert.equal(saved.characterOutfits.Alice.干净便服.moods.平和, `igs-gen:${record.imageId}`);
+    assert.equal(saved.characterDna.Alice.identitySource, record.imageId);
+    assert.equal(saved.wardrobe['old-clean'].prompt, before.wardrobe['old-clean'].prompt);
+    assert.equal(f.service.getRecord(record.key).status, 'library');
+    assert.deepEqual([f.writes.length, f.wires.length], [1, 1], '采用不重复生成');
+});
+
+test('gate:builtin-entry:单份立绘缺号仅绑定唯一请求槽，其他协议校验保持', async t => {
+    const makeMeta = (purpose = 'sprite', format = 'sprite-data', keys = [['Alice']]) => ({
+        ...characterPromptTask([...new Set(keys.flat())].map(characterKey => ({ characterKey, dna: {
+            ...(purpose === 'derived' && { version: 2, views: characterViewsFixture(), personality: '' }),
+        }, outfit: { name: '常服', description: 'wears a blue coat' } })), purpose, 'half_body', keys),
+        outputs: { format }, userPrompts: { positive: 'single adult, white background', negative: '' },
+    });
+    const meta = makeMeta(); meta.promptTask.slots[0].slotId = 7;
+    const complete = spriteDataReply(meta), missing = complete.replace(/^slotid: 7\n/, '');
+    for (const [name, text] of [['explicit', complete], ['missing', missing]]) await t.test(name, () => {
+        const result = parseSpriteData(text, meta);
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.deepEqual(result.captions.map(c => c.slotId), [7]);
+        assert.deepEqual(result.promptTask.slots, [{ slotId: 7, tokens: ['r0'] }]);
+        assert.equal(result.characterMeta.characters[0].characterKey, 'Alice');
+        assert.equal(result.dnaCandidates.characters[0].characterKey, 'Alice');
+    });
+    await t.test('schema-default-slot', () => {
+        const request = makeMeta(); delete request.promptTask.slots;
+        const result = parseSpriteData(spriteDataReply(request).replace(/^slotid: 1\n/, ''), request);
+        assert.equal(result.ok, true, JSON.stringify(result)); assert.equal(result.slotId, 1);
+    });
+    const multi = makeMeta('sprite', 'sprite-data', [['Alice'], ['Bob']]);
+    const repeated = makeMeta('sprite', 'sprite-data', [['Alice'], ['Alice']]);
+    const shared = makeMeta('sprite', 'sprite-data', [['Alice', 'Bob']]);
+    const derived = makeMeta('derived'), fragments = makeMeta('derived', 'expression-fragments');
+    const cases = [
+        ['wrong-id', meta, complete.replace('slotid: 7', 'slotid: 8'), 'slots', 'mismatch'],
+        ['duplicate-id', meta, complete + '\n---\n' + complete, 'slotid', 'invalid'],
+        ['late-id', meta, missing + '\nslotid: 7', 'slotid', 'invalid'],
+        ['duplicate-character', meta, missing + '\ncharacter: Alice', 'character', 'duplicate'],
+        ['duplicate-field', meta, missing + '\noutfit_name: 常服', 'outfit_name', 'duplicate'],
+        ['wrong-character', meta, missing.replace('character: Alice', 'character: Bob'), 'character', 'mismatch'],
+        ['unknown-field', meta, missing + '\nscene: private', 'response_format', 'invalid'],
+        ['missing-character', meta, missing.replace(/^character: Alice\n/, ''), 'slotid', 'missing'],
+        ['second-headerless-row', meta, missing + '\n---\n' + missing, 'slotid', 'missing'],
+        ['multi-no-id', multi, spriteDataReply(multi).replace(/^slotid: \d+\n/gm, ''), 'slotid', 'missing'],
+        ['multi-partial-no-id', multi, spriteDataReply(multi).replace(/^slotid: \d+\n/, ''), 'slotid', 'missing'],
+        ['multi-truncated', multi, spriteDataReply(multi).split('\n---\n')[0], 'slots', 'mismatch'],
+        ['same-character-multi-slot', repeated, spriteDataReply(repeated).replace(/^slotid: \d+\n/gm, ''), 'slotid', 'missing'],
+        ['multi-character-single-slot', shared, missing, 'slotid', 'missing'],
+        ['derived-no-id', derived, spriteDataReply(derived).replace(/^slotid: 1\n/, ''), 'slotid', 'missing'],
+        ['fragments-no-id', fragments, spriteDataReply(fragments).replace(/^slotid: 1\n/, ''), 'slotid', 'missing'],
+    ];
+    for (const [name, request, text, field, issue] of cases) await t.test(name, () => {
+        const result = parseSpriteData(text, request);
+        assert.equal(result.ok, false, name);
+        assert.equal(result.reason, 'SPRITE_DATA_INVALID');
+        assert.equal(result.diagnostic.field, field); assert.equal(result.diagnostic.issue, issue);
+        if (issue === 'missing') assert.equal(result.diagnostic.lineNumber,
+            name === 'second-headerless-row' ? missing.split('\n').length + 2 : 1);
+    });
+});
+
+for (const entry of ['manual', 'automatic'])
+test(`gate:builtin-entry:首次立绘漏slotid经实际入口生成且采用前不建档-${entry}`, async t => {
+    const floor = { chatId: 'builtin-entry', messageId: 4, swipeId: 0, isAi: true, isLatest: true,
+        text: '[igs-char:Alice|平静|你好。]' };
+    const f = entryFixture({ assets: { enabled: true, characters: {}, characterDna: {}, scenes: {} },
+        messageHost: { getChatId: () => floor.chatId, readFloor: () => floor,
+            readPreviousAiTexts: () => [], on: () => () => {} },
+        reply: input => spriteDataReply(input).replace(/^slotid: \d+\n/, '') });
+    t.after(() => f.dispose());
+    f.bridge.autoIllustration.assets = { spriteEnabled: true, backgroundEnabled: false };
+    const before = structuredClone(f.assets);
+    const result = entry === 'manual' ? await f.service.generateCharacterSprite({ name: 'Alice', dna: {} })
+        : await f.service.processMessage(4, { manual: true });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(f.writes.length, 1); assert.equal(f.wires.length, 1);
+    const store = createIndexedDbGeneratedAssetStore({ indexedDB: f.indexedDB });
+    const imageId = entry === 'manual' ? result.imageId : (await store.getAssetsByChat(floor.chatId))[0].imageId;
+    const image = await f.open().readStoredImage(imageId);
+    const requested = f.writes[0].input.promptTask;
+    assert.equal(image.slotId, requested.slots[0].slotId);
+    assert.deepEqual(image.promptTask.characters, requested.characters);
+    assert.equal(image.promptRecipe.bindings[0].token, requested.slots[0].tokens[0]);
+    assert.equal(image.dnaCandidates.characters[0].characterKey, 'Alice');
+    assert.equal(image.dnaSnapshot.characters[0].source, 'candidate');
+    assert.deepEqual(f.assets, before);
+});
+
+for (const [name, transform, multi = false] of [
+    ['wrong-id', text => text.replace(/^slotid: 1/, 'slotid: 8')],
+    ['duplicate-id', text => text + '\n---\n' + text],
+    ['duplicate-character', text => text.replace(/^slotid: 1\n/, '') + '\ncharacter: Alice'],
+    ['duplicate-field', text => text.replace(/^slotid: 1\n/, '') + '\noutfit_name: 常服'],
+    ['wrong-character', text => text.replace(/^slotid: 1\n/, '').replace('character: Alice', 'character: Bob')],
+    ['multi-no-id', text => text.replace(/^slotid: \d+\n/gm, ''), true],
+    ['multi-later-no-id', text => text.replace(/^slotid: 1\n/m, ''), true],
+]) test(`gate:builtin-entry:立绘缺号兼容不放宽其他错误且零绘图-${name}`, async t => {
+    const floor = { chatId: 'builtin-entry', messageId: 4, swipeId: 0, isAi: true, isLatest: true,
+        text: '[igs-char:Alice|平静|你好。]\n[igs-char:Bob|平静|你好。]' };
+    const f = entryFixture({ assets: { enabled: true, characters: {}, characterDna: {}, scenes: {} },
+        messageHost: { getChatId: () => floor.chatId, readFloor: () => floor,
+            readPreviousAiTexts: () => [], on: () => () => {} },
+        reply: input => transform(spriteDataReply(input)) });
+    t.after(() => f.dispose());
+    f.bridge.autoIllustration.assets = { spriteEnabled: true, backgroundEnabled: false };
+    const before = structuredClone(f.assets);
+    const result = multi ? await f.service.processMessage(4, { manual: true })
+        : await f.service.generateCharacterSprite({ name: 'Alice', dna: {} });
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(f.writes.length, 1, '拒收后不得自动修词补发');
+    if (multi) assert.equal(f.writes[0].input.promptTask.slots.length, 2);
+    assert.equal(f.wires.length, 0); assert.equal(f.mattes.length, 0);
     assert.deepEqual(f.assets, before);
 });
 
@@ -157,6 +322,16 @@ test('gate:builtin-entry:背景 task 无人物无 DNA，实际发送后跨连接
     const image = await f.open().readStoredImage(record.imageId);
     assert.ok(image.dataUrl); assert.ok(image.prompt);
     assert.deepEqual(assets, before);
+    assert.equal(image.seed, f.wires[0].parameters.seed);
+    assert.equal(record.seed, image.seed);
+    const { bindGeneratedBackground } = await import('../src/scene/asset-match.js');
+    assets.scenes = bindGeneratedBackground(assets, record, record.name).scenes;
+    assert.equal(assets.scenes[record.name].seed, image.seed);
+    const variants = await f.open().generateSceneVariants({ baseImageId: image.id, scene: record.name,
+        variants: [{ time: '夜晚' }, { time: '黄昏', weather: '雨' }] });
+    assert.equal(variants.ok, true, JSON.stringify(variants));
+    assert.deepEqual(f.wires.map(w => w.parameters.seed), [image.seed, image.seed, image.seed]);
+    for (const item of variants.items) assert.equal((await f.open().readStoredImage(item.imageId)).seed, image.seed);
 });
 
 for (const scenario of ['legacy', 'named', 'renamed', 'invalid-at', 'missing-at', 'empty-at', 'unknown-key', 'invalid-region'])
@@ -164,6 +339,7 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
     const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
     const assets = { characters: { Alice: {} }, characterDna: {}, characterOutfits: {}, wardrobe: {} };
+    if (scenario === 'named') assets.characterSeeds = { Alice: 0 };
     const before = structuredClone(assets);
     const h = builtinImageHarness({ reply(input) {
         const row = input.promptTask.characters[0];
@@ -177,6 +353,7 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
             `meta_key: 0 | ${scenario === 'unknown-key' ? 'PrivateUnknown' : row.characterKey}`, `meta_token: 0 | ${row.token}`, 'meta_frame: 0 | half_body',
             `meta_outfit_name: 0 | ${scenario === 'legacy' ? 'Coat' : scenario === 'renamed' ? 'Blue coat' : '蓝色外套'}`,
             'meta_outfit_description: 0 | wears a blue coat',
+            'meta_outfit_id: 0 |',
             'meta_identity: 0 | Alice, an adult woman with silver hair and blue eyes,',
             'meta_signature: 0 | silver hair',
             ...(scenario === 'invalid-region' ? ['meta_region: 0 | 0.9,0.2,0.2,0.3'] : [])].join('\n');
@@ -203,7 +380,7 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
             code: unknown ? 'character-meta-binding' : 'character-meta-region',
             field: unknown ? 'binding.characterKey' : 'meta_region',
             issue: unknown ? 'mismatch' : 'invalid', captionIndex: 0,
-            stage: 'prompt-parse', slotId: 1, lineNumber: unknown ? 10 : 17 });
+            stage: 'prompt-parse', slotId: 1, lineNumber: unknown ? 10 : 18 });
         assert.match(result.error, /角色资料无法可靠绑定.*slotId=1.*lineNumber=/);
         assert.doesNotMatch(JSON.stringify(result), /PrivateUnknown|silver hair|wears a blue coat|<<dna/);
         assert.equal(h.writes.length, 1);
@@ -211,13 +388,13 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
         assert.deepEqual(assets, before);
         return;
     }
-    if (scenario === 'renamed' || scenario.endsWith('-at')) {
+    if (scenario.endsWith('-at')) {
         assert.equal(result.ok, false, JSON.stringify(result));
-        assert.match(result.error, scenario === 'renamed' ? /衣装模板校验失败：outfit\.name/ : /字段=at/);
+        assert.match(result.error, /字段=at/);
         if (scenario.endsWith('-at')) assert.match(result.error,
             scenario === 'missing-at' ? /缺少必需字段/ : /格式或取值无效/);
         assert.equal(h.writes.length, 1);
-        assert.equal(h.wires.length, 0, '错名、缺号或无效生成点不补发、不绘图');
+        assert.equal(h.wires.length, 0, '缺号或无效生成点不补发、不绘图');
         assert.deepEqual(assets, before);
         return;
     }
@@ -228,17 +405,17 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
     const raw = createIndexedDbIllustrationStore({ indexedDB });
     const original = await raw.getSlotRecord('builtin-cg|5|0|1');
     assert.equal(original.status, 'done'); assert.equal(original.dnaCandidates, undefined);
+    assert.equal(original.seed, h.wires[0].parameters.seed);
+    if (scenario === 'named') assert.equal(original.seed, 0);
     assert.deepEqual(original.sentPrompt.caption.v4_prompt.caption, h.wires[0].parameters.v4_prompt.caption);
     assert.equal(original.outfitAnchor.version, 1);
     assert.ok(Number.isSafeInteger(original.outfitAnchor.offset));
-    assert.deepEqual(original.outfitAnchor.characters,
-        scenario === 'legacy'
-            ? [{ characterKey: 'Alice', requestedOutfit: '', effectiveOutfit: 'Coat',
-                requirementSource: 'none', source: 'none', reason: '', effectiveSource: 'snapshot' }]
-            : [{ characterKey: 'Alice', requestedOutfit: '蓝色外套', effectiveOutfit: '蓝色外套',
-                requirementSource: 'tag', source: 'tag', reason: 'outfit-unregistered', effectiveSource: 'snapshot' }]);
+    const outfitName = scenario === 'legacy' ? 'Coat' : scenario === 'renamed' ? 'Blue coat' : '蓝色外套';
+    assert.deepEqual(original.outfitAnchor.characters, [{ characterKey: 'Alice',
+        requestedOutfit: outfitName, effectiveOutfit: outfitName,
+        requirementSource: 'cg-selection', source: 'cg-selection', reason: '', effectiveSource: 'snapshot' }]);
     assert.equal(original.outfitSnapshot.characters[0].source, 'candidate');
-    assert.equal(original.outfitSnapshot.characters[0].name, scenario === 'legacy' ? 'Coat' : '蓝色外套');
+    assert.equal(original.outfitSnapshot.characters[0].name, outfitName);
     assert.deepEqual(assets, before, '普通 CG 不登记永久 DNA 或衣装');
     assets.characterDna.Alice = { version: 2, views: characterViewsFixture('Alice, an adult with black hair,') };
     const rerollAssets = structuredClone(assets);
@@ -249,6 +426,8 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
         'Alice, an adult with black hair, wears a blue coat and waves.');
     const current = await raw.getSlotRecord(original.key);
     assert.deepEqual(current.promptRecipe, original.promptRecipe);
+    assert.equal(current.seed, h.wires[1].parameters.seed);
+    if (scenario === 'named') assert.equal(current.seed, 0);
     assert.deepEqual(current.outfitSnapshot, original.outfitSnapshot);
     assert.deepEqual(current.outfitAnchor, original.outfitAnchor, '普通重画保留原图正文衣装锚点');
     assert.deepEqual(current.prompt.outfitSnapshot, original.outfitSnapshot);
@@ -284,13 +463,7 @@ for (const [model, enabled, native] of [
     const floor = { chatId: 'builtin-entry', messageId: 8, swipeId: 0, isAi: true, isLatest: true,
         text: '[igs-char:Bob|平静|你好。]' };
     const f = entryFixture({ messageHost: { getChatId: () => floor.chatId, readFloor: () => floor,
-        readPreviousAiTexts: () => [], on: () => () => {} },
-        transformWritten(written, input) {
-        // 模拟写词端遵守收到的底色要求；发送层不得再次拼补定稿。
-        for (const entry of written.captions) {
-            entry.caption.v4_prompt.caption.base_caption = input.userPrompts.positive;
-        }
-    } });
+        readPreviousAiTexts: () => [], on: () => () => {} } });
     t.after(() => f.dispose());
     f.bridge.autoIllustration.nai.model = model;
     Object.assign(f.bridge.imageApi, { naiSpriteTransparent: enabled, dbgenSpriteTransparent: !enabled });
@@ -302,8 +475,30 @@ for (const [model, enabled, native] of [
     f.assets.characterDna.Alice = { version: 2, views: image.dnaCandidates.characters[0].views,
         defaultAppearance: image.outfitSnapshot.characters[0].description };
     const expressions = await f.service.generateExpressionSet({ name: 'Alice', moods: ['微笑', '平静'],
-        dna: f.assets.characterDna.Alice });
+        dna: f.assets.characterDna.Alice, note: '轻微笑意，不眯眼' });
     assert.equal(expressions.ok, true, JSON.stringify(expressions));
+
+    const fragmentWrites = f.writes.filter(row => row.input.outputs.format === 'expression-fragments');
+    assert.equal(fragmentWrites.length, 1);
+    const fragmentInput = fragmentWrites[0].input;
+    assert.deepEqual(Object.keys(fragmentInput).sort(), ['characterContext', 'description', 'outputs', 'writingRequirements']);
+    assert.deepEqual(fragmentInput.outputs, { format: 'expression-fragments', rows: [
+        { slotId: 1, characterKey: 'Alice' }, { slotId: 2, characterKey: 'Alice' },
+    ] });
+    assert.deepEqual(fragmentInput.writingRequirements, { nsfw: false });
+    assert.ok(fragmentInput.description.includes('轻微笑意，不眯眼'));
+    const { readCharacterDnaView } = await import('../src/scene/character-dna.js');
+    assert.deepEqual(fragmentInput.characterContext, [{ characterKey: 'Alice',
+        dna: readCharacterDnaView(f.assets.characterDna.Alice, 'half_body').value,
+        outfit: { name: image.outfitSnapshot.characters[0].name, description: 'wears a white dress' },
+    }]);
+    for (const entry of expressions.items) {
+        const saved = await f.open().readStoredImage(entry.imageId);
+        assert.equal(saved.promptTask.purpose, 'derived', '完整绑定留在程序侧');
+        assert.equal(saved.dnaSnapshot.characters[0].framing, 'half_body');
+        assert.equal(saved.outfitSnapshot.characters[0].description, 'wears a white dress');
+        assert.ok(saved.expression.positive);
+    }
 
     const final = await f.service.generateCharacterSprite({ name: 'Alice', caption: image.sentPrompt.caption, exact: true });
     assert.equal(final.ok, true, JSON.stringify(final));
@@ -322,6 +517,11 @@ for (const [model, enabled, native] of [
     }
     assert.ok(f.mattes.every(meta => meta.alreadyTransparent === native && meta.detailed === true));
     assert.match(f.wires[0].input, native ? /transparent background/ : /white background/);
+    for (const wire of f.wires.slice(1, 3)) {
+        assert.match(wire.input, native ? /transparent background/ : /white background/);
+        assert.match(wire.input, /upper body/);
+        assert.ok(wire.parameters.v4_prompt.caption.char_captions[0].char_caption.includes('wears a white dress'));
+    }
 });
 
 test('gate:nai-transparent:开关保存变更使已写词租约失效且改回不复活', async t => {
@@ -519,6 +719,7 @@ async function cgGrammarFixture(t, transform = text => text) {
         'meta_token: 0 | r0', 'meta_frame: 0 | half_body',
         'meta_identity: 0 | ExampleAdult, an adult woman,', 'meta_signature: 0 |',
         'meta_outfit_name: 0 | Navy coat', 'meta_outfit_description: 0 | wears a navy coat',
+        'meta_outfit_id: 0 |',
     ].join('\n');
     const reports = [], assets = { characters: {}, characterDna: {}, characterOutfits: {}, wardrobe: {} };
     const before = structuredClone(assets);
@@ -553,6 +754,11 @@ for (const [issue, transform, errorPattern] of [
         `char: 0 | named | ExampleAdult | x,y | private body | <<outfit:${row.token}>>`), /字段=char.*captionIndex=0/],
     ['missing-identity-slot', (text, row) => text.replace(`<<dna:${row.token}>>`, 'private body'), /caption.char.*身份占位/],
     ['outfit-name-token', (text, row) => text.replace(`<<outfit:${row.token}>>`, '<<outfit:Navy coat>>'), /衣装模板校验失败/],
+    ['missing-outfit-id', text => text.replace('\nmeta_outfit_id: 0 |', ''), /字段=meta_outfit_id.*missing/],
+    ['unknown-outfit-id', text => text.replace('meta_outfit_id: 0 |', 'meta_outfit_id: 0 | 999'), /字段=meta_outfit_id.*mismatch/],
+    ['invalid-outfit-id', text => text.replace('meta_outfit_id: 0 |', 'meta_outfit_id: 0 | 1.5'), /字段=meta_outfit_id.*invalid/],
+    ['duplicate-outfit-id', text => text + '\nmeta_outfit_id: 0 |', /字段=meta_outfit_id.*重复/],
+    ['empty-outfit-description', text => text.replace('meta_outfit_description: 0 | wears a navy coat', 'meta_outfit_description: 0 |'), /衣装名称和描述必须完整交付/],
 ]) test(`gate:builtin-entry:v5CG协议拒收零补发零绘图-${issue}`, async t => {
     const f = await cgGrammarFixture(t, transform);
     assert.equal(f.result.ok, false); assert.equal(f.wires.length, 0);
@@ -670,6 +876,8 @@ for (const mode of ['success', 'save-failed', 'default-changed']) {
         assert.equal(image.outfitSnapshot.characters[0].description, assets.wardrobe.coat.prompt);
         assert.equal(image.outfitSnapshot.characters[0].source, 'saved');
         assert.equal(assets.characterDna.Alice.defaultAppearance, '旧衣装');
+        assert.equal(assets.characterSeeds.Alice, f.wires[0].parameters.seed);
+        assert.equal(image.seed, assets.characterSeeds.Alice);
     });
 }
 
@@ -706,6 +914,12 @@ for (const mode of ['success', 'save-failed', 'readback-mismatch']) {
             const image = await f.open().readStoredImage(outfit.moods.平和.slice(8));
             assert.equal(image.outfitSnapshot.characters[0].description, assets.wardrobe[outfit.wardrobe].prompt);
             assert.deepEqual(image.dnaCandidates.characters[0].views, assets.characterDna.Alice.views);
+            assert.equal(assets.characterSeeds.Alice, image.seed);
+            assert.equal(image.seed, f.wires[0].parameters.seed);
+            const next = await f.open().generateCharacterSprite({ name: 'Alice', dna: assets.characterDna.Alice });
+            assert.equal(next.ok, true, JSON.stringify(next));
+            assert.equal(next.seed, image.seed);
+            assert.equal(f.wires.at(-1).parameters.seed, image.seed);
         }
     });
 }

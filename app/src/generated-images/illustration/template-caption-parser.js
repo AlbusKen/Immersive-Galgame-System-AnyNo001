@@ -3,10 +3,11 @@ import { CHARACTER_DNA_VIEWS } from '../../scene/character-dna.js';
 import { checkCharacterMeta } from '../../schemas/character-meta.js';
 import { checkPromptTask, checkPromptOutput } from '../../schemas/prompt-recipe.js';
 import { bindAutoSpriteOutfitNames } from './character-prompt-task.js';
+import { resolveCgOutfit } from './cg-outfit-catalog.js';
 
 const fields = new Set(['slotid', 'size', 'analysis', 'scene', 'scene_uc', 'prompt_mode', 'outfit_mode', 'identity_mode', 'char', 'char_uc', 'at']);
 const metaFields = new Set(['meta_kind', 'meta_key', 'meta_token', 'meta_frame', 'meta_identity', 'meta_signature',
-    'meta_outfit_name', 'meta_outfit_description', 'meta_region', 'meta_correction_identity', 'meta_correction_uc',
+    'meta_outfit_name', 'meta_outfit_description', 'meta_outfit_id', 'meta_region', 'meta_correction_identity', 'meta_correction_uc',
     ...CHARACTER_DNA_VIEWS.flatMap((f) => [`meta_dna_${f}`, `meta_dna_uc_${f}`])]);
 const fail = (reason = 'DNA_TEMPLATE_BINDING', field = 'meta_fields', issue = 'invalid', where = {}) => {
     const labels = { invalid: '格式或取值无效', missing: '缺少必需字段',
@@ -43,10 +44,11 @@ const position = (slotId, captionIndex) => ({
     ...(Number.isInteger(captionIndex) && captionIndex >= 0 && captionIndex < 16 && { captionIndex }) });
 const side = (base, chars) => ({ caption: { base_caption: base, char_captions: chars } });
 
-export function parseTemplateCaptionSlots(text, { promptTask, characterContext, characterContextForEntry, autoSpriteOutfitNames, outputs } = {}) {
+export function parseTemplateCaptionSlots(text, { promptTask, characterContext, characterContextForEntry, autoSpriteOutfitNames, outfitCatalog, outputs } = {}) {
     const task = checkPromptTask(promptTask, characterContext);
     if (!task.ok) return task;
     if (!task.value) return fail('PROMPT_MODE_CONFLICT', 'promptTask', 'missing');
+    const catalog = task.value.outfitSelection === 'catalog';
     const blocks = [], ids = new Set();
     let current = null, last = '';
     const lines = String(text || '').split(/\r?\n/);
@@ -128,8 +130,14 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext, 
             if (missing) return reject(missing, 'missing', index);
             if (row.meta_kind === 'reference' && (row.meta_outfit_name !== ''
                 || row.meta_outfit_description !== '')) return reject('meta_outfit_description', 'mismatch', index, 'OUTFIT_TEMPLATE_INVALID');
+            if (!catalog && row.meta_outfit_id !== undefined) return reject('meta_outfit_id', 'mismatch', index);
+            const selectedOutfit = catalog ? resolveCgOutfit(row.meta_outfit_id,
+                { name: row.meta_outfit_name, description: row.meta_outfit_description },
+                { captionIndex: index, characterKey: row.meta_key }, outfitCatalog) : null;
+            if (selectedOutfit && !selectedOutfit.ok) return atBlock(selectedOutfit, block);
             bindings.push({ kind: row.meta_kind, characterKey: row.meta_key, captionIndex: index,
                 token: row.meta_token, framing: row.meta_frame,
+                ...(selectedOutfit && { outfit: selectedOutfit.value }),
                 ...((row.meta_correction_identity !== undefined || row.meta_correction_uc !== undefined) && {
                     correction: { subject: row.meta_correction_identity, negative: row.meta_correction_uc || '' } }) });
             const character = { characterKey: row.meta_key, captionIndex: index,
@@ -159,6 +167,8 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext, 
         let entry = { slotId: block.slotId, caption, characterMeta: meta.value,
             promptRecipe: { version: 1, mode: 'dna_template', caption, bindings,
                 ...(block.identity_mode !== undefined && { identityMode: block.identity_mode }),
+                ...(catalog && { outfitSelection: 'catalog' }),
+                ...(catalog && !bindings.some(b => b.kind === 'named') && { outfitMode: 'template' }),
                 ...(block.outfit_mode !== undefined && { outfitMode: block.outfit_mode }) },
             ...(candidates.length && { dnaCandidates: { version: 1, characters: candidates } }),
             ...(block.analysis !== undefined && { analysis: block.analysis }) };
@@ -177,7 +187,7 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext, 
             if (!size || !size.slice(1).every((v) => Number(v) >= 64 && Number(v) <= 4096 && Number(v) % 64 === 0)) return reject('size');
             entry.width = Number(size[1]); entry.height = Number(size[2]);
         }
-        // CG 选点后按该点冻结的正文衣装核验；不能先拿楼末衣装拒绝前段合法回复。
+        // 选点仍校验挂载上下文；catalog 的衣装由本轮引用确定，不由该点剧情衣装裁决。
         let context = characterContext;
         if (characterContextForEntry !== undefined) {
             if (task.value.purpose !== 'cg' || typeof characterContextForEntry !== 'function')

@@ -13,6 +13,8 @@ import { resolveCharacterKey, stripIllustrationMarker, stripIllustrationMarkers 
 import { buildCharacterDnaPromptParts, isCharacterDnaEmpty, mergePromptTags, resolveCharacterDna } from '../../scene/character-dna.js';
 import { CG_PIXEL_CAP, clampToPixelCap, fitCgSize, parseCgSize } from './cg-pixel-cap.js';
 import { cgCharacterState, bindCgCaption, cgPromptTask, preflightCgCaption, cgPaintRequests, cgFinalRequest, completedCgOutfitAnchor } from './cg-character-bindings.js';
+import { cgGenerationSeed } from '../../scene/generation-seeds.js';
+import { isImageSeed, resolveImageSeed } from '../image-seed.js';
 import { createCgConsistencyService } from './cg-consistency-service.js';
 import { promptProvenance, storedPromptFromResult } from '../generation-prompt.js';
 import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
@@ -475,6 +477,7 @@ export function createAutoIllustrationService(deps) {
         const record = result?.ok
             ? { ...request, status: 'done', dataUrl: result.dataUrl, error: null, failureReason: null,
                 caption: result.caption || request.caption,
+                ...(isImageSeed(result.seed) && { seed: result.seed }),
                 ...promptProvenance(result),
                 ...outfitAdoptionEvidence(request, result),
                 ...completedCgOutfitAnchor(request, result),
@@ -532,6 +535,8 @@ export function createAutoIllustrationService(deps) {
             } else {
                 try {
                     result = await generateCaption({ caption: request.caption, size: cgSize(s), messageId,
+                        ...((!nai.describe || nai.describe().mode === 'nai' || nai.describe().via === 'nai') && {
+                            seed: resolveImageSeed(cgGenerationSeed(request, readSceneAssets())) }),
                         imageKind: 'cg', promptKind: base.kind === 'nsfw' ? 'nsfwCg' : 'cg',
                         ...(edited || (!request.promptRecipe && request.captionMode === 'final')
                             ? { captionMode: 'final' } : request.promptRecipe || request.promptTask ? {
@@ -653,7 +658,7 @@ export function createAutoIllustrationService(deps) {
         const outfitScope = deps.captureCgOutfitScope?.(numbered.characters);
         const characterState = template ? cgCharacterState(floor.text, numbered.characters, sceneAssets,
             messageHost.readPreviousAiTexts(messageId, 3), deps.readOutfitClues) : null;
-        const task = template ? cgPromptTask(characterState.context) : null;
+        const task = template ? cgPromptTask(characterState.context, { outfitSelection: 'catalog' }) : null;
         try {
             const previousText = messageHost.readPreviousAiTexts(messageId, s.llm.contextFloors)
                 .map(toReadableText).join('\n').slice(-1500);
@@ -677,10 +682,7 @@ export function createAutoIllustrationService(deps) {
                         paragraphCount: numbered.paragraphs.length },
                     ...(typeof llm?.prepareImagePrompt === 'function' && s.llm.prompts.illustration !== PLANNER_SYSTEM_PROMPT
                         && { userPrompts: { writing: s.llm.prompts.illustration } }),
-                    description: [user, `本次允许 slotid 为 1 到 ${decision.want}；不得改用其他编号。`,
-                        '先逐一核对实际出镜者与正文角色标签：每位有标签的出镜者都须按本人规范键和 token 独立交付 char/char_uc 及完整 meta 字段，玩家、后景和局部出镜者也不能只在 Scene 或他人动作中带过；未出镜者不强行加入。每个 named 都交付非空 meta_identity，按首次立绘同等详细程度写清发型、五官、固有肤色、体态及适用身份锚点，保留已确定外貌，协调落实未限定的普通视觉细节，不以职业或 sharp eyes 等保守短句替代。meta_signature 字段保留，摘要无依据可空。交付未展开模板：本人正向 char 恰好一次 <<dna:token>>，衣装模板另有一次同 token 的 <<outfit:token>>，token 取本轮分配值；身份描述只放独立字段，不提前展开或删槽。身份、衣装和当次动态分开，不登记永久 DNA、不生成三景别候选。',
-                        characterState.timeline.length && `当楼衣装时间线：${JSON.stringify(characterState.timeline)}`,
-                    ].filter(Boolean).join('\n'),
+                    description: `${user}\n本次允许 slotid 为 1 到 ${decision.want}；不得改用其他编号。`,
                     systemPrompt: [CG_TEMPLATE_PLANNER_SYSTEM,
                         s.llm.prompts.illustration !== PLANNER_SYSTEM_PROMPT
                             ? `用户写词要求（输出协议仍遵守上述动态模板字段）：\n${s.llm.prompts.illustration}` : '',
@@ -808,7 +810,9 @@ export function createAutoIllustrationService(deps) {
             if (!edited && request.preflightFailure) result = { ok: false, ...request.preflightFailure };
             else try {
                 const final = edited || (!request.promptRecipe && request.captionMode === 'final');
-                result = await nai.generate(final ? cgFinalRequest(request) : request, { ...s.nai, size }, meta);
+                const seed = (!nai.describe || nai.describe().mode === 'nai' || nai.describe().via === 'nai')
+                    ? { seed: resolveImageSeed(cgGenerationSeed(request, readSceneAssets())) } : {};
+                result = await nai.generate(final ? cgFinalRequest(request) : request, { ...s.nai, size, ...seed }, { ...meta, ...seed });
                 if (edited && result?.ok) result = { ...result,
                     ...promptProvenance({ promptRecipe: request.promptRecipe, dnaSnapshot: request.dnaSnapshot }),
                     promptEdited: true, captionMode: 'final' };

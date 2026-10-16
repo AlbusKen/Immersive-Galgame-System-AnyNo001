@@ -13,7 +13,7 @@ import { createSettingsDialogs } from './settings-dialog.js';
 import { beginSettingsProgress, remountSettingsNotice, SETTINGS_NOTICE_MS } from './settings-notice.js';
 
 const BLOCKED_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
-const CHARACTER_FIELDS = ['characters', 'characterOutfits', 'characterDefaultOutfits', 'characterDna', 'characterAliases', 'statusAvatars'];
+const CHARACTER_FIELDS = ['characters', 'characterOutfits', 'characterDefaultOutfits', 'characterSeeds', 'characterDna', 'characterAliases', 'statusAvatars'];
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const plain = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 

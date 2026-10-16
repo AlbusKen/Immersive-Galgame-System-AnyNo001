@@ -45,7 +45,8 @@ export function buildNaiInpaintRequest(request = {}, naiSettings = {}, random = 
     const body = buildNaiV4Request(
         final ? { caption: request.caption, captionMode: 'final' }
             : { scene: String(request.prompt || ''), sceneUc: String(request.negative || ''), chars: [] },
-        { ...naiSettings, model: baseModel, size: `${width}x${height}` },
+        { ...naiSettings, model: baseModel, size: `${width}x${height}`,
+            ...(request.seed !== undefined && { seed: request.seed }) },
         random,
     );
     body.model = model;

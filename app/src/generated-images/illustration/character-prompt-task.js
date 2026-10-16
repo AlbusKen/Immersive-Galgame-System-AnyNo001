@@ -9,13 +9,34 @@ import { checkPromptRecipe, checkRecipeCharacterMeta } from '../../schemas/promp
 export const usesCharacterTemplates = (backend) => ['nai', 'dbgen'].includes(backend?.describe?.().mode);
 
 // 写词输入与采用基线分离：旧服装仅留在本地原始快照，不交给模型选衣。
-export function characterWritingContext(context) {
+export function characterWritingContext(context, { targetOutfitOnly = false } = {}) {
     if (!Array.isArray(context)) return context;
     return context.map(character => {
         const copy = structuredClone(character);
         if (copy?.dna && typeof copy.dna === 'object') delete copy.dna.defaultAppearance;
+        if (targetOutfitOnly) delete copy.outfits;
         return copy;
     });
+}
+
+// 表情只消费当前身份视图与当前衣装；完整任务、衣柜和绘图配置不发给写词模型。
+export function expressionWritingInput(task, context) {
+    const fail = () => ({ ok: false, reason: 'SPRITE_DATA_INVALID', error: '表情任务无法唯一绑定角色与图号' });
+    if (task.purpose !== 'derived') return fail();
+    const slots = task.slots || [{ slotId: 1, tokens: task.characters.map(c => c.token) }];
+    if (slots.some(slot => slot.tokens.length !== 1)) return fail();
+    const characters = [];
+    for (const character of task.characters) {
+        const sources = context.filter(c => c.characterKey === character.characterKey);
+        if (sources.length !== 1) return fail();
+        const source = sources[0], view = readCharacterDnaView(source.dna, character.framing);
+        if (!view.ok) return view;
+        characters.push({ characterKey: character.characterKey, dna: view.value,
+            outfit: { name: source.outfit?.name || '', description: source.outfit?.description || '' } });
+    }
+    return { ok: true, value: { characterContext: characters,
+        outputs: { format: 'expression-fragments', rows: slots.map(slot => ({ slotId: slot.slotId,
+            characterKey: task.characters.find(c => c.token === slot.tokens[0]).characterKey })) } } };
 }
 
 export function characterPromptTask(context, purpose, framing, slotKeys) {

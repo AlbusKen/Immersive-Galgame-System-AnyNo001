@@ -9,6 +9,7 @@ import { builtinImageHarness } from './helpers/builtin-image-harness.js';
 
 function outfitAssets() {
     return { characters: { Alice: { 默认: 'original.png' } },
+        characterSeeds: { Alice: 42 },
         characterDna: { Alice: { version: 2, views: characterViewsFixture() } },
         characterOutfits: { Alice: { 礼服: { words: [], moods: {} } } }, wardrobe: {} };
 }
@@ -44,15 +45,34 @@ function settingsContext(f, assets, persist, extra = {}) {
         persistSettingsDraft: persist, rerenderSettings: () => ({ ok: true }) } };
 }
 
-for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch']) {
+for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch', 'wrong-outfit']) {
     test(`gate:builtin-outfit:设置页先保存服装再绘图-${mode}`, async t => {
         const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
-        const assets = outfitAssets(), before = structuredClone(assets), storage = createMemoryStorage();
+        const assets = outfitAssets(), storage = createMemoryStorage();
+        Object.assign(assets.characterOutfits.Alice, {
+            破损衣物: { wardrobe: 'old-torn', moods: { 平和: 'old-torn.png' } },
+            干净便服: { wardrobe: 'old-clean', moods: { 平和: 'old-clean.png' } },
+        });
+        Object.assign(assets.wardrobe, { 'old-torn': { prompt: 'wears a torn gray jacket' },
+            'old-clean': { prompt: 'wears a blue cotton shirt' } });
+        assets.characterDefaultOutfits = { Alice: { version: 1, outfitName: '破损衣物' } };
+        const before = structuredClone(assets);
         storage.setItem('fixture-assets', JSON.stringify(assets));
         const saves = [];
         const f =outfitBuiltinFixture({ assets,
             readAssets: () => JSON.parse(storage.getItem('fixture-assets')),
             paintFailure: () => mode === 'paint-failed',
+            beforeWrite(input) {
+                const character = input.characterContext[0];
+                assert.equal(character.characterKey, 'Alice');
+                assert.deepEqual(character.dna.views, before.characterDna.Alice.views);
+                assert.equal(character.outfit.name, '礼服');
+                assert.equal(character.outfit.description, '');
+                assert.equal(Object.hasOwn(character, 'outfits'), false, '资料请求不提供其他衣装');
+                assert.equal(Object.hasOwn(input, 'userPrompts'), false, '绘图构图保留在本地');
+            },
+            ...(mode === 'wrong-outfit' && { reply: () => 'slotid: 1\ncharacter: Alice\n'
+                + 'outfit_name: 干净便服\noutfit_description: wears a blue cotton shirt' }),
             beforePaint() {
                 const saved = JSON.parse(storage.getItem('fixture-assets'));
                 assert.equal(saved.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
@@ -71,6 +91,13 @@ for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch
         assert.equal(f.writes.length, 1, '仅提取一次服装资料，平和构图由程序组装');
         assert.equal(f.writes[0].input.outputs.format, 'sprite-data');
 
+        if (mode === 'wrong-outfit') {
+            assert.equal(result.ok, false);
+            assert.equal(saves.length, 0); assert.equal(f.wires.length, 0); assert.equal(f.imageIds.length, 0);
+            assert.deepEqual(JSON.parse(storage.getItem('fixture-assets')), before);
+            assert.deepEqual(assets, before, '不能将错名描述改名保存为目标衣装');
+            return;
+        }
         assert.deepEqual(saves[0].characterOutfits.Alice.礼服.moods, {});
         if (['save-failed', 'readback-mismatch'].includes(mode)) {
             assert.equal(result.ok, false); assert.equal(f.wires.length, 0);
@@ -82,6 +109,10 @@ for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch
         assert.ok(f.events.indexOf('save') < f.events.indexOf('paint'));
         assert.deepEqual(assets.characterDna, before.characterDna);
         assert.deepEqual(assets.characters, before.characters);
+        assert.deepEqual(assets.characterDefaultOutfits, before.characterDefaultOutfits);
+        for (const key of ['old-torn', 'old-clean']) assert.deepEqual(assets.wardrobe[key], before.wardrobe[key]);
+        for (const key of ['破损衣物', '干净便服'])
+            assert.deepEqual(assets.characterOutfits.Alice[key], before.characterOutfits.Alice[key]);
         assert.equal(assets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
         if (mode === 'paint-failed') {
             assert.equal(f.imageIds.length, 0);
@@ -93,12 +124,66 @@ for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch
         const id = assets.characterOutfits.Alice.礼服.moods.平和.slice('igs-gen:'.length);
         const image = await f.open().readStoredImage(id);
         assert.equal(image.outfitSnapshot.characters[0].source, 'saved');
+        assert.equal(image.outfitSnapshot.characters[0].name, '礼服');
+        assert.equal(image.outfitSnapshot.characters[0].description, 'wears a white dress');
+        assert.deepEqual(image.outfitContext[0].outfits.filter(o => o.name !== '礼服'), [
+            { name: '破损衣物', description: 'wears a torn gray jacket', default: true },
+            { name: '干净便服', description: 'wears a blue cotton shirt' },
+        ], '完整旧衣柜仍留在程序侧来源证据中');
         assert.equal(image.sentPrompt.action, 'generate');
+        assert.equal(image.seed, 42);
+        assert.equal(f.wires[0].parameters.seed, 42);
+        assert.equal(assets.characterSeeds.Alice, 42);
         assert.deepEqual(image.sentPrompt.caption.v4_prompt.caption, f.wires[0].parameters.v4_prompt.caption);
         assert.equal(image.dnaCandidates, undefined);
     });
 }
 
+for (const mode of ['success', 'image-save-failed', 'paint-failed', 'existing-default']) {
+    test(`gate:builtin-outfit:新衣装立绘保存时接替缺省默认-${mode}`, async t => {
+        const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
+        const { readDefaultOutfit } = await import('../src/scene/character-appearance.js');
+        const assets = outfitAssets(), storage = createMemoryStorage();
+        assets.wardrobe.dress = { prompt: 'wears a white dress' };
+        assets.characterOutfits.Alice.礼服.wardrobe = 'dress';
+        if (mode === 'existing-default') {
+            assets.characterOutfits.Alice.常服 = { wardrobe: 'coat', moods: { 平和: 'coat.png' } };
+            assets.wardrobe.coat = { prompt: 'wears a blue coat' };
+            assets.characterDefaultOutfits = { Alice: { version: 1, outfitName: '常服' } };
+        }
+        storage.setItem('initial-default', JSON.stringify(assets));
+        const f = outfitBuiltinFixture({ assets,
+            readAssets: () => JSON.parse(storage.getItem('initial-default')),
+            paintFailure: () => mode === 'paint-failed',
+            beforePaint() {
+                assert.equal(readDefaultOutfit(assets, 'Alice').ok, mode === 'existing-default',
+                    '绘图尚未成功时不提前设默认');
+            } });
+        t.after(() => f.dispose());
+        let saves = 0;
+        const { ctx } = settingsContext(f, assets, () => {
+            saves++;
+            if (mode === 'image-save-failed' && saves === 1) return { ok: false, reason: 'fixture-save' };
+            storage.setItem('initial-default', JSON.stringify(assets)); return { ok: true };
+        });
+        const result = await handleSettingsAction(outfitAction('outfit-expression-set'), ctx);
+        assert.equal(f.writes.length, 0, '保存双 DNA 齐全时不重新写词');
+        assert.equal(f.wires.length, 1);
+        const saved = JSON.parse(storage.getItem('initial-default'));
+        if (['image-save-failed', 'paint-failed'].includes(mode)) {
+            assert.equal(readDefaultOutfit(assets, 'Alice').reason, 'default-outfit-unset');
+            assert.equal(readDefaultOutfit(saved, 'Alice').reason, 'default-outfit-unset');
+            assert.equal(saved.characterOutfits.Alice.礼服.moods.平和 || '', '');
+            if (mode === 'image-save-failed') assert.equal(result.ok, false);
+        } else {
+            assert.equal(result.ok, true, JSON.stringify(result));
+            assert.equal(readDefaultOutfit(saved, 'Alice').outfitName,
+                mode === 'existing-default' ? '常服' : '礼服');
+            const imageId = saved.characterOutfits.Alice.礼服.moods.平和.slice(8);
+            assert.ok((await f.open().readStoredImage(imageId)).dataUrl);
+        }
+    });
+}
 
 test('gate:builtin-outfit:当前双 DNA 续画零写词，模板与历史发送快照保真', async t => {
     const assets = outfitAssets();
@@ -139,6 +224,8 @@ test('gate:builtin-outfit:当前双 DNA 续画零写词，模板与历史发送�
     assert.equal(f.writes.length, 0);
     assert.equal(f.wires[2].parameters.v4_prompt.caption.base_caption, 'artist:fixture, My saved final scene.');
     assert.equal(f.wires[2].parameters.v4_prompt.caption.char_captions.length, 0);
+    assert.deepEqual(f.wires.map(w => w.parameters.seed), [42, 42, 42]);
+    assert.equal(current.seed, original.seed);
 });
 
 for (const phase of ['writing', 'queued', 'inflight']) {
@@ -204,27 +291,45 @@ async function storyBuiltinFixture(mode = 'success') {
         dispose() { service.dispose(); f.dispose(); } };
 }
 
-for (const choice of ['save', 'sprite']) {
+for (const choice of ['save', 'sprite', 'full-save', 'full-sprite']) {
     test(`gate:builtin-story:选择后提取-${choice} 隐藏确认，重复确认零双发`, async t => {
         const s = await storyBuiltinFixture(), { f } = s; t.after(() => s.dispose());
+        const { saveStoryOutfitCandidates, loadStoryOutfitCandidates, storyOutfitId, OUTFIT_REVIEW_LIMIT }
+            = await import('../src/scene/outfit-review-store.js');
+        const full = choice.startsWith('full-'), mode = choice.replace('full-', '');
+        const older = Array.from({ length: full ? OUTFIT_REVIEW_LIMIT : 0 }, (_, i) => {
+            const row = { character: 'Alice', word: '旧衣装', scopeKey: 'card:Current', ownerKey: 'card:Source',
+                floorKey: `other-chat|${i}|0`, sourceHash: `old-${i}`, messageId: i, status: 'pending' };
+            return { ...row, id: storyOutfitId(row) };
+        });
+        if (full) {
+            assert.equal(saveStoryOutfitCandidates(s.storage, older).ok, true);
+            s.reopen();
+        }
         f.waitWriting();
         assert.equal(s.service.observe([{ character: 'Alice', unknownOutfit: '礼服' }]).ok, true);
         const id = s.service.list()[0].id;
         await new Promise(resolve => setImmediate(resolve));
         assert.deepEqual([f.writes.length, f.wires.length, f.gates.length], [0, 0, 0], '选择前不写词或绘图');
-        const first = s.service.adopt(id, choice), duplicate = s.service.adopt(id, choice);
+        const first = s.service.adopt(id, mode), duplicate = s.service.adopt(id, mode);
         assert.equal(first, duplicate); assert.equal(s.service.list().length, 0);
         await waitFor(() => f.gates.length === 1);
         assert.equal(f.writes.length, 1); assert.deepEqual(s.root(), s.original);
+        assert.equal(loadStoryOutfitCandidates(s.storage).items.find(row => row.id === id).status, 'writing');
         f.waitWriting(false); f.release();
         assert.equal((await first).ok, true); assert.equal((await duplicate).ok, true);
         assert.equal(f.writes.length, 1, '衣装提取后基础平和图不再请求写词');
-        assert.equal(f.wires.length, choice === 'save' ? 0 : 1);
+        assert.equal(f.wires.length, mode === 'save' ? 0 : 1);
         const library = s.root().cards['card:Source'];
         assert.equal(library.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
         assert.deepEqual(library.characters, s.original.cards['card:Source'].characters);
         assert.deepEqual(library.characterDna, s.original.cards['card:Source'].characterDna);
-        if (choice === 'sprite') assert.ok(await f.open().readStoredImage(library.characterOutfits.Alice.礼服.moods.平和.slice(8)));
+        if (mode === 'sprite') assert.ok(await f.open().readStoredImage(library.characterOutfits.Alice.礼服.moods.平和.slice(8)));
+        assert.deepEqual(library.characterDefaultOutfits,
+            mode === 'sprite' ? { Alice: { version: 1, outfitName: '礼服' } } : undefined,
+            '只保存服装文字不设默认，成功保存立绘时建立默认');
+        assert.deepEqual(loadStoryOutfitCandidates(s.storage).items, full ? older.slice(1) : [],
+            '仅替换最早的纯发现候选，其他楼层记录保真；完成后清理本条');
     });
 }
 
@@ -298,6 +403,7 @@ for (const mode of ['write-failed', 'save-failed', 'paint-failed', 'recovery-sav
         assert.deepEqual(library.characterDna, s.original.cards['card:Source'].characterDna);
         assert.deepEqual(library.characters, s.original.cards['card:Source'].characters);
         assert.equal(library.characterOutfits.Alice.礼服.moods.平和 || '', '');
+        assert.equal(library.characterDefaultOutfits, undefined, '绘图或图片保存失败不提前登记默认');
         if (mode === 'recovery-save-failed') {
             assert.equal(result.recoverySaved, false); assert.equal(result.warning, 'fixture-recovery-save');
             assert.equal(library.generated, undefined);
@@ -323,6 +429,8 @@ for (const mode of ['write-failed', 'save-failed', 'paint-failed', 'recovery-sav
             assert.equal(f.writes.length, writes); assert.equal(f.wires.length, sends, '采用重试复用同图');
             assert.deepEqual(await f.open().readStoredImage(row.imageId), image);
             assert.equal(s.root().cards['card:Source'].characterOutfits.Alice.礼服.moods.平和, `igs-gen:${row.imageId}`);
+            assert.deepEqual(s.root().cards['card:Source'].characterDefaultOutfits,
+                { Alice: { version: 1, outfitName: '礼服' } }, '重试复用同图并一并保存默认');
             assert.equal(loadStoryOutfitCandidates(s.storage).items.length, 0);
         }
     });

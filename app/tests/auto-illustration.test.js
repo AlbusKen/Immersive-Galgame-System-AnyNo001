@@ -107,6 +107,12 @@ test('gate:illustration:nai-v4-request-shape', async () => {
     assert.equal(p.v4_negative_prompt.caption.base_caption, p.negative_prompt);
     assert.equal(p.v4_negative_prompt.caption.char_captions[0].char_caption, 'bad hands');
     assert.equal(p.seed, 0);
+    for (const seed of [0, 42, 4294967295]) {
+        assert.equal(buildNaiV4Request({ scene: 'room' }, { seed }, () => { throw new Error('不得重抽'); }).parameters.seed, seed);
+    }
+    for (const seed of [undefined, -1, 0.5, 4294967296, '42']) {
+        assert.equal(buildNaiV4Request({ scene: 'room' }, { seed }, () => 0.5).parameters.seed, 2147483647);
+    }
     assert.equal(p.width, 832);
 });
 
@@ -1977,7 +1983,7 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${count}-characters-candid
     assert.deepEqual([candidate.width, candidate.height], [128, 64]);
     for (const [i, request] of f.calls.entries()) {
         assert.equal(await request.shouldStart(), true);
-        assert.equal(request.strength, 0.75, '一致性每轮显式使用专用重绘强度');
+        assert.equal(request.strength, 0.6, '一致性每轮显式使用专用重绘强度');
         assert.match(request.caption.v4_prompt.caption.base_caption, /preserving their original clothing and interaction/);
         assert.match(request.caption.v4_prompt.caption.base_caption, /same character/i);
         assert.doesNotMatch(request.caption.v4_prompt.caption.base_caption, /reference inset/i);
@@ -2212,16 +2218,59 @@ test('gate:cg-codec:decode-encode-budget-errors-and-cancel-release-handlers', as
 function cgTemplateText(slotId, at, rows = []) {
     return [`slotid: ${slotId}`, ...(at !== undefined ? [`at: ${at}`] : []),
         'prompt_mode: dna_template', 'outfit_mode: template', 'scene: Friends meet in a cafe. High quality illustration.',
-        'scene_uc: blurry', ...rows.flatMap(({ key, token, frame = 'half_body', x = 0.3, identity }, index) => [
+        'scene_uc: blurry', ...rows.flatMap(({ key, token, frame = 'half_body', x = 0.3, identity, outfitId = '',
+            outfitName = 'Coat', outfitDescription = 'wears a blue coat' }, index) => [
             `char: ${x},0.5 | <<dna:${token}>> <<outfit:${token}>> and waves toward Alice.`,
             `char_uc: <<dna_uc:${token}>>, closed eyes`, `meta_kind: ${index} | named`,
             `meta_key: ${index} | ${key}`, `meta_token: ${index} | ${token}`,
-            `meta_frame: ${index} | ${frame}`, `meta_outfit_name: ${index} | Coat`,
-            `meta_outfit_description: ${index} | wears a blue coat`,
+            `meta_frame: ${index} | ${frame}`, `meta_outfit_name: ${index} | ${outfitName}`,
+            ...(at !== undefined ? [`meta_outfit_id: ${index} | ${outfitId}`] : []),
+            `meta_outfit_description: ${index} | ${outfitDescription}`,
             ...(identity !== undefined ? [`meta_identity: ${index} | ${identity}`,
                 `meta_signature: ${index} | silver hair clip`] : []),
         ])].join('\n');
 }
+
+for (const fault of ['none', 'foreign', 'empty-description']) test(`gate:cg-catalog:混合来源与跨图引用-${fault}`, async () => {
+    const assets = cgTemplateAssets();
+    const saved = 'wears a 1.2::navy coat:: with $1 trim';
+    assets.characterOutfits = { Alice: { Coat: { wardrobe: 'alice', moods: {} } },
+        Bob: { Coat: { wardrobe: 'bob', moods: {} } } };
+    assets.wardrobe = { alice: { prompt: saved }, bob: { prompt: 'wears a green coat' } };
+    const before = structuredClone(assets);
+    const rows = [{ key: 'Alice', token: 'r0', outfitId: fault === 'foreign' ? '2' : '1',
+        outfitDescription: fault === 'empty-description' ? '' : 'wears a scene-only coat' },
+        { key: 'Bob', token: 'r1', outfitName: 'New shirt', outfitDescription: 'wears a red shirt' }];
+    const reply = [cgTemplateText(1, 2, rows), cgTemplateText(2, 3, [rows[0]])].join('\n---\n');
+    const run = await cgTemplateRun('nai', reply, assets);
+    try {
+        assert.equal(run.result.ok, fault === 'none', JSON.stringify(run.result));
+        assert.equal(run.llmRequests.length, 1);
+        assert.deepEqual(assets, before);
+        if (fault !== 'none') {
+            assert.equal(run.wires.length, 0);
+            assert.equal(run.result.diagnostic.captionIndex, 0);
+            return;
+        }
+        const records = await run.store.getSlots('c1|5|0');
+        assert.equal(records.length, 2); assert.equal(run.wires.length, 2);
+        for (const record of records) {
+            const outfit = record.outfitSnapshot.characters[0];
+            assert.equal(outfit.description, saved); assert.equal(outfit.source, 'saved');
+            assert.deepEqual(record.promptRecipe.bindings[0].outfit,
+                { name: 'Coat', description: saved, source: 'saved' });
+            assert.equal(record.sentPrompt.caption.v4_prompt.caption.char_captions[0].char_caption,
+                `Alice, half_body saved identity, ${saved} and waves toward Alice.`);
+            assert.equal(JSON.stringify(record.promptRecipe).includes('outfitId'), false);
+        }
+        assert.equal(records[0].outfitSnapshot.characters[1].source, 'candidate');
+        assert.equal(records[0].sentPrompt.caption.v4_prompt.caption.char_captions[1].char_caption,
+            'Bob, half_body saved identity, wears a red shirt and waves toward Alice.');
+        const { consistencyRequirement } = await import('../src/generated-images/illustration/cg-consistency-appearance.js');
+        assert.deepEqual(consistencyRequirement(records[0], 'Bob'),
+            { ok: true, requestedOutfit: 'New shirt', requirementSource: 'cg-selection' });
+    } finally { run.dispose(); }
+});
 
 async function cgTemplateRun(mode, reply, assets, count = 2, options = {}) {
     const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
@@ -2348,9 +2397,11 @@ for (const mode of ['nai', 'dbgen']) {
         const before = structuredClone(assets);
         const slot = mode === 'nai' ? 1 : 6;
         const reply = cgTemplateText(slot, mode === 'nai' ? 2 : undefined,
-            [{ key: 'Alice', token: 'r0' }])
+            [{ key: 'Alice', token: 'r0', outfitId: '1' }])
             .replace('meta_outfit_name: 0 | Coat', 'meta_outfit_name: 0 | 常服')
-            .replace('meta_outfit_description: 0 | wears a blue coat', 'meta_outfit_description: 0 |');
+            .replace('meta_outfit_description: 0 | wears a blue coat',
+                mode === 'nai' ? 'meta_outfit_description: 0 | wears a coat described for this scene'
+                    : 'meta_outfit_description: 0 |');
         const run = await cgTemplateRun(mode, reply, assets, 1);
         try {
             assert.equal(run.result.ok, true, run.result.error);
@@ -2365,8 +2416,8 @@ for (const mode of ['nai', 'dbgen']) {
             if (mode === 'nai') {
                 assert.equal(record.outfitAnchor.version, 1);
                 assert.ok(Number.isFinite(record.outfitAnchor.offset));
-                assert.deepEqual(record.outfitAnchor.characters, [{ characterKey: 'Alice', requestedOutfit: '',
-                    effectiveOutfit: '常服', requirementSource: 'none', source: 'default', reason: '',
+                assert.deepEqual(record.outfitAnchor.characters, [{ characterKey: 'Alice', requestedOutfit: '常服',
+                    effectiveOutfit: '常服', requirementSource: 'cg-selection', source: 'cg-selection', reason: '',
                     effectiveSource: 'snapshot' }]);
             } else assert.equal(Object.hasOwn(record, 'outfitAnchor'), false, 'DBG不纳入新锚点链');
             const positive = run.wires[0].parameters.v4_prompt.caption.char_captions[0].char_caption;
@@ -2781,8 +2832,8 @@ for (const count of [2, 3]) test(`gate:cg-consistency:${model}:${selectedModel |
             assert.doesNotMatch(wire.input, /frame|border|split screen|collage/i);
             assert.equal(wire.parameters.negative_prompt, 'artist-uc, ' + prepared.caption.v4_negative_prompt.caption.base_caption);
             assert.match(wire.parameters.negative_prompt, /decorative frame, golden border, split screen, collage, duplicate person/);
-            assert.equal(wire.parameters.inpaintImg2ImgStrength, 0.75, '一致性专用强度透传到最终 wire');
-            assert.deepEqual(wire.parameters.img2img, { strength: 0.75, color_correct: true });
+            assert.equal(wire.parameters.inpaintImg2ImgStrength, 0.6, '一致性专用强度透传到最终 wire');
+            assert.deepEqual(wire.parameters.img2img, { strength: 0.6, color_correct: true });
             assert.equal(Object.hasOwn(wire.parameters, 'strength'), false);
             assert.equal(wire.parameters.noise, 0);
             assert.deepEqual(wire.parameters.v4_prompt.caption.char_captions, prepared.caption.v4_prompt.caption.char_captions);
@@ -3346,7 +3397,7 @@ test('gate:cg-consistency:并发写词重绘同基线且乱序结果固定合成
 
 test('gate:cg-consistency:强度归一自定义wire和失效门禁', async () => {
     const { normalizeAutoIllustrationSettings } = await import('../src/generated-images/illustration/auto-illustration-settings.js');
-    for (const [input, expected] of [[undefined, 0.75], ['', 0.75], ['bad', 'bad'], [-1, -1], [2, 2], ['0.4', 0.4]]) {
+    for (const [input, expected] of [[undefined, 0.6], [null, 0.6], ['', 0.6], [0.75, 0.75], ['bad', 'bad'], [-1, -1], [2, 2], ['0.4', 0.4]]) {
         assert.equal(normalizeAutoIllustrationSettings({ consistencyStrength: input }).consistencyStrength, expected);
     }
     const f = await consistencyAdapterFixture(2);
@@ -3696,6 +3747,7 @@ async function consistencyBuiltinFixture(count = 2, model = 'nai-diffusion-5-ful
     const f = await consistencyFixture(count, rawStore);
     f.assets.characterOutfits = {};
     f.assets.characterDefaultOutfits = {};
+    f.assets.characterSeeds = Object.fromEntries(f.names.map((name, i) => [name, i === 0 ? 0 : 42 + i]));
     f.assets.wardrobe = {};
     for (const name of f.names) {
         f.assets.characterOutfits[name] = { 冬装: { wardrobe: name, moods: { 平和: `reference-${name}` } } };
@@ -3854,6 +3906,7 @@ for (const model of ['nai-diffusion-4-5-full-inpainting', 'nai-diffusion-5-full-
         }
         for (const wire of f.wires) {
             assert.equal(wire.action, 'infill'); assert.equal(wire.model, model);
+            assert.equal(wire.parameters.seed, f.assets.characterSeeds[f.names[0]], '全部局部使用第一个角色种子');
             assert.ok(wire.parameters.image); assert.ok(wire.parameters.mask);
             assert.ok(wire.parameters.width * wire.parameters.height <= 1024 * 1024);
             const prompt = JSON.stringify(wire.parameters.v4_prompt);
@@ -3871,6 +3924,7 @@ for (const model of ['nai-diffusion-4-5-full-inpainting', 'nai-diffusion-5-full-
         assert.equal(saved.consistencyPrompt.rounds.length, count);
         for (const round of saved.consistencyPrompt.rounds) {
             assert.equal(round.sentPrompt.action, 'infill'); assert.equal(round.sentPrompt.model, model);
+            assert.equal(round.seed, f.assets.characterSeeds[f.names[0]]);
             assert.ok(round.promptRecipe); assert.ok(round.dnaSnapshot);
             assert.equal(round.appearance.version, 1);
             assert.equal(round.appearance.requestedOutfit, '冬装');

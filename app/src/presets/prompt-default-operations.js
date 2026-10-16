@@ -36,6 +36,13 @@ export function stagePromptDefaultUpgrade(snapshot, preset) {
             const previous = old[group].find(b => b.identifier === block.identifier);
             const latest = preset.data[group].find(b => b.identifier === block.identifier);
             if (!previous || !latest) continue;
+            // CG 新目录只补到未改动的旧白名单；用户删改的资料范围保持不变。
+            if (group === 'modules' && block.task === 'cg'
+                && same(block.dataFields, previous.dataFields)
+                && Array.isArray(previous.dataFields) && !previous.dataFields.includes('outfitCatalog')
+                && latest.dataFields?.includes('outfitCatalog')) {
+                block.dataFields = [...block.dataFields, 'outfitCatalog'];
+            }
             // 正文和分模式正文作为一个整体迁移；手改任一项均保留整块。
             if (same(block.content, previous.content) && same(block.contentByFormat, previous.contentByFormat)) {
                 block.content = latest.content;

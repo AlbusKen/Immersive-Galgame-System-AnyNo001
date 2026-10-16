@@ -5,8 +5,8 @@ import { SPRITE_HALF_BODY_RULE } from '../prompt-registry.js';
 export const EXPRESSION_TASK = '只处理本轮指定表情，保持角色身份和当前命名衣装，不借表情重新设计人物。';
 export const EXPRESSION_FRAGMENTS = [SOURCE_RULE,
     '只输出 expression-fragments，每份从 slotid: 本轮编号 开始，随后 character: 本槽规范角色键、expression: 英文面部变化、expression_uc: 面部排除项。expression 非空，UC 可空但字段不能省略。',
-    '按本槽 token 对应的 characterKey 写 character，不写别名或 token。只写眼、眉、嘴、脸颊等可见变化，可根据独立性格表现，不含身份、衣装、身体姿势、手势、道具、背景、镜头、质量或底色。',
-    '每份完整写完才以独立行 --- 分隔下一份，单份不写分隔符。字段无索引和竖线，不输出 scene、char、meta 或 DNA 候选；程序以片段替换默认表情。',
+    '按 outputs.rows 的 slotId 和 characterKey 写图号与角色，不写别名。characterContext 提供本人身份 DNA 和当前衣装，仅作为表情参考。按本轮指定表情与用户要求，只写眼、眉、嘴、脸颊等可见变化，可结合所给性格，不复述身份、衣装，不写身体姿势、手势、道具、背景、镜头、质量或底色。',
+    '每份完整写完才以独立行 --- 分隔下一份，单份不写分隔符。字段无索引和竖线，只交指定表情片段，不输出 scene、char、meta 或 DNA 候选。',
     '示例仅说明字段结构，编号、角色和表情以本轮任务为准：',
     'slotid: 1', 'character: 示例角色',
     'expression: eyebrows gently raised, eyes slightly widened and lips parted in surprise',

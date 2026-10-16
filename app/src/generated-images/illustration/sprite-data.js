@@ -1,14 +1,15 @@
 // 资料／表情协议不接收画面正文；默认立绘由程序模板组装。
 import { CHARACTER_DNA_REQUIRED_VIEWS, CHARACTER_DNA_VIEWS, checkDnaViews, checkCharacterPersonality } from '../../scene/character-dna.js';
 import { isValidOutfitName } from '../../scene/character-outfits.js';
-import { savedExpressionTemplate } from './character-prompt-task.js';
+import { savedExpressionTemplate, bindAutoSpriteOutfitNames } from './character-prompt-task.js';
 import { checkPromptOutput, checkPromptTask } from '../../schemas/prompt-recipe.js';
 
 export const SPRITE_DATA_RULE = [
     '仅 outputs.format 为 sprite-data 或 expression-fragments 时执行本段：只提取可复用资料，不生成 scene、char、构图、姿势、背景或完整绘图提示词。其他格式不执行本段。',
-    'sprite-data 每份从 slotid: 本轮编号 开始，再写 character: 该槽唯一 token 对应的 promptTask.characters.characterKey。角色键逐字照抄，不写 token、别名、译名或 DNA 中的英文名。只输出本轮清单，字段各一次，多份用独立行 --- 分隔。',
+    '【先交图头】回复第一行必须是 slotid: 本轮实际槽号，第二行才写 character: 该槽唯一 token 对应的 promptTask.characters.characterKey。只有一个角色或一份资料也不能省略 slotid；输入中的 slotId 不能代替回复图头。每份从 slotid 重新开始，只输出本轮清单，角色键逐字照抄，不写 token、别名、译名或 DNA 中的英文名；字段各一次，多份用独立行 --- 分隔。',
     '资料字段直接写 字段名: 值，不带 Char 索引或竖线，不加 meta_ 前缀。景别字段为 dna_full_body、dna_half_body、dna_portrait，值直接为英文身份主语。expression-fragments 同样按槽号和角色键绑定，不带索引。',
     '缺身份景别时输出 dna_full_body、dna_half_body、dna_portrait，以及可选 dna_uc_对应景别。三份从同一详细外貌母版仅删除画外部位，共同描述逐字相同；已有景别逐字保留。身份只含稳定外貌，不含衣装、当次表情、灰尘、临时伤势、动作或场景。',
+    '身份主语中的躯干、四肢和颈部直接描述身体本身，不夹带身穿何物、衣领露出什么、裤子或靴子；穿戴内容只放 outfit_description。dna_uc_* 只写对应身份的英文排除项，无额外排除项可省略或留空，不写默认值说明、沿用正向、表情姿势说明或交付指令。',
     '仅 sprite 任务且 personality 字段缺失时另写 personality: 独立英文性格特点；只描述稳定性格，无依据留空，不写外貌、衣装、动作或当次心情。不得把性格复制进各景别。已有性格可省略或逐字保留，显式空值不补建。derived 衣装提取不输出身份和性格。',
     '每份写 outfit_name 和 outfit_description。衣装原名逐字沿用输入，已保存说明逐字复用；缺说明时只建立完整英文穿着谓语，保留已知颜色、材质、剪裁和层次，首次未指定细节协调补全。不写人物身份、表情、动作或背景。',
     'expression-fragments 每份仅写 slotid、character、expression、expression_uc；只写指定表情的眼、眉、嘴等可见变化，可按性格表现，不写身份、衣装、身体姿势、道具、背景、镜头、底色或质量词。expression 非空，expression_uc 可空。',
@@ -38,6 +39,11 @@ export function parseSpriteData(text, meta) {
     meta = { ...meta, promptTask: task.value };
     const fragments = meta.outputs?.format === 'expression-fragments';
     if (fragments && task.value.purpose !== 'derived') return fail('task');
+    const slots = task.value.slots || [{ slotId: 1, tokens: task.value.characters.map(c => c.token) }];
+    // 仅由已校验的单份立绘请求确定缺省绑定，不按回复数量或顺序猜号。
+    const implicitSlot = !fragments && task.value.purpose === 'sprite' && task.value.characters.length === 1
+        && slots.length === 1 && slots[0].tokens.length === 1
+        && slots[0].tokens[0] === task.value.characters[0].token ? slots[0] : undefined;
     const allowed = new Set(['slotid', 'character', ...(fragments ? ['expression', 'expression_uc']
         : ['outfit_name', 'outfit_description', 'personality', ...viewFields])]);
     const rows = new Map();
@@ -54,17 +60,20 @@ export function parseSpriteData(text, meta) {
             if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(id) || rows.has(id)) return fail('slotid', 'invalid', where);
             row = { slotId: id, lines: {} }; rows.set(id, row);
         } else {
-            if (!row || Object.hasOwn(row, key)) return fail(key, 'duplicate', where);
+            if (!row) {
+                if (!implicitSlot || rows.size || key !== 'character') return fail('slotid', 'missing', where);
+                row = { slotId: implicitSlot.slotId, lines: {} }; rows.set(row.slotId, row);
+            }
+            if (Object.hasOwn(row, key)) return fail(key, 'duplicate', where);
             if (!viewFields.includes(key) && !validText(value)) return fail(key, 'invalid', where);
             row[key] = value; row.lines[key] = index + 1;
         }
     }
-    return assembleSpriteData(rows, meta, fragments);
+    return assembleSpriteData(rows, meta, fragments, slots);
 }
 
-function assembleSpriteData(rows, meta, fragments) {
+function assembleSpriteData(rows, meta, fragments, slots) {
     const task = meta.promptTask, context = meta.characterContext;
-    const slots = task?.slots || [{ slotId: 1, tokens: task?.characters?.map(c => c.token) }];
     if (!Array.isArray(context) || rows.size !== slots.length
         || slots.some(slot => !rows.has(slot.slotId) || slot.tokens?.length !== 1)) return fail('slots', 'mismatch');
     const captions = [];
@@ -79,7 +88,7 @@ function assembleSpriteData(rows, meta, fragments) {
             ...(data.candidate && { dnaCandidates: data.candidate }),
             ...(data.expression && { expression: data.expression }) });
         if (!built.ok || !built.available) return fail('outfit_description', 'missing');
-        const entry = built.value;
+        const entry = bindAutoSpriteOutfitNames(built.value, task, meta.autoSpriteOutfitNames);
         const checked = checkPromptOutput(entry, entry.promptTask, [source]);
         if (!checked.ok) return locateFailure(checked, row);
         captions.push({ ...entry, ...checked.value });

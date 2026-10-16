@@ -6153,6 +6153,36 @@ test('gate:presets:image-default-init-failure-keeps-snapshot-and-current', async
     assert.equal(invalid.getCurrent('prompt-preset'), null);
 });
 
+for (const customized of [false, true]) test(`gate:presets:cg-catalog-upgrade-${customized ? 'custom' : 'default'}`, async () => {
+    const { createDefaultImagePromptPreset } = await import('../src/generated-images/image-prompt-defaults.js');
+    const { promptDefaultState } = await import('../src/presets/prompt-default-operations.js');
+    const latest = createDefaultImagePromptPreset(), old = structuredClone(latest);
+    old.version = 25; old.data.defaultVersion = 25;
+    delete old.data.defaultState;
+    for (const module of old.data.modules) module.dataFields = module.dataFields.filter(f => f !== 'outfitCatalog');
+    const storage = createMemoryStorage(), registry = createPresetRegistry({ storage });
+    assert.equal(registry.ensureImagePromptDefault(promptDefaultState(old)).ok, true);
+    const custom = registry.getCurrent('prompt-preset');
+    const cg = custom.data.modules.find(m => m.task === 'cg');
+    cg.content = '用户保留的 CG 要求';
+    if (customized) cg.dataFields = cg.dataFields.filter(f => f !== 'lore');
+    custom.data.prompts.find(b => b.identifier === 'igs-image-submit').enabled = false;
+    assert.equal(registry.savePromptPreset(custom, 1).ok, true);
+    const before = registry.getCurrent('prompt-preset');
+    assert.equal(registry.upgradeImagePromptDefault(latest, 2).ok, true);
+    const current = createPresetRegistry({ storage }).getCurrent('prompt-preset');
+    const upgraded = current.data.modules.find(m => m.task === 'cg');
+    assert.deepEqual(upgraded.dataFields, customized ? cg.dataFields : [...cg.dataFields, 'outfitCatalog']);
+    assert.equal(upgraded.content, cg.content);
+    assert.equal(current.data.prompts.find(b => b.identifier === 'igs-image-submit').enabled, false);
+    assert.deepEqual(current.data.defaultState.backups.at(-1).data.modules, before.data.modules);
+    assert.deepEqual(current.data.modules.find(m => m.task === 'sprite').dataFields,
+        before.data.modules.find(m => m.task === 'sprite').dataFields);
+    const snapshot = registry.snapshot();
+    assert.equal(registry.ensureImagePromptDefault(latest).changed, false);
+    assert.deepEqual(registry.snapshot(), snapshot);
+});
+
 test('gate:presets:image-default-upgrade-preserves-custom-blocks-and-restores-by-id', async () => {
     const { createDefaultImagePromptPreset } = await import('../src/generated-images/image-prompt-defaults.js');
     const storage = createMemoryStorage(), registry = createPresetRegistry({ storage });

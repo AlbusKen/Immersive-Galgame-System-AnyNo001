@@ -165,10 +165,14 @@ test('角色首次采用标记随卡保存、借用和移动，主动清空后�
 
 test('新默认映射随所属角色库保存和移动，同名旧角色不借用其他库默认', () => {
     const root = { characters: { Alice: {} }, characterDefaultOutfits: { Alice: { version: 1, outfitName: '制服' } },
+        characterSeeds: { Alice: 0 },
+
         characterOutfits: { Alice: { 制服: { moods: { 平和: 'uniform.png' } } } },
         cards: { 'card:local': { characters: { Alice: { 默认: 'old.png' } } } } };
     const before = structuredClone(root);
     assert.equal(effectiveSceneAssets(root, 'card:local').characterDefaultOutfits.Alice, undefined);
+    assert.equal(effectiveSceneAssets(root, 'card:local').characterSeeds.Alice, undefined);
+    assert.equal(effectiveSceneAssets(root, 'card:other').characterSeeds.Alice, 0);
     assert.deepEqual(effectiveSceneAssets(root, 'card:other').characterDefaultOutfits.Alice, root.characterDefaultOutfits.Alice);
     assert.deepEqual(root, before);
     normalizeAssetCards(root);
@@ -176,6 +180,10 @@ test('新默认映射随所属角色库保存和移动，同名旧角色不借�
     assert.equal(moveLibraryEntry(root, '', 'card:new', 'characters', 'Alice').ok, true);
     assert.equal(root.characterDefaultOutfits.Alice, undefined);
     assert.equal(root.cards['card:new'].characterDefaultOutfits.Alice.outfitName, '制服');
+    assert.equal(root.cards['card:new'].characterSeeds.Alice, 0);
+    assert.equal(root.characterSeeds.Alice, undefined);
+    normalizeAssetCards(root);
+    assert.equal(root.cards['card:new'].characterSeeds.Alice, 0);
 });
 
 test('新默认映射经过设置存储与预设往返保留，旧档不自动补字段', async () => {
@@ -188,11 +196,13 @@ test('新默认映射经过设置存储与预设往返保留，旧档不自动�
     } }, characterOutfits: { Alice: { 制服: { words: [], moods: { 平和: 'uniform.png' }, default: true } } } };
     const normalized = normalizeSceneAssets(old);
     assert.equal(Object.hasOwn(normalized, 'characterDefaultOutfits'), false);
+    assert.equal(Object.hasOwn(normalized, 'characterSeeds'), false);
     assert.equal(normalized.characterDna.Alice.defaultAppearance, 'legacy coat');
-    const current = { ...normalized, characterDefaultOutfits: { Alice: { version: 1, outfitName: '制服' },
+    const current = { ...normalized, characterSeeds: { Alice: 4294967295 }, characterDefaultOutfits: { Alice: { version: 1, outfitName: '制服' },
         Future: { version: 9, outfitName: '保留' } } };
     const roundtrip = legacyPresetToPack(presetFromAssets(current)).library;
     assert.deepEqual(roundtrip.characterDefaultOutfits, current.characterDefaultOutfits);
+    assert.deepEqual(roundtrip.characterSeeds, current.characterSeeds);
     assert.equal(Object.hasOwn(legacyPresetToPack(presetFromAssets(normalized)).library, 'characterDefaultOutfits'), false);
     const values = new Map();
     const storage = { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
@@ -220,4 +230,28 @@ test('移动或复制角色带走衣装续画键且不改历史生成证据', ()
         assert.equal(card.characterDefaultOutfits.Alice.outfitName, '制服');
         if (copy) assert.notEqual(card.generated.expressionNotes['Alice\u0001制服'], note);
     }
+});
+
+
+test('gate:seed:角色别名与CG本图顺序选种，缺种子不建档', async () => {
+    const { cgGenerationSeed, characterGenerationSeed, adoptCharacterSeed } = await import('../src/scene/generation-seeds.js');
+    const assets = { characters: { Alice: {}, Bob: {}, Legacy: {} }, characterAliases: { Alice: ['爱丽丝'] },
+        characterSeeds: { Alice: 0, Bob: 42 } };
+    const before = structuredClone(assets);
+    const record = { promptRecipe: { bindings: [
+        { kind: 'named', characterKey: 'Bob', captionIndex: 2 },
+        { kind: 'named', characterKey: 'Legacy', captionIndex: 0 },
+        { kind: 'named', characterKey: '爱丽丝', captionIndex: 1 },
+    ] } };
+    assert.equal(characterGenerationSeed(assets, '爱丽丝'), 0);
+    assert.equal(cgGenerationSeed(record, assets), 0);
+    assert.equal(cgGenerationSeed({ characterMeta: { characters: [
+        { characterKey: 'Bob', captionIndex: 0 }, { characterKey: 'Alice', captionIndex: 1 },
+    ] } }, assets), 42);
+    assert.equal(cgGenerationSeed({ characterContext: [{ characterKey: 'Alice' }] }, assets), undefined);
+    assert.equal(cgGenerationSeed({ characterMeta: { characters: [{ characterKey: 'Legacy', captionIndex: 0 }] } }, assets), undefined);
+    assert.deepEqual(adoptCharacterSeed(assets, 'Alice', 99), {});
+    assert.deepEqual(adoptCharacterSeed(assets, 'Legacy', undefined), {});
+    assert.deepEqual(adoptCharacterSeed(assets, 'Legacy', 7).characterSeeds, { Alice: 0, Bob: 42, Legacy: 7 });
+    assert.deepEqual(assets, before);
 });

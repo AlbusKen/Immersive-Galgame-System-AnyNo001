@@ -1,3 +1,4 @@
+import { isImageSeed } from './image-seed.js';
 import { normalizeAutoIllustrationSettings } from './illustration/auto-illustration-settings.js';
 import { resolveNaiNativeEndpoint } from './request-builders/nai-v4-builder.js';
 import { resolveNaiInpaintModel } from './request-builders/nai-inpaint-builder.js';
@@ -227,7 +228,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             // 正式链路的凭据、传输和全局参数只取本轮私有快照，不复用旧设置副本。
             let frozen = base ? { ...base,
                 ...(meta.size && { size: meta.size }),
-                ...(Number.isInteger(settings?.seed) && { seed: settings.seed }),
+                ...(isImageSeed(settings?.seed) && { seed: settings.seed }),
             } : { ...settings };
             if (base) {
                 frozen.model = taskModel(meta, config);
@@ -572,7 +573,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                     return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿发送不能再追加模板，请在写词阶段提供要求' };
                 const settings = { ...normalizeAutoIllustrationSettings(readBridge().autoIllustration).nai,
                     ...(meta.size && { size: meta.size }),
-                    ...(Number.isInteger(meta.seed) && meta.seed >= 0 && { seed: meta.seed }),
+                    ...(isImageSeed(meta.seed) && { seed: meta.seed }),
                     ...(meta.signal && { signal: meta.signal }),
                     ...(meta.shouldStart && { shouldStart: meta.shouldStart }) };
                 const model = kindModel(meta);
@@ -582,6 +583,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                 if (!result?.ok) return result;
                 if (!result.sentPrompt) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿生图缺少实际发送快照' };
                 return { ok: true, dataUrl: result.dataUrl, via: 'nai', caption: prepared.caption,
+                    ...(isImageSeed(result.seed) && { seed: result.seed }),
                     prompt: promptFromCaption(prepared.caption), captionMode: 'final', sentPrompt: result.sentPrompt,
                     ...(meta.characterMeta !== undefined && { characterMeta: prepared.characterMeta || meta.characterMeta }),
                     ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
@@ -607,13 +609,14 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         const settings = {
             ...normalizeAutoIllustrationSettings(readBridge().autoIllustration).nai,
             ...(meta.size && { size: meta.size }),
-            ...(Number.isInteger(meta.seed) && meta.seed > 0 && { seed: meta.seed }),
+            ...(isImageSeed(meta.seed) && { seed: meta.seed }),
         };
         const prompt = promptFromCaption(merged);
         let result;
         try { result = await generate(slot, settings, meta); } catch (error) { result = { ok: false, error: (error && error.message) || String(error) }; }
         return result && result.ok && result.dataUrl
-            ? { ok: true, dataUrl: result.dataUrl, prompt, via: result.via }
+            ? { ok: true, dataUrl: result.dataUrl, prompt, via: result.via,
+                ...(isImageSeed(result.seed) && { seed: result.seed }) }
             : { ok: false, error: (result && result.error) || '出图失败', prompt,
                 ...(result?.reason && { reason: result.reason }),
                 ...(result?.stopGeneration && { stopGeneration: true }) };
@@ -981,6 +984,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                 return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '定稿重绘缺少实际发送快照' };
             return result && result.ok && result.dataUrl
                 ? { ok: true, dataUrl: result.dataUrl,
+                    ...(isImageSeed(result.seed) && { seed: result.seed }),
                     ...(final && { caption: prepared.caption, captionMode: 'final', sentPrompt: result.sentPrompt }),
                     ...(prepared.promptRecipe && { promptRecipe: prepared.promptRecipe, dnaSnapshot: prepared.dnaSnapshot }),
                     ...(prepared.outfitSnapshot && { outfitSnapshot: prepared.outfitSnapshot }) }

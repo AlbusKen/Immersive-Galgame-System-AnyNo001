@@ -31,6 +31,16 @@ export function checkOutfitTemplates(recipe, metadata, context, task) {
         if (source.length !== 1 || !meta) return fail('outfit.binding', 'mismatch', b.captionIndex);
         const outfit = meta.outfit;
         if (!outfit || !text(outfit.name, 128) || !text(outfit.description)) return fail('outfit.text', 'invalid', b.captionIndex);
+        if (recipe.outfitSelection === 'catalog') {
+            if (task && task.purpose !== 'cg') return fail('outfitSelection', 'invalid', b.captionIndex);
+            if (!outfit.name.trim() || !outfit.description.trim() || !b.outfit
+                || !text(b.outfit.name, 128) || !b.outfit.name.trim()
+                || !text(b.outfit.description) || !b.outfit.description.trim()
+                || !['saved', 'candidate'].includes(b.outfit.source)) return fail('outfit.text', 'missing', b.captionIndex);
+            characters.push({ characterKey: b.characterKey, captionIndex: b.captionIndex, token: b.token,
+                name: b.outfit.name, description: b.outfit.description, source: b.outfit.source });
+            continue;
+        }
         const current = source[0].outfit;
         if (source[0].outfits !== undefined && !Array.isArray(source[0].outfits))
             return fail('outfits', 'invalid', b.captionIndex);

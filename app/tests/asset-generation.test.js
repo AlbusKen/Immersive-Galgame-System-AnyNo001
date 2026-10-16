@@ -19,6 +19,15 @@ import { prepareCharacterCaption } from '../src/generated-images/character-capti
 import { pngFixture, imageZipFixture } from './helpers/png-fixture.js';
 import { deflateRawSync } from 'node:zlib';
 
+function imageTaskInput(request) {
+    const inputs = request.messages.flatMap(message => {
+        try { const value = JSON.parse(message.content); return value?.outputs?.format ? [value] : []; }
+        catch { return []; }
+    });
+    assert.equal(inputs.length, 1, '请求必须包含唯一任务资料');
+    return inputs[0];
+}
+
 const USER_ASSETS = {
     enabled: true,
     scenes: { 学校天台: { url: 'roof.png', times: {} }, 教室: { url: 'class.png', times: {} }, 默认: { url: 'default.png', times: {} } },
@@ -1211,6 +1220,8 @@ test('gate:assets:sprite-record-keeps-original-mask-and-quota-fallback', async (
     const assets = await inner.getAssetsByChat('chat-1');
     const spriteAsset = assets.find((a) => a.type === 'sprite');
     assert.equal(spriteAsset.status, 'review');
+    assert.ok(Number.isInteger(degraded.seed));
+    assert.equal(degraded.seed, spriteAsset.seed);
     assert.equal(spriteAsset.sourceUnavailable, 'quota');
     assert.ok(reports.some((r) => r.level === 'warn' && r.message.includes('source-unavailable: quota')));
 });
@@ -2334,7 +2345,7 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
             llm: { prompts: { asset: '用户自定义写词要求' } },
         }, sceneAssets: { enabled: true, characters: {}, characterDna: {} } };
         const llm = createImagePromptLlm({ async request(request) {
-            const data = JSON.parse(request.messages[2].content);
+            const data = imageTaskInput(request);
             inputs.push(data);
             const c = data.promptTask.characters[0];
             return ['slotid: 1', `character: ${c.characterKey}`, 'personality: reserved',
@@ -2367,11 +2378,6 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
         if (unreadable) {
             assert.equal(result.ok, false);
             assert.deepEqual([inputs.length, paints.length], [0, 0]);
-            continue;
-        }
-        if (renamed) {
-            assert.equal(result.ok, false, '资料协议不允许改写指定衣装原名');
-            assert.deepEqual([inputs.length, paints.length], [1, 0]);
             continue;
         }
         assert.equal(result.ok, true, result.error);
@@ -2423,7 +2429,7 @@ test('gate:image-preset:剧情服装DNA传入正文，缺资料和过期结果�
         messageId: 3, sourceText, signal: controller.signal, shouldStart: () => true });
     await requested;
     assert.equal(requests.length, 1);
-    const data = JSON.parse(requests[0].request.messages[2].content);
+    const data = imageTaskInput(requests[0].request);
     assert.equal(data.numberedText, sourceText);
     assert.deepEqual(data.outputs, { purpose: 'outfit-dna', slotIds: [1], format: 'caption-slots' });
 

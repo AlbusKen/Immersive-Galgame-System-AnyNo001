@@ -1,4 +1,6 @@
 import { imageBackendMethod } from '../backend-methods.js';
+import { cgGenerationSeed } from '../../scene/generation-seeds.js';
+import { resolveImageSeed } from '../image-seed.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
 
 import { planReferenceCanvas, buildReferencePixels, composeReferencePixels } from '../../media/cg-reference-canvas.js';
@@ -184,6 +186,7 @@ export function createCgConsistencyService(deps) {
         task.record = record;
         task.assets = assets;
         task.characters = chars.slice().sort((a, b) => a.captionIndex - b.captionIndex);
+        if (task.builtin) task.seed = resolveImageSeed(cgGenerationSeed(record, assets));
         if (task.builtin) {
             task.scope = clone(deps.captureAppearanceScope(task.characters.map(c => c.characterKey)));
             task.sourceSignature = consistencyAppearanceSignature(assets, task.scope, task.characters.map(c => c.characterKey));
@@ -360,6 +363,7 @@ export function createCgConsistencyService(deps) {
                 const result = await wait(task, nai.edit(inheritImageTaskLease(round, { ...round, sourceDataUrl, maskDataUrl,
                     width: plan.size.width, height: plan.size.height, strength: task.strength, imageKind: 'cg', promptKind: 'cg',
                     model: task.model, artist: task.editConfig.artist, expectedConfigToken: task.editConfig.configToken,
+                    ...(task.builtin && { seed: task.seed }),
                     signal: task.controller.signal, shouldStart: () => canStart(task) })));
                 await unchanged(task);
                 if (!result?.ok || !result.dataUrl) return { ...failure(result?.reason || 'edit-failed', result?.error),
@@ -370,6 +374,7 @@ export function createCgConsistencyService(deps) {
                 guard(task);
                 progress(task, { phase: 'paint', done: ++completed, total: task.characters.length });
                 return { ok: true, generated, audit: { slotId: round.slotId, characterKey: binding.characterKey,
+                    ...(task.builtin && { seed: task.seed }),
                     ...promptProvenance(result), ...(task.appearance && { appearance: consistencyAppearanceAudit(
                         task.appearance, binding.characterKey, task.confirmed) }) } };
             }));

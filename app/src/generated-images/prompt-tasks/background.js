@@ -4,7 +4,7 @@ export const BACKGROUND_TASK = '绘制本轮指定地点的视觉小说背景空
 const rules = [SOURCE_RULE,
     '连贯描述建筑风格、空间结构、陈设地标、相对位置、时间、天气和必要光影。同一连续道路、墙面或列车不拆为多个互斥对象；区分固有颜色与光照。',
     '已提供前文只帮助延续同一空间的标志物位置和合理光影，明确换地点或时间推进才改变状态。不搬用旧镜头，不凭空消除持续痕迹。',
-    '不添加人物、剪影、动物或文字，不读取或输出人物身份、衣装与表情旁路。按本次 writingRequirements/userPrompts 完成尺寸、镜头、质量、UC 和底色，不等待程序后补正文。',
+    '不添加人物、剪影、动物或文字，不输出人物身份、衣装与表情字段。按本次 writingRequirements/userPrompts 写明尺寸、镜头、质量、UC 和底色。',
 ];
 export const BACKGROUND_CAPTION = [...rules,
     '只输出本轮 outputs.slotIds，每份以独立一行 #编号 开始，随后 scene: 完整英文背景画面、char: 留空、uc: 排除项。三个字段各一次，scene 非空，char 和 uc 的空值不省略字段；不输出 slotid、at、meta 或身份令牌。',

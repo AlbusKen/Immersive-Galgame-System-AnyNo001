@@ -28,7 +28,7 @@ const str = (v, d = '') => (typeof v === 'string' ? v : d);
 
 // 旧低值和非法资料保留可读；是否可发送由任务预检决定，不悄悄抬高强度。
 export const normalizeConsistencyStrength = (value) => {
-    if (value == null || value === '') return 0.75;
+    if (value == null || value === '') return 0.6;
     if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
     return value;
 };

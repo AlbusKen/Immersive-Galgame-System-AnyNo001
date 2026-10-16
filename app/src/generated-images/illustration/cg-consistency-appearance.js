@@ -26,7 +26,7 @@ export function consistencyRequirement(record, characterKey) {
 
 export function consistencyAppearanceSignature(assets, scope, keys) {
     return JSON.stringify([scope, assets.characterAliases, keys.map(key => [key,
-        assets.characterDefaultOutfits?.[key], assets.characterOutfits?.[key],
+        assets.characterDefaultOutfits?.[key], assets.characterOutfits?.[key], assets.characterSeeds?.[key],
         normalizeCharacterDna(assets.characterDna?.[key])]), assets.wardrobe]);
 }
 

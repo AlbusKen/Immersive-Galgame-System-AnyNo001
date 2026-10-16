@@ -1,5 +1,6 @@
 // prompt.caption 是自动画师拼接前正文；sentPrompt 是实际发送的白名单快照。
 import { checkPromptRecipe } from '../schemas/prompt-recipe.js';
+import { isImageSeed } from './image-seed.js';
 import { normalizeCharacterDna } from '../scene/character-dna.js';
 
 function sideText(node) {
@@ -214,6 +215,7 @@ export function promptProvenance(value = {}) {
                     ...Object.fromEntries(['scopeKey', 'ownerKey'].filter(k => a[k] !== undefined).map(k => [k, a[k]])) };
             }
             return { slotId: round.slotId, characterKey: round.characterKey, ...checked,
+                ...(isImageSeed(round.seed) && { seed: round.seed }),
                 ...(appearance && { appearance }) };
         }) };
     }

@@ -106,6 +106,16 @@ export function saveStoryOutfitCandidates(storage, candidates) {
         for (const key of storyFields) if (candidate[key] !== undefined) row[key] = candidate[key];
         rows.set(row.id, row);
     }
+    // 满额时仅替换可从原楼重新发现的纯待选记录；本批候选与任何恢复/在途资料均保留。
+    // 先在内存规划，无法容纳整批时不写入、不删除旧记录。
+    if (rows.size > OUTFIT_REVIEW_LIMIT) {
+        const incoming = new Set(candidates.map(row => row.id));
+        for (const row of rows.values()) {
+            if (rows.size <= OUTFIT_REVIEW_LIMIT) break;
+            if (!incoming.has(row.id) && row.status === 'pending'
+                && row.prompt === undefined && row.imageId === undefined) rows.delete(row.id);
+        }
+    }
     if (rows.size > OUTFIT_REVIEW_LIMIT) return { ok: false, reason: 'candidate-limit' };
     return saveStoryRows(storage, [...rows.values()]);
 }

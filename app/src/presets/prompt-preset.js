@@ -43,11 +43,11 @@ export function validatePromptPreset(data) {
     }
     return { ok: !errors.length, data: clonePromptData(data), errors };
 }
-export const PROMPT_DATA_FIELDS = Object.freeze(['description', 'promptTask', 'characterContext',
+export const PROMPT_DATA_FIELDS = Object.freeze(['description', 'promptTask', 'characterContext', 'outfitCatalog',
     'userPrompts', 'writingRequirements', 'numberedText', 'previousText', 'lore', 'characters', 'scenes',
     'originalPrompt', 'layout', 'outputs']);
 // 提供资料模式只消费当前任务资料，不能由自定义模块重新开放剧情或外部资料。
-export const PROVIDED_PROMPT_DATA_FIELDS = Object.freeze(['description', 'promptTask', 'characterContext',
+export const PROVIDED_PROMPT_DATA_FIELDS = Object.freeze(['description', 'promptTask', 'characterContext', 'outfitCatalog',
     'userPrompts', 'writingRequirements', 'originalPrompt', 'layout', 'outputs']);
 
 export function validatePromptActivation(data) {

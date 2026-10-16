@@ -1,3 +1,4 @@
+import { resolveImageSeed } from '../image-seed.js';
 import { clampPixelPair } from '../illustration/cg-pixel-cap.js';
 import { prefixFinalArtist } from '../final-caption.js';
 import { globalArtist } from '../prompt-artists.js';
@@ -128,7 +129,7 @@ export function buildNaiV4Request(slot, naiSettings = {}, random = Math.random) 
             sampler: resolveSampler(settings.sampler),
             steps: Math.max(1, Math.min(50, Number(settings.steps) || 28)),
             n_samples: 1,
-            seed: Math.floor(random() * 4294967295),
+            seed: resolveImageSeed(settings.seed, random),
             noise_schedule: resolveNoiseSchedule(settings.noiseSchedule, model),
             cfg_rescale: 0,
             skip_cfg_above_sigma: null,

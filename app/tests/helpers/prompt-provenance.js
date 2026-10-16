@@ -85,16 +85,19 @@ export function characterWriteFixture(request, { subject, scene = 'One woman sta
 
 // 隔离模型端口的资料回文；生产解析器负责拒收和模板组装。
 export function spriteDataReply(request, options = {}) {
+    if (request.outputs.format === 'expression-fragments') {
+        const rows = request.outputs.rows || request.promptTask.slots.map(slot => ({ slotId: slot.slotId,
+            characterKey: request.promptTask.characters.find(c => c.token === slot.tokens[0]).characterKey }));
+        return rows.slice().reverse().map(row => [`slotid: ${row.slotId}`, `character: ${row.characterKey}`,
+            `expression: ${row.slotId === 1 ? 'smiling eyes, upturned mouth' : 'furrowed brows, tense lips'}`,
+            'expression_uc: distorted mouth'].join('\n')).join('\n---\n');
+    }
     const written = characterWriteFixture(request, options);
     options.transformWritten?.(written, request);
     return written.captions.slice().reverse().map(entry => {
         const binding = entry.promptRecipe.bindings[0];
         const source = request.characterContext.find(c => c.characterKey === binding.characterKey);
         const header = [`slotid: ${entry.slotId}`, `character: ${binding.characterKey}`];
-        if (request.outputs.format === 'expression-fragments') return header.concat([
-            `expression: ${entry.slotId === 1 ? 'smiling eyes, upturned mouth' : 'furrowed brows, tense lips'}`,
-            'expression_uc: distorted mouth',
-        ]).join('\n');
         const outfit = entry.characterMeta.characters[0].outfit;
         const saved = source.outfits?.find(o => o.name === outfit.name);
         const candidate = entry.dnaCandidates?.characters[0];

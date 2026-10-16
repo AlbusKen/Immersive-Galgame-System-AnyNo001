@@ -4,10 +4,11 @@
 // 场景、事件 CG、世界观、皮肤属于这张卡的世界，不跨卡借。
 
 import { normalizeCharacterDefaultOutfits } from './character-appearance.js';
+import { normalizeCharacterSeeds } from './generation-seeds.js';
 import { expressionNoteBelongsTo } from './expression-note-keys.js';
 const plain = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
 
-const LIBRARY_FIELDS = ['scenes', 'characters', 'characterAliases', 'characterDna', 'characterOutfits', 'characterDefaultOutfits', 'wardrobe', 'eventCgs', 'statusAvatars'];
+const LIBRARY_FIELDS = ['scenes', 'characters', 'characterAliases', 'characterDna', 'characterOutfits', 'characterDefaultOutfits', 'characterSeeds', 'wardrobe', 'eventCgs', 'statusAvatars'];
 
 export function resolveAssetScope(ctx) {
     if (!ctx || typeof ctx !== 'object') return { key: '', legacyKey: '', kind: 'global', label: '全局' };
@@ -121,7 +122,7 @@ export function ensureCardLibrary(sceneAssets, scopeKey) {
 
 const BORROW_FIELDS = ['characters', 'characterAliases', 'characterDna', 'characterOutfits', 'statusAvatars', 'wardrobe'];
 const BORROW_GENERATED = ['characters', 'characterAliases', 'expressionNotes'];
-const BORROWABLE = new Set([...BORROW_FIELDS, 'characterDefaultOutfits', ...BORROW_GENERATED.map((group) => `generated.${group}`)]);
+const BORROWABLE = new Set([...BORROW_FIELDS, 'characterDefaultOutfits', 'characterSeeds', ...BORROW_GENERATED.map((group) => `generated.${group}`)]);
 
 // 按顺序叠成一个新对象，后面的同名盖前面的。每次取素材都会走这里（别的卡可能很多），
 // 所以用 for-in 直接写，不用展开 / Object.assign 先叠中间层，省一倍拷贝。
@@ -180,16 +181,20 @@ export function effectiveSceneAssets(sceneAssets, scopeKey) {
     for (const field of BORROW_FIELDS) out[field] = layered(field);
     // 默认选择跟随角色所属库，不借同名角色在另一库的默认。
     const defaults = {};
+    const seeds = {};
     const owners = [...others, rest, card];
     const characterFields = ['characters', 'characterDna', 'characterOutfits', 'characterDefaultOutfits'];
     for (const owner of owners) {
         const names = new Set(characterFields.flatMap(field => Object.keys(plain(owner[field]))));
         for (const name of names) {
             delete defaults[name];
+            delete seeds[name];
+            if (Object.hasOwn(plain(owner.characterSeeds), name)) seeds[name] = owner.characterSeeds[name];
             if (Object.hasOwn(plain(owner.characterDefaultOutfits), name)) defaults[name] = owner.characterDefaultOutfits[name];
         }
     }
     if (owners.some(owner => Object.hasOwn(owner, 'characterDefaultOutfits'))) out.characterDefaultOutfits = defaults;
+    if (owners.some(owner => Object.hasOwn(owner, 'characterSeeds'))) out.characterSeeds = seeds;
     for (const group of BORROW_GENERATED) out.generated[group] = layeredGenerated(group);
     return out;
 }
@@ -208,6 +213,7 @@ export function normalizeAssetCards(sceneAssets) {
             characterAliases: plain(card.characterAliases),
             characterDna: plain(card.characterDna),
             characterOutfits: plain(card.characterOutfits),
+            ...(Object.hasOwn(card, 'characterSeeds') && { characterSeeds: normalizeCharacterSeeds(card.characterSeeds) }),
             ...(Object.hasOwn(card, 'characterDefaultOutfits') && {
                 characterDefaultOutfits: normalizeCharacterDefaultOutfits(card.characterDefaultOutfits) }),
             wardrobe: plain(card.wardrobe),
@@ -267,7 +273,7 @@ export function moveLibraryEntry(sceneAssets, fromKey, toKey, collection, name, 
     if (!Object.prototype.hasOwnProperty.call(plain(from[collection]), label)) return { ok: false, reason: 'missing' };
     moveKey(from, to, collection, label, copy);
     if (collection === 'characters') {
-        for (const extra of ['characterAliases', 'characterDna', 'characterOutfits', 'characterDefaultOutfits', 'statusAvatars']) {
+        for (const extra of ['characterAliases', 'characterDna', 'characterOutfits', 'characterDefaultOutfits', 'characterSeeds', 'statusAvatars']) {
             moveKey(from, to, extra, label, copy);
         }
         moveGeneratedName(from, to, 'characters', label, copy);

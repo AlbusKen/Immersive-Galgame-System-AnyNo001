@@ -1,3 +1,4 @@
+import { isImageSeed } from '../generated-images/image-seed.js';
 import { lookupSceneBackground, lookupSceneAssetUrls, resolveCharacterKey, lookupAssetValue, sceneTimeSlot } from './scene-directives.js';
 import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit, outfitsOfCharacter } from './character-outfits.js';
 import { promptProvenance } from '../generated-images/generation-prompt.js';
@@ -122,6 +123,7 @@ export function bindGeneratedBackground(sceneAssets, record, name) {
     // 时段差分入库到只在生成区的场景时，主图仍用差分的原图。
     const baseUrl = record.variantOf ? `${GENERATED_ASSET_URL_PREFIX}${record.variantOf}` : url;
     const entry = { ...plainObject(scenes[finalName]) };
+    if (!isImageSeed(entry.seed) && isImageSeed(record.seed)) entry.seed = record.seed;
     const words = Array.isArray(entry.words) ? entry.words.slice() : [];
     const original = String(record.name || '').trim();
     if (original && original !== finalName && !words.includes(original)) words.push(original);
@@ -143,6 +145,7 @@ export function addGeneratedAssetToLibrary(library, record, name) {
     const original = String(record.name || '').trim();
     if (record.type === 'background') {
         const entry = plainObject(next.scenes[finalName]);
+        if (!isImageSeed(entry.seed) && isImageSeed(record.seed)) entry.seed = record.seed;
         const words = Array.isArray(entry.words) ? entry.words : [];
         if (original && original !== finalName && !words.includes(original)) words.push(original);
         const times = plainObject(entry.times);

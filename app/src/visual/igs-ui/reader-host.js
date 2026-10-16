@@ -4448,11 +4448,15 @@ export function createIgsReaderHost(options = {}) {
             const code = typeof result?.reason === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(result.reason) ? result.reason : 'story-outfit-failed';
             const recovery = result?.recoverySaved
                 ? '补画提示词已保存，可在素材页继续生图。' : '可在素材页检查资料后补画。';
-            imageNotice('error', result?.saved
+            imageNotice('error', code === 'candidate-limit'
+                ? (result?.saved
+                    ? '衣装已入库，但衣装候选队列已满，后续处理已停止；已有恢复资料保留，请先处理未完成候选。（candidate-limit）'
+                    : '衣装候选队列已满，现有条目含恢复资料或处理状态，未自动删除；本次尚未入库或生成立绘，请先处理未完成候选后重试。（candidate-limit）')
+                : result?.saved
                 ? `衣装已入库，换装立绘未完成；衣装保持不变。${recovery}（${code}）`
                 : `衣装写词或入库未完成，候选保留，请重新确认。（${code}）`);
         }
-        if (result?.warning) {
+        if (result?.warning && !(result.reason === 'candidate-limit' && result.warning === 'candidate-limit')) {
             const code = /^[A-Za-z0-9_-]{1,80}$/.test(result.warning) ? result.warning : 'save-failed';
             imageNotice('error', result.ok
                 ? `衣装已入库，但候选清理未完成，请检查存储。（${code}）`

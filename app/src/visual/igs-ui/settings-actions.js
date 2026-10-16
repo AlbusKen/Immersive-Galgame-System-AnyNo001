@@ -49,7 +49,9 @@ import { formatImageJobLogText } from '../../generated-images/image-job-log.js';
 import { addGeneratedAssetToLibrary, bindGeneratedBackground, bindGeneratedSprite, collectGeneratedImageIds, generatedAssetIdOf, isGeneratedAssetUrl, normalizeGeneratedLibrary, removeGeneratedLibraryEntry, renameGeneratedLibraryEntry, setGeneratedExpressionNote } from '../../scene/asset-match.js';
 import { resolveCharacterDna } from '../../scene/character-dna.js';
 import { prepareSpriteIdentityAdoption } from '../../scene/character-identity.js';
-import { readDefaultOutfit, pickOutfitSprite } from '../../scene/character-appearance.js';
+import { adoptCharacterSeed } from '../../scene/generation-seeds.js';
+import { isImageSeed } from '../../generated-images/image-seed.js';
+import { readDefaultOutfit, pickOutfitSprite, prepareInitialDefaultOutfitSelection } from '../../scene/character-appearance.js';
 import { inspectOutfitImages } from '../../media/outfit-image-availability.js';
 import { prepareOutfitAdoption, prepareOutfitDnaSave } from '../../scene/outfit-identity.js';
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
@@ -105,7 +107,7 @@ function assetFolderScope(settingsState, options) {
     return { globalObj, storage: globalObj.localStorage, scope: String(asyncState.assetScopeKey || '') };
 }
 
-const CHARACTER_FIELDS = ['characters', 'characterOutfits', 'characterDefaultOutfits', 'characterDna', 'characterAliases', 'statusAvatars'];
+const CHARACTER_FIELDS = ['characters', 'characterOutfits', 'characterDefaultOutfits', 'characterSeeds', 'characterDna', 'characterAliases', 'statusAvatars'];
 
 // 采用目标只读解析：别名归一后判断归属，借用资料不能自动写回来源卡。
 function spriteAdoptionTarget(settingsState, requested) {
@@ -300,6 +302,7 @@ function applyCharacterExpression(sceneAssets, name, item) {
     let library = normalizeGeneratedLibrary(sceneAssets.generated);
     if (item && item.ok && item.imageId) {
         current[item.mood] = `igs-gen:${item.imageId}`;
+        Object.assign(sceneAssets, adoptCharacterSeed(sceneAssets, name, item.seed));
         library = clearExpressionNote(library, name, item.mood);
     } else {
         // 停下没画的不建空槽，只把写好的词记在注记里，给「继续生图」用。
@@ -421,6 +424,7 @@ function applyOutfitExpression(sceneAssets, name, outfitName, item) {
     let library = normalizeGeneratedLibrary(sceneAssets.generated);
     if (item.ok && item.imageId) {
         moods[mood] = `igs-gen:${item.imageId}`;
+        Object.assign(sceneAssets, adoptCharacterSeed(sceneAssets, name, item.seed));
         library = clearExpressionNote(library, noteKey, mood);
     } else {
         if (!Object.prototype.hasOwnProperty.call(moods, mood) && item.error !== '已停止') moods[mood] = '';
@@ -1240,7 +1244,7 @@ export async function handleSettingsAction(action, ctx) {
             previousCharacters = cloneData(sceneAssets.characters || {});
             previousAliases = cloneData(sceneAssets.characterAliases || {});
             previousIdentity = captureAdoptionFields(sceneAssets,
-                ['characters', 'characterAliases', 'characterDna', 'characterOutfits', 'wardrobe', 'characterDefaultOutfits'],
+                ['characters', 'characterAliases', 'characterDna', 'characterOutfits', 'wardrobe', 'characterDefaultOutfits', 'characterSeeds'],
                 { clone: true });
             const bound = bindGeneratedSprite(sceneAssets, target?.name || name, `igs-gen:${record.imageId}`, { replace: true });
             if (!bound.ok) return rerenderSettings();
@@ -1260,6 +1264,7 @@ export async function handleSettingsAction(action, ctx) {
                 : bound.characters;
             sceneAssets.characterAliases = bound.characterAliases;
             Object.assign(sceneAssets, adoption.patch);
+            Object.assign(sceneAssets, adoptCharacterSeed(sceneAssets, bound.name, record.seed));
             const persisted = persistGeneratedLibrary(persistSettingsDraft);
             if (operationFailed(persisted)) {
                 sceneAssets.characters = previousCharacters;
@@ -1556,6 +1561,8 @@ export async function handleSettingsAction(action, ctx) {
         if (done.length) {
             const live = (draftAssetLibrary(settingsState, editTarget).scenes || {})[sceneName];
             if (live && typeof live === 'object') {
+                const previousScene = cloneData(live);
+                if (!isImageSeed(live.seed) && isImageSeed(done[0].seed)) live.seed = done[0].seed;
                 live.times = live.times && typeof live.times === 'object' ? live.times : {};
                 const timeGroups = ensureTimeGroups(settingsState);
                 const weatherGroups = ensureWeatherGroups(settingsState);
@@ -1572,6 +1579,7 @@ export async function handleSettingsAction(action, ctx) {
                 }
                 const persisted = persistGeneratedLibrary(persistSettingsDraft);
                 if (operationFailed(persisted)) {
+                    draftAssetLibrary(settingsState, editTarget).scenes[sceneName] = previousScene;
                     progress.end();
                     return persisted;
                 }
@@ -1709,7 +1717,7 @@ export async function handleSettingsAction(action, ctx) {
         result = authoritative.record;
         const liveAssets = sceneAssets;
         const previousAdoption = captureAdoptionFields(liveAssets, ['characters', 'characterAliases',
-            'characterDna', 'characterOutfits', 'wardrobe', 'characterDefaultOutfits', 'characterSpriteNotes']);
+            'characterDna', 'characterOutfits', 'wardrobe', 'characterDefaultOutfits', 'characterSpriteNotes', 'characterSeeds']);
         const adoption = legacyRedraw ? { ok: true, patch: {} }
             : prepareSpriteIdentityAdoption(liveAssets, name, result.imageId, result,
                 { hadDefault: Boolean(current), ...(picked?.ok && { spriteSlot: picked.slot }),
@@ -1731,6 +1739,7 @@ export async function handleSettingsAction(action, ctx) {
             ...(!namedRedraw && !adoption.outfitName && { '默认': `igs-gen:${result.imageId}` }) };
         liveAssets.characters = characters;
         Object.assign(liveAssets, adoption.patch);
+        Object.assign(liveAssets, adoptCharacterSeed(liveAssets, name, result.seed));
         if (namedRedraw && !adoption.outfitName) {
             const all = liveAssets.characterOutfits;
             const entry = all[name][selected.outfitName];
@@ -2066,6 +2075,7 @@ export async function handleSettingsAction(action, ctx) {
         if (!targetUnchanged()) return failed('角色、衣装或资料作用域已变化，原资料保持不变');
         const liveAssets = sceneAssets;
         let outfitPatch = {};
+        const verifiedSprites = new Set();
         let candidateDescription;
         for (const item of result.items || []) {
             if (!item.ok || !item.imageId || item.promptRecipe?.outfitMode !== 'template') continue;
@@ -2083,6 +2093,7 @@ export async function handleSettingsAction(action, ctx) {
                 restoreBusy();
                 return generatedAdoptionFailure(dialogs, globalObj, adoption);
             }
+            verifiedSprites.add(`igs-gen:${item.imageId}`);
             if (Object.keys(adoption.patch).length) {
                 const candidate = selected[0];
                 const signature = JSON.stringify([candidate.name, candidate.description]);
@@ -2095,7 +2106,7 @@ export async function handleSettingsAction(action, ctx) {
             }
         }
         const previous = captureAdoptionFields(liveAssets, ['characters', 'characterOutfits', 'wardrobe', 'generated',
-            'characterMoodTiers', 'characterMoodNotes'], { clone: true });
+            'characterMoodTiers', 'characterMoodNotes', 'characterSeeds', 'characterDefaultOutfits'], { clone: true });
         Object.assign(liveAssets, outfitPatch);
         if (!retry && !resume) {
             const tiers = liveAssets.characterMoodTiers && typeof liveAssets.characterMoodTiers === 'object'
@@ -2112,6 +2123,15 @@ export async function handleSettingsAction(action, ctx) {
             if (item.error === '已跳过' || (item.error === '已停止' && !item.caption)) continue;
             if (outfitMode) applyOutfitExpression(liveAssets, name, outfitName, item);
             else applyCharacterExpression(liveAssets, name, item);
+        }
+        if (outfitMode && verifiedSprites.size) {
+            const selection = prepareInitialDefaultOutfitSelection(liveAssets, name, outfitName,
+                url => verifiedSprites.has(url) ? 'available' : 'unverified');
+            if (!selection.ok) {
+                restoreAdoptionFields(liveAssets, previous);
+                return failed('默认衣装选择无效，原资料保持不变');
+            }
+            Object.assign(liveAssets, selection.patch);
         }
         const persisted = persistGeneratedLibrary(persistSettingsDraft);
         if (operationFailed(persisted)) {
@@ -3920,6 +3940,7 @@ export async function handleSettingsAction(action, ctx) {
             if (sceneAssets.characterDefaultOutfits && typeof sceneAssets.characterDefaultOutfits === 'object' && !Array.isArray(sceneAssets.characterDefaultOutfits)) {
                 sceneAssets.characterDefaultOutfits = reorderKey(sceneAssets.characterDefaultOutfits, oldName, newName);
             }
+            if (sceneAssets.characterSeeds) sceneAssets.characterSeeds = reorderKey(sceneAssets.characterSeeds, oldName, newName);
             migrateSpriteKeys(settingsState.draft.readerSettings, { character: oldName }, { character: newName });
             migrateExpressionNotes(sceneAssets, { character: oldName }, { character: newName });
             for (const field of ['characterSpriteNotes', 'characterMoodTiers', 'characterMoodNotes']) {
@@ -4593,6 +4614,7 @@ function cardLibrarySnapshot(effective) {
         characters: cloneData(source.characters || {}),
         characterAliases: cloneData(source.characterAliases || {}),
         characterDna: cloneData(source.characterDna || {}),
+        ...(Object.hasOwn(source, 'characterSeeds') && { characterSeeds: cloneData(source.characterSeeds) }),
         characterOutfits: cloneData(source.characterOutfits || {}),
         wardrobe: cloneData(source.wardrobe || {}),
         generated: cloneData(source.generated || {}),

@@ -112,7 +112,7 @@ export function buildExpressionDiffDescription(name, prompt, labels, dna, outfit
             : outfit?.name ? `当次服装：${outfit.name}。服装名、词池和具体穿着说明以本次角色资料为准。`
             : '当次衣装沿用角色资料中的默认穿着，不复制旧立绘的固定外貌。',
         '按角色性格分别设计表情、眼神、嘴型、手势、肩线与重心；禁止仅替换面部或套统一动作。',
-        '镜头、底色、质量、UC 和用户模板约束在本次写词完成，不等待发送层补词。',
+        '按本次要求写明镜头、底色、质量、UC 和用户模板内容。',
         note ? `本次额外要求：\n${note}` : '',
         ...moods.map((mood, index) => {
             const act = moodPresetAct(mood, { nsfw });
@@ -330,7 +330,7 @@ export function buildDbgenSpriteBatchDescription(needs = [], options = {}) {
         '每份只画该 slot 指定的角色，固定身份使用自身 token。',
         '仅缺景别的角色同次输出独立景别 DNA 候选；已有景别逐字保留，服装独立。',
         SPRITE_DAILY_POSE_LINE,
-        '镜头、底色、质量、UC 和自定义模板约束按本次 writingRequirements 写入正文，不等发送层补词。',
+        '按本次 writingRequirements 写明镜头、底色、质量、UC 和自定义模板内容。',
         '不重新选择生成点，不从正文摘挂载句。',
     ].join('\n');
     const items = Array.isArray(needs) ? needs : [];

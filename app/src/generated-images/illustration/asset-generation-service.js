@@ -1,4 +1,6 @@
 import { imageBackendMethod } from '../backend-methods.js';
+import { isImageSeed, resolveImageSeed } from '../image-seed.js';
+import { characterGenerationSeed, sceneGenerationSeed } from '../../scene/generation-seeds.js';
 
 import { numberParagraphs } from './marker-placer.js';
 import { MIN_AUTO_IMAGE_BODY_CHARS, floorBodyLength } from './floor-body-length.js';
@@ -119,6 +121,16 @@ export function createAssetGenerationService(deps) {
             && supportsNaiTransparentBackground(s.spriteModel || s.auto.nai.model);
         return false;
     }
+
+    const builtinSeeds = () => !nai?.describe || nai.describe().mode === 'nai' || nai.describe().via === 'nai';
+    const spriteSeed = (name, fallback) => resolveImageSeed(
+        builtinSeeds() ? characterGenerationSeed(readSettings().sceneAssets, name) ?? fallback : fallback);
+    const backgroundSeed = async (name, imageId) => {
+        const saved = builtinSeeds() ? sceneGenerationSeed(readSettings().sceneAssets, name) : undefined;
+        if (isImageSeed(saved)) return saved;
+        const original = builtinSeeds() && imageId ? await store.getImage(imageId) : null;
+        return resolveImageSeed(original?.seed);
+    };
 
     // 场景背景和剧情 CG 用同一套尺寸：手机、内嵌竖屏把背景尺寸宽高对调；全屏按窗口实际比例。
     const backgroundSize = (s) => cgSizeForMode(
@@ -402,6 +414,7 @@ export function createAssetGenerationService(deps) {
             if (!isQuotaError(error) || !image.originalDataUrl) throw error;
             await store.putImage({
                 id: image.id, dataUrl: image.dataUrl, type: image.type, createdAt: image.createdAt,
+                ...(isImageSeed(image.seed) && { seed: image.seed }),
                 ...(image.characterMeta ? { characterMeta: image.characterMeta } : {}),
                 ...(image.prompt ? { prompt: image.prompt } : {}),
                 ...promptProvenance(image), ...(image.promptEdited === true && { promptEdited: true }),
@@ -427,6 +440,7 @@ export function createAssetGenerationService(deps) {
             positiveContext: s.auto.nai.artistPrefix,
         }));
         const size = isSprite ? s.auto.assets.spriteSize : backgroundSize(s);
+        const seed = isSprite ? spriteSeed(item.need.name) : await backgroundSeed(item.need.name);
         // 数据库生图：描述只说明画什么。正负模板随 userPrompts 传出，出图前合并进最终 caption。
         const userPrompts = { positive: slot.scene, negative: slot.sceneUc };
         const characterContext = isSprite ? buildCharacterContext([item.need.name], s.sceneAssets) : undefined;
@@ -440,7 +454,7 @@ export function createAssetGenerationService(deps) {
         }
         const meta = {
             messageId: floor.messageId, size, description: buildDbgenAssetDescription(item.need, { transparent }), userPrompts,
-            skipRecall: true,
+            skipRecall: true, seed,
             ...(isSprite && { characterContext }),
             ...(autoSpriteOutfitNames.length && { autoSpriteOutfitNames }),
             ...(isSprite && hasSpriteDna(item.need.dna) && { replaceCharacterKeywords: false }),
@@ -448,7 +462,7 @@ export function createAssetGenerationService(deps) {
             ...(transparent && { transparent: true }),
         };
         let result;
-        try { result = await nai.generate(slot, { ...s.auto.nai, size }, meta); } catch (error) { result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` }; }
+        try { result = await nai.generate(slot, { ...s.auto.nai, size, seed }, meta); } catch (error) { result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` }; }
         if (isSprite && result?.ok && result.characterMeta && autoSpriteOutfitNames.length) {
             const bound = bindAutoSpriteOutfitNames({ slotId: 1, characterMeta: result.characterMeta },
                 { purpose: 'sprite' }, autoSpriteOutfitNames);
@@ -470,9 +484,10 @@ export function createAssetGenerationService(deps) {
             const prompt = storedPromptFromResult(result);
             if (prompt) { image.prompt = prompt; Object.assign(image, promptProvenance(prompt)); }
             if (isSprite && result.characterMeta) image.characterMeta = result.characterMeta;
+            if (builtinSeeds()) image.seed = resolveImageSeed(result.seed ?? seed);
             const saved = await putImageWithQuotaFallback(image);
             rememberImage(imageId, image.dataUrl);
-            record = { ...base, imageId, status: 'review', ...(saved.diagnostic ? { sourceUnavailable: saved.diagnostic } : {}) };
+            record = { ...base, imageId, status: 'review', ...(isImageSeed(image.seed) && { seed: image.seed }), ...(saved.diagnostic ? { sourceUnavailable: saved.diagnostic } : {}) };
             if (image.characterMeta) record.characterMeta = image.characterMeta;
         } else {
             record = { ...base, imageId: '', status: 'failed', error: (result && result.error) || 'NAI 生成失败' };
@@ -493,6 +508,7 @@ export function createAssetGenerationService(deps) {
             type: 'background', name: need.name, time: need.time, weather: '', variantOf: need.variantOf, tags: '', createdAt: now(),
         };
         const stored = await getImagePrompt(need.variantOf);
+        const seed = await backgroundSeed(need.name, need.variantOf);
         const caption = stored ? sceneVariantCaption(stored, sceneVariantTags(need.time, '')) : null;
         const baseText = stored && stored.caption ? stored.caption.v4_prompt.caption.base_caption : stored && stored.positive;
         let record;
@@ -501,18 +517,19 @@ export function createAssetGenerationService(deps) {
         } else {
             let result;
             try {
-                result = await generateCaption({ caption, size: backgroundSize(s), seed: randomSeed(), imageKind: 'background' });
+                result = await generateCaption({ caption, size: backgroundSize(s), seed, imageKind: 'background' });
             } catch (error) {
                 result = { ok: false, error: `出图失败：${(error && error.message) || error}` };
             }
             if (result && result.ok && result.dataUrl) {
                 const imageId = newId();
-                const image = { id: imageId, dataUrl: result.dataUrl, type: 'background', createdAt: base.createdAt };
+                const image = { id: imageId, dataUrl: result.dataUrl, type: 'background', createdAt: base.createdAt,
+                    ...(builtinSeeds() && { seed: resolveImageSeed(result.seed ?? seed) }) };
                 const prompt = storedPromptFromResult(result, caption);
                 if (prompt) { image.prompt = prompt; Object.assign(image, promptProvenance(prompt)); }
                 await putImageWithQuotaFallback(image);
                 rememberImage(imageId, image.dataUrl);
-                record = { ...base, imageId, status: 'review' };
+                record = { ...base, imageId, status: 'review', ...(isImageSeed(image.seed) && { seed: image.seed }) };
             } else {
                 record = { ...base, imageId: '', status: 'failed', error: (result && result.error) || '出图失败' };
                 report('error', `「${need.name}」${need.time}差分生成失败：${record.error}`);
@@ -553,6 +570,7 @@ export function createAssetGenerationService(deps) {
         for (let index = 0; index < items.length; index += 1) {
             const item = items[index];
             const entry = builtin ? captions.find(row => row.slotId === index + 1) : captions[index];
+            const seed = await backgroundSeed(item.need.name);
             const caption = entry?.caption;
             const slot = builtin ? null : buildAssetSlot(item, { transparent: false, templates: s.auto.assets.templates });
             let result;
@@ -563,6 +581,7 @@ export function createAssetGenerationService(deps) {
                     result = await generateCaption(inheritImageTaskLease(entry, {
                         caption,
                         size: backgroundSize(s),
+                        seed,
                         imageKind: 'background',
                         messageId: floor.messageId,
                         ...(builtin ? { captionMode: 'final' }
@@ -581,12 +600,13 @@ export function createAssetGenerationService(deps) {
             let record;
             if (result && result.ok && result.dataUrl) {
                 const imageId = newId();
-                const image = { id: imageId, dataUrl: result.dataUrl, type: item.need.type, createdAt: base.createdAt };
+                const image = { id: imageId, dataUrl: result.dataUrl, type: item.need.type, createdAt: base.createdAt,
+                    ...(builtinSeeds() && { seed: resolveImageSeed(result.seed ?? seed) }) };
                 const prompt = storedPromptFromResult(result);
                 if (prompt) { image.prompt = prompt; Object.assign(image, promptProvenance(prompt)); }
                 await store.putImage(image);
                 rememberImage(imageId, image.dataUrl);
-                record = { ...base, imageId, status: 'review' };
+                record = { ...base, imageId, status: 'review', ...(isImageSeed(image.seed) && { seed: image.seed }) };
             } else {
                 record = { ...base, imageId: '', status: 'failed', error: (result && result.error) || 'NAI 生成失败' };
                 report('error', `素材「${item.need.name}」生成失败：${record.error}`);
@@ -645,6 +665,7 @@ export function createAssetGenerationService(deps) {
             if (result && result.ok && result.dataUrl) {
                 const imageId = newId();
                 const image = await buildSpriteImageRecord(imageId, result.dataUrl, transparent, base.createdAt);
+                if (builtinSeeds() && isImageSeed(result.seed)) image.seed = result.seed;
                 const prompt = storedPromptFromResult(result);
                 if (prompt) { image.prompt = prompt; Object.assign(image, promptProvenance(prompt)); }
                 if (result.characterMeta) image.characterMeta = result.characterMeta;
@@ -653,7 +674,7 @@ export function createAssetGenerationService(deps) {
                 if (result.outfitContext) image.outfitContext = structuredClone(result.outfitContext);
                 const saved = await putImageWithQuotaFallback(image);
                 rememberImage(imageId, image.dataUrl);
-                record = { ...base, imageId, status: 'review', ...promptProvenance(image), ...characterPromptRecovery(image),
+                record = { ...base, imageId, status: 'review', ...(isImageSeed(image.seed) && { seed: image.seed }), ...promptProvenance(image), ...characterPromptRecovery(image),
                     ...(image.identityContext && { identityContext: structuredClone(image.identityContext) }),
                     ...(image.outfitContext && { outfitContext: structuredClone(image.outfitContext) }),
                     ...(saved.diagnostic ? { sourceUnavailable: saved.diagnostic } : {}) };
@@ -686,7 +707,7 @@ export function createAssetGenerationService(deps) {
                 written = await writePrompt({
                     imagePromptTask: 'sprite',
                     ...(autoSpriteOutfitNames.length && { autoSpriteOutfitNames }),
-                    description: template ? '整理本轮角色的详细三景别外貌、独立性格与指定衣装 DNA。首次身份候选在明确设定内协调补全普通外貌，新衣装缺说明时逐件完成颜色、材质与结构；已有资料逐字保留。只交资料字段，不生成构图、动作、场景或完整绘图提示词。'
+                    description: template ? '整理本轮角色的详细三景别外貌、独立性格与指定衣装 DNA。每份第一行必须是 slotid: 本轮实际槽号，第二行是 character: 规范角色键，单人单份也不能省略图头。首次身份候选在明确设定内协调补全普通外貌，新衣装缺说明时逐件完成颜色、材质与结构；已有资料逐字保留。三景别只写身体外貌，不夹带衣领、内搭、裤子或靴子；衣装独立交付。可选身份 UC 只写实际英文排除项，无额外项则省略或留空，不写默认值或沿用说明。只交资料字段，不生成构图、动作、场景或完整绘图提示词。'
                         : buildDbgenSpriteBatchDescription(batch.map((item) => item.need), { transparent, template }),
                     messageId: floor.messageId,
                     ...(builtin && { numberedText, previousText,
@@ -713,6 +734,7 @@ export function createAssetGenerationService(deps) {
                 const found = bindAutoSpriteOutfitNames(captions.find((entry) => Number(entry.slotId) === index + 1),
                     task?.promptTask || { purpose: 'sprite' }, autoSpriteOutfitNames);
                 const caption = found && found.caption;
+                const seed = spriteSeed(item.need.name);
                 const slot = buildAssetSlot({ need: { type: 'sprite', name: item.need.name }, tags: '', uc: '' },
                     { transparent, whiteBackground: !transparent, templates: s.auto.assets.templates });
                 const prompts = expressionSpritePrompts(slot.scene, slot.sceneUc);
@@ -724,7 +746,7 @@ export function createAssetGenerationService(deps) {
                     else {
                         const input = characterTemplateInput(found, task.promptTask, task.characterContext);
                         try {
-                            result = await generateCaption({ ...input, size: paintMeta.size,
+                            result = await generateCaption({ ...input, size: paintMeta.size, seed,
                                 imageKind: 'sprite', promptKind: 'sprite', messageId: floor.messageId,
                                 ...(transparent && { transparent: true }), replaceCharacterKeywords: false });
                             if (result.ok) result = { ...result, ...spriteAdoptionEvidence(input, result), ...outfitAdoptionEvidence(input, result) };
@@ -736,6 +758,7 @@ export function createAssetGenerationService(deps) {
                             caption: composeSpriteCaption(caption, item.need && item.need.dna),
                             ...(hasSpriteDna(item.need.dna) && { replaceCharacterKeywords: false }),
                             size: s.auto.assets.spriteSize,
+                            seed,
                             characterMeta: found.characterMeta,
                             imageKind: 'sprite',
                             messageId: floor.messageId,
@@ -749,6 +772,7 @@ export function createAssetGenerationService(deps) {
                         result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` };
                     }
                 }
+                if (builtinSeeds() && result?.ok) result = { ...result, seed: resolveImageSeed(result.seed ?? seed) };
                 records.push(await putSpriteRecord(item, result));
             }
         }
@@ -1097,6 +1121,7 @@ export function createAssetGenerationService(deps) {
 
     // 模板及手改定稿绕过旧正文组合；身份只由 image-backend 的准备入口展开。
     async function paintExpressionCaption(name, mood, caption, dna, { look = '', seed, nsfw = false, exact = false, characterMeta, writtenFromDna = false, templateInput, paintMeta, history, signal, shouldStart } = {}) {
+        seed = spriteSeed(name, seed);
         const finalEdit = exact && usesCharacterTemplates(nai);
         const protocol = templateInput || (finalEdit ? { caption, captionMode: 'final' } : null);
         let upright = caption;
@@ -1140,6 +1165,7 @@ export function createAssetGenerationService(deps) {
         const imageId = newId();
         const createdAt = now();
         const image = await buildSpriteImageRecord(imageId, painted.dataUrl, meta.transparent, createdAt);
+        if (builtinSeeds()) image.seed = resolveImageSeed(painted.seed ?? seed);
         let prompt = storedPromptFromResult(painted, upright);
         if (exact && history && prompt) prompt = { ...promptProvenance(history), ...prompt, captionMode: 'final' };
         if (prompt) { image.prompt = prompt; Object.assign(image, promptProvenance(prompt)); }
@@ -1153,6 +1179,7 @@ export function createAssetGenerationService(deps) {
         await putImageWithQuotaFallback(image);
         rememberImage(imageId, image.dataUrl);
         return { mood, ok: true, imageId, prompt, name, characterMeta: image.characterMeta,
+            ...(isImageSeed(image.seed) && { seed: image.seed }),
             ...promptProvenance(image), ...characterPromptRecovery(image),
             ...(image.outfitContext && { outfitContext: structuredClone(image.outfitContext) }),
             ...(image.identityContext && { identityContext: structuredClone(image.identityContext) }) };
@@ -1165,7 +1192,7 @@ export function createAssetGenerationService(deps) {
     // 按 9 张分批写词：不超过 9 张一次写完，超过 9 张平分 2 批，超过 18 张平分 3 批。
     // 一批写完并逐张出完，再写下一批；某一张失败不影响后面的。
     // 插件少给某几份时只在这一批里补写；signal 中止后已画好的图保留，还没写的批不再写。
-    // 一次点击里各批共用一颗新种子：衣服、画风接近；删掉重来、补画都是新种子，不会画回旧图。
+    // 内置 NAI 优先复用已入库角色种子；尚未建档时只在本批共享随机种子。
     async function generateExpressionSet({ name, basePrompt, moods, dna, outfit, note, nsfw, onProgress, signal, messageId, shouldStart, onOutfitDna } = {}) {
         const labels = (Array.isArray(moods) ? moods : []).map((item) => String(item || '').trim()).filter(Boolean);
         if (!labels.length) return { ok: false, error: '没有表情分组' };
@@ -1187,7 +1214,7 @@ export function createAssetGenerationService(deps) {
             const task = characterPromptTask(context, 'derived', 'half_body', [[name]]);
             reportExpressionProgress(onProgress, { phase: 'write', done: 0, total: labels.length });
             const written = await writePrompt({ ...task, imagePromptTask: 'outfit',
-                description: `整理本套详细衣装 DNA，保留已知设定并逐件补全未限定的颜色、材质、剪裁与层次，不改变人物身份；只交衣装资料，不写构图、动作、场景或完整绘图提示词。用户要求：${note || ''}`,
+                description: `为角色「${name}」设计指定衣装「${context[0].outfit.name}」。参考角色资料中的性别、体型和本轮参考设定，保留已知衣装要求，逐件补全颜色、材质、剪裁与层次。outfit_name 使用「${context[0].outfit.name}」，outfit_description 只写这套衣装的完整英文穿着描述，不写人物外貌、动作或场景。${note ? `用户要求：${note}` : ''}`,
                 outputs: { format: 'sprite-data' }, userPrompts: paintMeta.userPrompts,
                 ...(messageId !== undefined && { messageId }),
                 ...(signal && { signal }), ...(shouldStart && { shouldStart }) });
@@ -1432,7 +1459,7 @@ export function createAssetGenerationService(deps) {
     }
 
     // 场景时间/天气差分：读场景原图存下的提示词，换上目标时间天气标签直接出图，不写词。
-    // 一次点击的一批共用一颗新种子，构图尽量接近；signal 中止后已出的图保留。
+    // 内置 NAI 复用场景或原图种子；旧图缺种子时本批随机，成功采用后固定。
     async function generateSceneVariants({ baseImageId, scene, variants, onProgress, signal } = {}) {
         const list = (Array.isArray(variants) ? variants : []).filter((item) => item && (item.time || item.weather));
         if (!list.length) return { ok: false, error: '没有要画的时间/天气' };
@@ -1440,7 +1467,7 @@ export function createAssetGenerationService(deps) {
         const stored = await getImagePrompt(baseImageId);
         if (!stored) return { ok: false, error: '场景原图没有存提示词' };
         const s = readSettings();
-        const seed = randomSeed();
+        const seed = await backgroundSeed(scene, baseImageId);
         const items = [];
         for (let i = 0; i < list.length; i += 1) {
             const { time = '', weather = '' } = list[i];
@@ -1466,12 +1493,13 @@ export function createAssetGenerationService(deps) {
                 continue;
             }
             const imageId = newId();
-            const image = { id: imageId, dataUrl: painted.dataUrl, type: 'background', createdAt: now() };
+            const image = { id: imageId, dataUrl: painted.dataUrl, type: 'background', createdAt: now(),
+                ...(builtinSeeds() && { seed: resolveImageSeed(painted.seed ?? seed) }) };
             const prompt = storedPromptFromResult(painted, caption);
             if (prompt) { image.prompt = prompt; Object.assign(image, promptProvenance(prompt)); }
             await putImageWithQuotaFallback(image);
             rememberImage(imageId, image.dataUrl);
-            items.push({ time, weather, ok: true, imageId, scene });
+            items.push({ time, weather, ok: true, imageId, scene, ...(isImageSeed(image.seed) && { seed: image.seed }) });
         }
         return { ok: items.some((item) => item.ok), items, stopped: Boolean(signal && signal.aborted), error: (items.find((item) => !item.ok) || {}).error || '' };
     }
@@ -1626,7 +1654,8 @@ export function createAssetGenerationService(deps) {
             reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '默认' });
             const repainted = await paintExpressionCaption(who, '默认', caption, paintDna, { ...(nude && { look: 'nude' }), seed: randomSeed(), exact: exact === true, characterMeta });
             if (!repainted.ok) return { ok: false, error: repainted.error || '出图失败', prompt: repainted.prompt };
-            return { ok: true, imageId: repainted.imageId, prompt: repainted.prompt, characterMeta: repainted.characterMeta };
+            return { ok: true, imageId: repainted.imageId, prompt: repainted.prompt, characterMeta: repainted.characterMeta,
+                ...(isImageSeed(repainted.seed) && { seed: repainted.seed }) };
         }
         if (!nai || typeof writePrompt !== 'function' || typeof generateCaption !== 'function') {
             return { ok: false, error: '当前图像来源不能写立绘' };
@@ -1647,7 +1676,8 @@ export function createAssetGenerationService(deps) {
         const painted = await paintExpressionCaption(who, '默认', written.caption, paintDna,
             { ...(nude && { look: 'nude' }), writtenFromDna: needsWriting, characterMeta: written.characterMeta });
         if (!painted.ok) return { ok: false, error: painted.error || '出图失败', prompt: painted.prompt };
-        return { ok: true, imageId: painted.imageId, prompt: painted.prompt, characterMeta: painted.characterMeta };
+        return { ok: true, imageId: painted.imageId, prompt: painted.prompt, characterMeta: painted.characterMeta,
+            ...(isImageSeed(painted.seed) && { seed: painted.seed }) };
     }
 
     function clothingCaption(prompt, { nsfwBoost = false } = {}) {

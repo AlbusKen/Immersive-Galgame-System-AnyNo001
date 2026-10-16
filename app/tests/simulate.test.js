@@ -10742,14 +10742,17 @@ for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`ga
 });
 
 
-for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'inflight-save', 'inflight-sprite', 'write-failed', 'paint-failed', 'close', 'switch-writing']) test(`gate:story-outfit:reader-${choice}`, async () => {
+for (const choice of ['save', 'sprite', 'full-save', 'full-sprite', 'protected-save', 'protected-sprite', 'later', 'save-failed', 'switch', 'inflight-save', 'inflight-sprite', 'write-failed', 'paint-failed', 'close', 'switch-writing']) test(`gate:story-outfit:reader-${choice}`, async () => {
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const { characterWriteFixture, characterViewsFixture } = await import('./helpers/prompt-provenance.js');
     const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
     const { promptSnapshotFromBody } = await import('../src/generated-images/final-caption.js');
-    const { loadStoryOutfitCandidates } = await import('../src/scene/outfit-review-store.js');
+    const { loadStoryOutfitCandidates, saveStoryOutfitCandidates, storyOutfitId, OUTFIT_REVIEW_LIMIT }
+        = await import('../src/scene/outfit-review-store.js');
     const document = createFakeDocument({ innerWidth: 390, innerHeight: 844 }), storage = createMemoryStorage();
+    const full = choice.startsWith('full-'), protectedQueue = choice.startsWith('protected-');
+    const mode = choice.replace(/^(?:full|protected)-/, '');
     const raw = '[igs-char:Alice|平和|礼服|我换好了。]';
     let activeText = raw;
     let settings = { bridge: { sceneAssets: { enabled: true, characters: { Alice: { 默认: 'original.png' } },
@@ -10788,6 +10791,13 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'infli
                     sentPrompt: promptSnapshotFromBody({ model: 'nai-diffusion-5-full', action: 'generate', parameters: prepared.caption }, null) };
             },
         } });
+    const older = Array.from({ length: full || protectedQueue ? OUTFIT_REVIEW_LIMIT : 0 }, (_, i) => {
+        const row = { scopeKey: '', ownerKey: '', floorKey: `other-chat|${i}|0`, sourceHash: `old-${i}`,
+            messageId: i, character: 'Alice', word: '旧衣装', status: 'pending',
+            ...(protectedQueue && { prompt: 'wears a saved coat' }) };
+        return { ...row, id: storyOutfitId(row) };
+    });
+    if (older.length) assert.equal(saveStoryOutfitCandidates(storage, older).ok, true);
     const host = createIgsReaderHost({ global: { document, localStorage: storage,
         SillyTavern: { getContext: () => ({ name2: card }) } }, generatedAssets: assets,
         getUnifiedSettings: () => settings,
@@ -10811,7 +10821,7 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'infli
         const select = document.getElementById('igs-asset-review').querySelector('select');
         assert.equal(select.disabled, false, '用户先选择入库方式');
         assert.equal(document.querySelector('[data-outfit-ask-act="retry"]'), null);
-        select.value = ['save', 'later', 'inflight-save'].includes(choice) ? 'save' : 'sprite';
+        select.value = ['save', 'later', 'inflight-save'].includes(mode) ? 'save' : 'sprite';
         click('ok');
         assert.equal(document.getElementById('igs-asset-review').getAttribute('hidden'), '', '点击同步收起，不等待后台完成');
         if (holdWrite) {
@@ -10822,6 +10832,14 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'infli
             releaseWrite();
         }
         await flush();
+        if (protectedQueue) {
+            assert.deepEqual([writes, paints, saves], [0, 0, 0], '容量拒绝前不写词、入库或生图');
+            assert.deepEqual(settings.bridge.sceneAssets, before);
+            assert.deepEqual(loadStoryOutfitCandidates(storage).items, older, '不覆盖已有恢复资料');
+            const notice = document.getElementById('igs-gen-strip').querySelector('.igs-gen-tip').textContent;
+            assert.match(notice, /候选队列已满.*尚未入库.*candidate-limit/);
+            return;
+        }
         if (choice === 'switch-writing') {
             assert.equal(saves, 0); assert.equal(paints, 0);
             assert.deepEqual(settings.bridge.sceneAssets, before);
@@ -10879,11 +10897,11 @@ for (const choice of ['save', 'sprite', 'later', 'save-failed', 'switch', 'infli
             assert.equal(document.querySelector('[data-outfit-ask-act="ok"]'), null, '重开不再确认已入库衣装');
             return;
         }
-        assert.equal(loadStoryOutfitCandidates(storage).items.length, 0);
+        assert.deepEqual(loadStoryOutfitCandidates(storage).items, full ? older.slice(1) : []);
         assert.equal(settings.bridge.sceneAssets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
         assert.deepEqual(settings.bridge.sceneAssets.characters, before.characters);
         assert.deepEqual(settings.bridge.sceneAssets.characterDna, before.characterDna);
-        assert.equal(paints, ['save', 'later', 'inflight-save', 'write-failed'].includes(choice) ? 0 : 1);
+        assert.equal(paints, ['save', 'later', 'inflight-save', 'write-failed'].includes(mode) ? 0 : 1);
         if (paints) {
             assert.equal(host.getState().activeReader.snapshot.content.spriteOutfit, '礼服');
             assert.equal(host.getState().activeReader.snapshot.content.spriteImage, 'data:image/png;base64,QQ==');

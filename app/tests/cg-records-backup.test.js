@@ -153,6 +153,70 @@ test('gate:cg-accept:conflict-storage-failure-and-concurrent-accept-only-drop-ne
     }
 });
 
+for (const source of ['saved', 'candidate']) test(`gate:cg-catalog:文件恢复后重画与采用-${source}`, async () => {
+    const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
+    const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
+    const { characterViewsFixture } = await import('./helpers/prompt-provenance.js');
+    const { cgPromptTask, cgPaintRequests, completedCgOutfitAnchor } = await import('../src/generated-images/illustration/cg-character-bindings.js');
+    const { buildCgOutfitCatalog } = await import('../src/generated-images/illustration/cg-outfit-catalog.js');
+    const { parseTemplateCaptionSlots } = await import('../src/generated-images/illustration/template-caption-parser.js');
+    const { prepareCharacterCaption } = await import('../src/generated-images/character-caption.js');
+    const { promptSnapshotFromBody } = await import('../src/generated-images/final-caption.js');
+    const { promptProvenance, storedPromptFromResult } = await import('../src/generated-images/generation-prompt.js');
+    const { outfitAdoptionEvidence, prepareOutfitAdoption, savedCharacterOutfits } = await import('../src/scene/outfit-identity.js');
+    const assets = { characterDna: { Alice: { version: 2, views: characterViewsFixture() } },
+        characterOutfits: { Alice: { Coat: { wardrobe: 'coat', moods: {} } } },
+        wardrobe: { coat: { prompt: 'wears a 1.2::navy coat:: with $1 trim' } } };
+    const task = cgPromptTask([{ characterKey: 'Alice', dna: assets.characterDna.Alice,
+        outfits: savedCharacterOutfits(assets, 'Alice'), outfit: { name: 'Story dress', description: '' } }],
+    { outfitSelection: 'catalog' });
+    const reply = ['slotid: 1', 'at: 1', 'prompt_mode: dna_template', 'outfit_mode: template',
+        'scene: A quiet studio.', 'scene_uc:', 'char: 0.5,0.5 | <<dna:r0>> <<outfit:r0>> and waves.', 'char_uc:',
+        'meta_kind: 0 | named', 'meta_key: 0 | Alice', 'meta_token: 0 | r0', 'meta_frame: 0 | half_body',
+        `meta_outfit_id: 0 | ${source === 'saved' ? '1' : ''}`,
+        `meta_outfit_name: 0 | ${source === 'saved' ? 'Coat' : 'New shirt'}`,
+        'meta_outfit_description: 0 | wears a red shirt'].join('\n');
+    const parsed = parseTemplateCaptionSlots(reply, { ...task,
+        outfitCatalog: buildCgOutfitCatalog(task.characterContext), outputs: { selection: 'numbered-text', paragraphCount: 1 } });
+    assert.equal(parsed.ok, true, parsed.error);
+    const request = { ...task, ...parsed.captions[0], outfitAnchor: { version: 1, offset: 12, characters: [] } };
+    const prepared = prepareCharacterCaption(request);
+    assert.equal(prepared.ok, true, prepared.error);
+    const sentPrompt = promptSnapshotFromBody({ model: 'nai-diffusion-5-full', action: 'generate', parameters: prepared.caption }, null);
+    const result = { ...prepared, sentPrompt };
+    const fixture = { ...promptProvenance(result), caption: prepared.caption, characterMeta: prepared.characterMeta,
+        prompt: storedPromptFromResult(result), ...outfitAdoptionEvidence(request, result),
+        ...completedCgOutfitAnchor(request, result) };
+    const f = candidateFilesFixture();
+    const first = withTavernIllustrationFiles(createIndexedDbIllustrationStore({ indexedDB: createTransactionalIdb() }), f.globalObject);
+    await first.putSlot('catalog|3|0', { ...fixture, slot: 1, status: 'done', dataUrl: 'data:image/png;base64,T0xE' });
+    await wait(40);
+    const fresh = createIndexedDbIllustrationStore({ indexedDB: createTransactionalIdb() });
+    const restored = withTavernIllustrationFiles(fresh, f.globalObject);
+    await restored.listSlotKeys();
+    const record = await fresh.getSlotRecord('catalog|3|0|1');
+    for (const field of ['promptRecipe', 'outfitSnapshot', 'outfitContext', 'outfitAnchor', 'promptTask', 'sentPrompt'])
+        assert.deepEqual(record[field], fixture[field], field);
+    assert.match(record.dataUrl, /^user\/images\/igs-cg\//);
+    const adoption = prepareOutfitAdoption(assets, 'Alice', record.key, record);
+    assert.equal(adoption.ok, true, JSON.stringify(adoption));
+    if (source === 'saved') assert.deepEqual(adoption.patch, {});
+    else assert.ok(adoption.patch.characterOutfits.Alice['New shirt']);
+    const changed = structuredClone(assets);
+    changed.wardrobe.coat.prompt = 'wears a green coat';
+    const repaint = cgPaintRequests([record], changed)[0];
+    assert.equal(repaint.preflightFailure, null);
+    const rerolled = prepareCharacterCaption(repaint);
+    assert.equal(rerolled.ok, true, rerolled.error);
+    assert.deepEqual(rerolled.outfitSnapshot, record.outfitSnapshot);
+    assert.deepEqual(rerolled.caption, prepared.caption);
+    const evidence = outfitAdoptionEvidence(repaint, rerolled);
+    assert.deepEqual(evidence.outfitContext[0].outfits, savedCharacterOutfits(changed, 'Alice'));
+    const adoptedAfterReroll = prepareOutfitAdoption(changed, 'Alice', record.key,
+        { ...record, ...evidence, ...rerolled });
+    assert.equal(adoptedAfterReroll.ok, true, JSON.stringify(adoptedAfterReroll));
+});
+
 test('gate:cg-backup:三阶段资料经 IDB 写口、文件备份和清缓存恢复', async () => {
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
     const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');

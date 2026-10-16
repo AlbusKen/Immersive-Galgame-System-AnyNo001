@@ -206,7 +206,7 @@ export function createNaiOfficialClient(deps = {}) {
         const snapshot = slot?.captionMode === 'final' ? promptSnapshotFromBody(body, settings.finalArtist
             !== undefined ? settings.finalArtist : globalArtist(settings)) : null;
         const sent = await dispatch(body, settings);
-        if (sent && sent.ok) return { ...sent, prompt: promptFromNaiBody(body), ...(snapshot && { sentPrompt: snapshot }) };
+        if (sent && sent.ok) return { ...sent, seed: body.parameters.seed, prompt: promptFromNaiBody(body), ...(snapshot && { sentPrompt: snapshot }) };
         return sent;
     }
 
@@ -233,7 +233,7 @@ export function createNaiOfficialClient(deps = {}) {
         const sent = await dispatch(built.body, { ...settings,
             ...(request.signal && { signal: request.signal }),
             ...(request.shouldStart && { shouldStart: request.shouldStart }) });
-        return sent?.ok && snapshot ? { ...sent, sentPrompt: snapshot } : sent;
+        return sent?.ok ? { ...sent, seed: built.body.parameters.seed, ...(snapshot && { sentPrompt: snapshot }) } : sent;
     }
 
     return { generate, edit, supportsEdit };

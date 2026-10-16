@@ -50,7 +50,7 @@ test('gate:outfits:sprite-lookup-miss-uses-this-outfit-calm', () => {
 });
 
 
-import { readDefaultOutfit, prepareDefaultOutfitSelection, resolveCharacterAppearance } from '../src/scene/character-appearance.js';
+import { readDefaultOutfit, prepareDefaultOutfitSelection, prepareInitialDefaultOutfitSelection, resolveCharacterAppearance } from '../src/scene/character-appearance.js';
 
 const appearanceAssets = () => ({
     characters: { Alice: { 默认: 'old.png' } },
@@ -76,6 +76,26 @@ test('默认衣装只由明确选择建立，旧图与旧字段不隐式建档',
     Object.assign(assets, selection.patch);
     assert.equal(readDefaultOutfit(assets, 'Alice').outfitName, '制服');
     assert.equal(assets.characterDna.Alice.defaultAppearance, 'legacy clothes');
+});
+
+test('新立绘保存事件只在无默认且图片已核验时建立默认', () => {
+    const assets = appearanceAssets(), before = structuredClone(assets);
+    assert.equal(prepareInitialDefaultOutfitSelection(assets, 'Alice', '礼服').ok, false);
+    assert.deepEqual(assets, before);
+    const initial = prepareInitialDefaultOutfitSelection(assets, '艾莉', '礼服', available);
+    assert.equal(initial.ok, true);
+    assert.deepEqual(assets, before, '准备补丁不修改原资料');
+    Object.assign(assets, initial.patch);
+    assert.equal(readDefaultOutfit(assets, 'Alice').outfitName, '礼服');
+    assert.deepEqual(prepareInitialDefaultOutfitSelection(assets, 'Alice', '制服', available),
+        { ok: true, patch: {} }, '保留已有默认');
+    assets.characterDefaultOutfits.Alice = { version: 9, outfitName: '制服' };
+    assert.equal(prepareInitialDefaultOutfitSelection(assets, 'Alice', '礼服', available).reason,
+        'default-outfit-invalid');
+    assets.characterDefaultOutfits.Alice = { version: 1, outfitName: '已移除衣装' };
+    assert.equal(prepareInitialDefaultOutfitSelection(assets, 'Alice', '礼服', available).reason,
+        'default-outfit-missing');
+    assert.equal(assets.characterDefaultOutfits.Alice.outfitName, '已移除衣装');
 });
 
 test('缺单个表情不换衣，整套缺图才把图和衣装DNA一起回退', () => {

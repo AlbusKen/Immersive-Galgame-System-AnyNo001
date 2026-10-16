@@ -1,6 +1,7 @@
 // IGS 请求与模板交接边界；不依赖 DBGen 的运行时，也不改写正文。
 import { CHARACTER_DNA_VIEWS, CHARACTER_DNA_REQUIRED_VIEWS, checkDnaViews, checkCharacterPersonality } from '../scene/character-dna.js';
 import { checkOutfitTemplates } from './outfit-template.js';
+import { isValidOutfitName } from '../scene/character-outfits.js';
 const plain = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const keyOk = (v) => typeof v === 'string' && v === v.trim() && v.length > 0 && v.length <= 128
     && !['__proto__', 'constructor', 'prototype'].includes(v);
@@ -24,6 +25,8 @@ export function checkPromptTask(raw, context) {
     if (raw.identityMode !== undefined && (raw.identityMode !== 'appearance_correction'
         || raw.purpose !== 'consistency' || raw.slots !== undefined
         || !raw.characters.some(c => c?.kind === 'reference'))) return fail('PROMPT_MODE_CONFLICT', 'promptTask.identityMode');
+    if (raw.outfitSelection !== undefined && (raw.outfitSelection !== 'catalog'
+        || raw.purpose !== 'cg' || raw.outfitMode !== 'template')) return fail('PROMPT_MODE_CONFLICT', 'promptTask.outfitSelection');
     const keys = new Set(), tokens = new Set(), characters = [];
     for (const c of raw.characters) {
         const where = { characterIndex: characters.length };
@@ -67,6 +70,7 @@ export function checkPromptTask(raw, context) {
     return { ok: true, value: { version: 1, mode: 'dna_template', purpose: raw.purpose, characters,
         ...(raw.identityMode !== undefined && { identityMode: raw.identityMode }),
         ...(raw.outfitMode !== undefined && { outfitMode: raw.outfitMode }),
+        ...(raw.outfitSelection !== undefined && { outfitSelection: raw.outfitSelection }),
         ...(slots !== undefined && { slots }) } };
 }
 
@@ -82,6 +86,8 @@ export function promptTaskForSlot(task, slotId) {
 
 export function checkPromptRecipe(raw, caption, task, { allowArchivedCorrection = false } = {}) {
     if (raw === undefined) return task ? fail('PROMPT_MODE_CONFLICT', 'promptRecipe', 'missing') : { ok: true, value: undefined };
+    if ((raw?.outfitSelection !== undefined && (raw.outfitSelection !== 'catalog' || raw.outfitMode !== 'template'))
+        || (task && raw?.outfitSelection !== task.outfitSelection)) return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.outfitSelection');
     if (raw?.identityMode !== undefined && (raw.identityMode !== 'appearance_correction'
         || (!task && !allowArchivedCorrection) || (task && task.purpose !== 'consistency')))
         return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.identityMode');
@@ -107,6 +113,14 @@ export function checkPromptRecipe(raw, caption, task, { allowArchivedCorrection 
             ? { captionIndex: b.captionIndex } : {};
         const reject = (field, issue = 'invalid') => fail('DNA_TEMPLATE_BINDING', `binding.${field}`, issue, where);
         if (!plain(b) || !['named', 'generic', 'object', 'reference'].includes(b.kind)) return reject('kind');
+        const catalog = raw.outfitSelection === 'catalog';
+        if (catalog && b.kind === 'reference') return reject('kind');
+        if (catalog && b.kind === 'named') {
+            if (!plain(b.outfit) || !isValidOutfitName(b.outfit.name)
+                || !['saved', 'candidate'].includes(b.outfit.source)
+                || typeof b.outfit.description !== 'string' || !b.outfit.description.trim()
+                || b.outfit.description.length > 4096 || /<<\s*(?:dna|outfit)/i.test(b.outfit.description)) return reject('outfit');
+        } else if (b.outfit !== undefined) return reject('outfit');
         const correcting = raw.identityMode === 'appearance_correction';
         if (correcting ? (!['named', 'reference'].includes(b.kind) || !plain(b.correction)
             || Object.keys(b.correction).some(k => !['subject', 'negative'].includes(k))
@@ -134,6 +148,7 @@ export function checkPromptRecipe(raw, caption, task, { allowArchivedCorrection 
         if (task && expected.framing !== undefined && expected.framing !== b.framing) return reject('framing', 'mismatch');
         tokens.add(b.token); if (b.kind === 'named') keys.add(b.characterKey);
         bindings.push({ kind: b.kind, characterKey: b.characterKey, captionIndex: b.captionIndex, token: b.token, framing: b.framing,
+            ...(catalog && { outfit: { name: b.outfit.name, description: b.outfit.description, source: b.outfit.source } }),
             ...(correcting && { correction: { subject: b.correction.subject.trim(), negative: (b.correction.negative || '').trim() } }) });
     }
     if (task && ['sprite', 'derived', 'consistency'].includes(task.purpose)
@@ -155,7 +170,8 @@ export function checkPromptRecipe(raw, caption, task, { allowArchivedCorrection 
     }
     const value = { version: 1, mode: 'dna_template', caption: structuredClone(caption), bindings,
         ...(raw.identityMode !== undefined && { identityMode: raw.identityMode }),
-        ...(raw.outfitMode !== undefined && { outfitMode: raw.outfitMode }) };
+        ...(raw.outfitMode !== undefined && { outfitMode: raw.outfitMode }),
+        ...(raw.outfitSelection !== undefined && { outfitSelection: raw.outfitSelection }) };
     const outfits = checkOutfitTemplates(value, undefined, undefined, task);
     if (!outfits.ok) return outfits;
     return { ok: true, value };

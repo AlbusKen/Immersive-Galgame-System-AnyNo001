@@ -91,3 +91,38 @@ for (const fault of ['assets', 'story', 'legacy', 'cg-list', 'cg-record', 'cg-ra
         assert.ok(await store.getImage('keep'));
     });
 }
+
+for (const fault of ['none', 'protected', 'batch', 'write']) {
+    test(`gate:assets:衣装候选满额保护与整批保存-${fault}`, async () => {
+        const { saveStoryOutfitCandidates, saveStoryOutfitCandidate, loadStoryOutfitCandidates,
+            storyOutfitId, OUTFIT_REVIEW_LIMIT } = await import('../src/scene/outfit-review-store.js');
+        const storage = createMemoryStorage();
+        const make = (i, extra = {}) => {
+            const row = { scopeKey: '', ownerKey: '', floorKey: `chat|${i}|0`, sourceHash: `source-${i}`,
+                messageId: i, character: 'Alice', word: 'Dress', status: 'pending', ...extra };
+            return { ...row, id: storyOutfitId(row) };
+        };
+        const states = [{ prompt: 'wears a dress' }, { imageId: 'held-image' }, { status: 'writing' },
+            { status: 'saved' }, { status: 'failed' }, { status: 'unknown' }];
+        const older = Array.from({ length: OUTFIT_REVIEW_LIMIT }, (_, i) => make(i,
+            fault !== 'protected' && i === 0 ? {} : states[i % states.length]));
+        assert.equal(saveStoryOutfitCandidates(storage, older).ok, true);
+        const update = { ...older[1], prompt: 'wears a blue dress' };
+        assert.equal(saveStoryOutfitCandidate(storage, update).ok, true, '满额仍可更新同一候选');
+        older[1] = update;
+        const before = storage.getItem('igs:story-outfit-review:v1');
+        const target = fault === 'write' ? { getItem: key => storage.getItem(key),
+            setItem() { throw new Error('isolated-quota'); } } : storage;
+        const incoming = [make(100), ...(fault === 'batch' ? [make(101)] : [])];
+        const result = saveStoryOutfitCandidates(target, incoming);
+        if (fault !== 'none') {
+            assert.deepEqual(result, { ok: false, reason: fault === 'write' ? 'store-write-failed' : 'candidate-limit' });
+            assert.equal(storage.getItem('igs:story-outfit-review:v1'), before, '整批失败不删旧记录、不保存部分候选');
+        } else {
+            assert.equal(result.ok, true);
+            assert.deepEqual(loadStoryOutfitCandidates(storage).items, [...older.slice(1), ...incoming]);
+        }
+        assert.deepEqual(unreferencedGeneratedImageIds(['held-image', 'unused'], {}, storage), ['unused'],
+            '候选中的图片持续受清理保护');
+    });
+}

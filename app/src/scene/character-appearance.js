@@ -139,3 +139,11 @@ export function prepareDefaultOutfitSelection(assets, character, outfitName, ima
         ...plain(assets.characterDefaultOutfits), [characterKey]: { version: 1, outfitName },
     } } };
 }
+
+// 仅在新人物图核验成功的保存事件中建立首次默认，不从存量图推断。
+export function prepareInitialDefaultOutfitSelection(assets, character, outfitName, imageAvailability) {
+    const selected = readDefaultOutfit(assets, character);
+    if (selected.ok) return { ok: true, patch: {} };
+    if (selected.reason !== 'default-outfit-unset') return selected;
+    return prepareDefaultOutfitSelection(assets, character, outfitName, imageAvailability);
+}

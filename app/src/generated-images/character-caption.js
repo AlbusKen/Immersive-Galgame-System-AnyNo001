@@ -80,7 +80,8 @@ export function prepareCharacterCaption(input = {}) {
         for (const outfit of outfits.value.characters) {
             const original = snapshot.characters.find(c => c.captionIndex === outfit.captionIndex);
             if (!original || ['characterKey', 'token', 'name', 'description']
-                .some(field => original[field] !== outfit[field]))
+                .some(field => original[field] !== outfit[field])
+                || (checked.value.outfitSelection === 'catalog' && original.source !== outfit.source))
                 return fail('OUTFIT_TEMPLATE_INVALID', 'CG 原衣装快照与本次展开不一致，已停止出图');
         }
         outfits.value = snapshot;
@@ -111,7 +112,7 @@ export function prepareCharacterCaption(input = {}) {
         const outfit = outfits.value.characters.find(c => c.captionIndex === b.captionIndex);
         if (outfit) pos.char_caption = pos.char_caption.replace(`<<outfit:${b.token}>>`, () => outfit.description);
         if (neg) neg.char_caption = neg.char_caption.replace(`<<dna_uc:${b.token}>>`, () => identity.negative);
-        const { correction, ...binding } = b;
+        const { correction, outfit: selectedOutfit, ...binding } = b;
         characters.push({ ...binding, source: candidate ? 'candidate' : view.source,
             dnaVersion: view.source === 'scene' ? 0 : 2,
             subject: identity.subject, negative: identity.negative,

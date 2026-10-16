@@ -8,7 +8,7 @@ export const CONSISTENCY_TEMPLATE = [
     '保姿优先：沿用原 CG 的身体位置、尺度、朝向、骨架、姿态、表情、视线、遮挡、接触、动物道具、环境光影与画风。适用动态尽量保留原措辞，省略本裁剪画外及不适用的全图描述，不猜未知位置，不搬用立绘姿势、表情或视线。',
     '本次显式 identityMode 为 appearance_correction 时才写 identity_mode: appearance_correction；每个 named 和 reference 都写非空 meta_correction_identity，可写空的 meta_correction_uc，均为 本图索引 | 值。reference 的空衣装规则不适用于身份校正主语，不得把其主语留空。主语只写有来源且当前可见的身份支持，不复制完整身体比例，不猜未提供图片细节，不改变永久 DNA。未授权该模式时不写这些字段，只引用保存身份及所需景别。',
     '显式校正以已选参考的可见身份和预检有效衣装为目标；保存 DNA 辅助身份，不用旧 CG 的错误身份或旧衣装锁定目标。只核对有依据且适用的角、尾翼、非人耳及标志饰品，不强补画外或遮挡部位。',
-    'named 的 meta_outfit_name 逐字使用本次 characterContext.outfit.name。outfitMode 为 template 时，meta_outfit_description 保留本图索引和竖线，值留空，表示引用本次冻结的 outfit.description，不重抄长说明；填写非空值时须逐字一致，包括尾部逗号、句号、权重和触发词。非衣装模板任务仍逐字使用本次说明。显式校正取预检冻结的有效衣装，旧任务取原快照；不重新设计、叠穿或生成候选，Char 不重复衣装清单。仅在本次写词中替换与目标冲突的旧描述，不要求程序清洗正文。',
+    'named 的 meta_outfit_name 逐字使用本次 characterContext.outfit.name。outfitMode 为 template 时，meta_outfit_description 写 本图索引 |，竖线后留空；填写非空值时须与 outfit.description 逐字一致，包括尾部逗号、句号、权重和触发词。非衣装模板任务逐字使用本次说明。不重新设计或叠穿其他衣装，Char 使用本人衣装槽和动态。Scene 和 Char 与目标衣装冲突的旧描述改为本次指定衣装。',
     'reference 使用自己的 DNA 及可选 UC 槽，不用衣装槽。自己的 meta_outfit_name 和 meta_outfit_description 各写一次 本图索引 | 空值，不复制 named 的索引或衣装。参考 Char 说明与目标为同一人物及同套有效衣装，不将参考姿态、表情、背景、光照或画风迁入工作区。',
     '参考人物仍写 char/char_uc，不新增 reference:、reference_uc: 或独立 reference inset 行。Scene 只描述局部共同画面，不写技术分区；工作图的边框、分栏、拼贴与重复人物仅按要求放入 UC。',
     '不输出 meta_identity、meta_signature 或 meta_dna_*，不建永久身份。尺寸、质量、UC 和用户要求在本次写词落实，画师不输出。',

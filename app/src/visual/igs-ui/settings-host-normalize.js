@@ -13,6 +13,7 @@ import { normalizeGeneratedLibrary } from '../../scene/asset-match.js';
 import { normalizeCharacterDnaMap } from '../../scene/character-dna.js';
 import { normalizeCharacterOutfits, normalizeWardrobe } from '../../scene/character-outfits.js';
 import { normalizeCharacterDefaultOutfits } from '../../scene/character-appearance.js';
+import { normalizeCharacterSeeds } from '../../scene/generation-seeds.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
 import { normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
 import { normalizeSettingsTheme } from './settings-theme.js';
@@ -143,6 +144,7 @@ export function normalizeSceneAssets(value) {
         normalized.characterAliases[characterName] = nextAliases;
     }
     normalized.characterDna = normalizeCharacterDnaMap(normalized.characterDna);
+    if (Object.hasOwn(normalized, 'characterSeeds')) normalized.characterSeeds = normalizeCharacterSeeds(normalized.characterSeeds);
     normalized.characterOutfits = normalizeCharacterOutfits(normalized.characterOutfits);
     if (Object.hasOwn(normalized, 'characterDefaultOutfits')) {
         normalized.characterDefaultOutfits = normalizeCharacterDefaultOutfits(normalized.characterDefaultOutfits);
