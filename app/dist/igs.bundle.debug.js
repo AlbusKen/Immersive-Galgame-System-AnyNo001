@@ -63254,6 +63254,7 @@ __igsDefine(exports, "TRANSPARENT_BACKGROUND_TAGS", () => TRANSPARENT_BACKGROUND
 __igsRegister("src/generated-images/prompt-registry.js", function(module, exports, require) {
 // IGS 自带生图词库：各类图片的内置标签、给写词 AI 的规则句、场景词典都集中在这里，别处只引用不写字面量。
 // 结构按「内容类别」分：立绘 / 表情差分 / Q 版头像 / 衣柜 / 背景 / 物品 / NSFW / 底色 / 变身 / 场景词典。
+const { DNA_WEIGHT_RULE } = require("src/generated-images/prompt-tasks/common.js");
 const SPRITE_HALF_BODY_RULE = '立绘、换装和表情的 half_body 使用正常上半身取景：从完整头顶到腰胯，完整保留头发、双肩和躯干，手势在画面内，头顶及身体两侧留少量余白。Scene 明写 framed from the top of the head to the hips，不能只写 half-body；不裁成胸像或脸部特写，不使用 cowboy shot，不画全身或脚。明确指定 full_body 或 portrait 时按该景别，不套用本条；普通 CG 和局部一致性沿各自镜头。';
 const BUILTIN_PROMPTS = Object.freeze({
     sprite: Object.freeze({
@@ -63384,34 +63385,35 @@ const DNA_TEMPLATE_WRITER_SYSTEM = [
     '任务 outfitMode 为 template 时，每份另写 outfit_mode: template；每个 named Char 恰写本人的 <<outfit:token>> 一次，与身份使用同一 token。衣装占位只能在本人的正向 char，不在 scene、reference 或任何 UC 中出现。',
     '任务若提供 slots，每个 slotid 只绑定该项 tokens 指定的全部角色，不带入其他 slot 的人物；没有 slots 时 sprite/derived 每图绑定全部任务角色，CG 按实际出镜取允许池子集。',
     'scene 用英文句子描述共同场景、人数、互动、取景和光线，不含身份令牌或各人的固定外貌清单。',
-    '具名 char 使用输入 token 的 <<dna:token>> 一次作为主语；衣装模板任务后接本人的 <<outfit:token>>，再写动作与表情，不在正文重复衣装说明。未启用衣装模板的旧任务仍直接写衣装谓语。不要再复制固定外貌，不替换普通名字或对别人的提及。',
-    '衣装名与英文穿着谓语作为独立服装 DNA 写入 meta_outfit_name、meta_outfit_description。本次 outfit.name 或对应正文服装栏已有名称时逐字沿用原名，尚未入柜或缺说明也不改名、不翻译、不另造英文名；只有正文和本次资料均未命名时才命名。已有当次衣装说明或角色 outfits 按保存值原样引用，不改写、翻译或补全；缺说明的新装在同次回复保留已知设定并补全未指定的颜色、材质、剪裁和层次，不新增请求。Char 保持角色占位符、服装占位符与当次动态的模板结构，不重写完整衣装正文。裸体和 form 保留显式语义。consistency 逐字使用本次 characterContext.outfit：显式校正为预检冻结的有效衣装，其他旧任务仍为原 CG 快照，不自行换装。',
+    '具名 char 使用输入 token 的 <<dna:token>> 一次作为身份槽；衣装模板任务后接本人的 <<outfit:token>>，再写动作与表情，不在正文重复衣装说明。未启用衣装模板时，新写衣装使用 TAG，已有保存说明原样复用。不要再复制固定外貌，不替换普通名字或对别人的提及。',
+    '衣装名与服装 DNA 独立写入 meta_outfit_name、meta_outfit_description。新衣装说明只用逗号分隔的英文 TAG，颜色、类别、款式、长度、材质和细节均按标签表达，不写自然语言句子、穿着谓语或补述；裙、靴、袜及外套明确适用长度，各件分别绑定颜色，从内到外独立列出。本次 outfit.name 或对应正文服装栏已有名称时逐字沿用原名，尚未入柜或缺说明也不改名、不翻译、不另造英文名；只有正文和本次资料均未命名时才命名。已有当次衣装说明或角色 outfits 按保存值原样引用，不改写、翻译、转换或补全；缺说明的新装在同次回复保留已知设定并补全可用标签表达的颜色、款式和细节，不新增请求。Char 保持角色占位符、服装占位符与当次动态的模板结构，不重写完整衣装正文。裸体和 form 保留显式语义。consistency 逐字使用本次 characterContext.outfit：显式校正为预检冻结的有效衣装，其他旧任务仍为原 CG 快照，不自行换装。',
     'char 可写 x,y | 正文，坐标在 0 到 1；自身身份 UC 可用 <<dna_uc:token>> 一次，其余负面要求在当次正文中完成。',
     '每个 Char 以本图实际 char 出现顺序从 0 连续编号，单行绑定 meta_kind: 索引 | named/generic/object/reference。named/reference 还须各写 meta_key、meta_token、meta_frame、meta_outfit_name、meta_outfit_description；每个索引的每个字段恰好一次，不在末尾重复汇总。slotid、原图角色序号和 token 中数字都不是本图索引。',
     '所有 meta_* 都以本图 Char 索引 | 开始，meta_key、meta_token、meta_frame 也不能省略索引。清单提供 captionIndex 时使用它，例如 meta_key: 0 | 输入角色键、meta_token: 0 | 输入token、meta_frame: 0 | 输入景别；reference 使用自己的索引。reference 是 meta_kind 的取值，不输出 reference:、reference_uc: 或独立 reference inset 行。',
     '新任务 meta_frame 选 full_body、half_body、portrait；partial 仅在输入明确指定的历史任务中兼容引用。generic/object 只写 meta_kind，直接描写，不编造角色键；reference 仅 consistency 可用输入独立参考 token，不登记为正式人物。',
     '同一 characterKey 的 named 与 reference 是两个独立 Char，分别使用自己的索引和 token。reference 只表达身份和简洁可见状态；其 meta_outfit_name 与 meta_outfit_description 在自己的索引各写一次空值，不复制 named 衣装、不复用 named 索引。',
     '可选 meta_region: 索引 | x,y,width,height 是规划范围，不是成图定位。不得造未知键、token、重复字段或把旁路信息写进 scene/char。',
-    '仅 sprite 缺景别时同次独立输出 meta_dna_full_body、meta_dna_half_body、meta_dna_portrait 三景别，每项使用 索引 | 非空英文人物身份主语，值不超过4096字符；可配 meta_dna_uc_景别，负面词可空且不超过4096字符，不能仅写 UC 而缺主语，不新建 partial。身份正负字段都不得含身份或衣装令牌。',
+    '仅 sprite 缺景别时同次独立输出 meta_dna_full_body、meta_dna_half_body、meta_dna_portrait 三景别，每项使用 索引 | 非空英文身份 TAG，值不超过4096字符；可配 meta_dna_uc_景别，负面 TAG 可空且不超过4096字符，不能仅写 UC 而缺身份，不新建 partial。身份正负字段都不得含身份或衣装令牌。',
     '字段分为稳定身份、独立衣装、当次动态三层：先从资料抽取换装后仍成立的身体外貌，再提取本套穿戴物，最后写表情、视线和动作。meta_dna_* 不是完整立绘提示词，禁止复制 char 或 meta_outfit_description；默认外观服装和 outfits 是衣装来源，不是身份主语。',
     '制服、军用战斗服、护甲、鞋帽、武器、战术耳机等可更换衣装装备写入 meta_outfit_description，不能因职业或常穿就写入身份；严肃、镇定、喜怒表情、警戒状态和姿态写入 char 动态。身份不写 wearing/wears 或裸体状态，不用衣装表情填补未知外貌；只有资料明确为角色标志的发饰、首饰等才保留为身份锚点。此分工用于新提取，不自动清洗已有身份。',
     '首次建立服装 DNA 时，正文和资料未指定的颜色、材质、款式与局部结构允许且应一次协调补全，不需要额外的设计授权用语；保留已知设定，符合世界观、职业和场合，不覆盖已保存衣装，不冒充原文事实。仅用户明确要求只提取、不设计时保留未知。人物未知外貌不因此重设，只有明确的新人物设计才补未限定外貌。身份、穿戴物和当次动态仍分别交付，不靠空泛形容词或凑字数增加长度。',
     '建档先逐项核对角色资料里的角、尾巴、翅膀、非人耳、鳞片或异色身体标记，以及标志性发饰、耳饰、项链、额饰等；这些是高优先级身份锚点，不得被泛化五官描写挤掉或误当普通衣装。已知数量、颜色、形状和位置写清，未知不编造。full_body 保留全部已知身体特征和标志饰品，不以当次半身立绘的裁切删掉尾巴或翅膀；half_body 保留头部锚点和适用的上身、尾翼特征；portrait 保留角、非人耳与头颈饰品，不强行描写画外尾巴或扩大镜头。输出前逐景别对照资料检查遗漏、互斥及 UC 误排除，只修正本次新候选，不改已有景别。',
-    '生成新 DNA 在三个身份主语中写入有依据且一致的年龄感，以及发色、发型、瞳色、脸型、眉形、眼型、鼻形、唇形、体型、身高或高矮比例、肤色和明确的标志性发饰、首饰、角、耳、疤痕等。未知细节不编造，不强行填满清单，不能只写名字或漂亮、英俊；年龄未知时不编造具体岁数，其他未知数值也不编造。各景别保留其可见锚点，不以表情或装备代替外貌。',
-    '新身份细化已有依据：头发写清底色与挑染或渐变部位、长度、直卷蓬松度、刘海、分缝、鬓发、扎发结构和位置；五官写清脸部轮廓与下巴、眉形浓淡、眼型眼距与瞳色、鼻梁鼻尖、唇形厚薄。固有发色肤色不被环境光、腮红或当次妆容替代，发型不随情绪改变。',
-    '皮肤保留已知固有肤色冷暖、雀斑、痣、疤痕及身体标记的位置；体型保留有依据的高矮感、骨架肩宽、躯干四肢比例、腰胯轮廓、胖瘦和肌肉感，不把服装收腰或姿态透视当身体比例。不编造未知身高体重、围度或身体细节。全身保留整体比例，半身保留头肩躯干，头像保留头颈五官和发型锚点；三景别同源且不为详细而扩大镜头，已有身份仍逐字保留。',
-    '新衣装与普通配饰逐件写颜色、材质光泽、剪裁、领袖长度、开合边饰、纹样和内外层关系；装饰写清数量、形状、颜色与佩戴位置，左右按穿着者自身。主色直接修饰所属衣物，上装、下装、护甲、腰带、袜鞋分别绑定，不能只给护甲写 black、其余仅写 police uniform 或 tactical belt。首次建档即使只给衣装名，也要补全未限定主要衣物的具体主色和结构，不另加武器、身份标志或无依据损伤。破损服从剧情，写部位、形状及仍覆盖范围。同套差分复用同一份完整衣装说明，衣装 DNA 不随景别删件。已保存衣装及原 CG 快照逐字保留，不补全或重新设计。',
-    '服装详细示例的输入假设：浅蓝棉质短袖警衬衫、尖领、深蓝肩章、左胸银徽、右袖口撕裂；外罩哑光黑色分块轻型护甲，黑色侧扣带；深海军蓝直筒工装裤、大腿侧袋、左膝磨破但仍覆盖；黑色尼龙腰带、深灰快扣和两侧黑袋；黑色皮革中筒系带靴、厚橡胶底。仅当来源提供这些细节时，穿着谓语可写为下例；不能拿范例当本轮人物资料。',
-    'meta_outfit_description: 0 | wears a light-blue cotton police shirt with a pointed collar, short sleeves, dark-navy shoulder tabs and a silver badge on the left chest, with a torn right sleeve hem, beneath a matte-black lightweight armor vest with segmented chest panels and black side fastening straps, paired with deep-navy straight-leg cargo trousers with thigh pockets and a frayed left knee still covered by fabric, a black nylon tactical belt with a dark-gray quick-release buckle and black pouches at both hips, and black leather mid-calf lace-up boots with thick rubber soles',
+    '新人物 DNA、身份 UC、普通 CG 的 meta_identity、meta_signature 和本次新写的 meta_outfit_description 只用逗号分隔的英文 TAG，主要特征与细节均不写自然语言。性别、发色、发长、发型、刘海、瞳色、肤色、体型、非人身体特征及标志饰物使用准确标签；年龄感按资料用适用标签，不因 1girl/1boy 推断具体年龄。不确定同人标签是否真实存在时不编造，用确定的基础标签组合表达，无法准确表达的细节省略，不写成长句或自造标签。新正向身份与衣装按核心 TAG 权重规则交付，不把权重当可选示例。已有 DNA 逐字复用，不自动转换；Scene、动作、表情和互动仍按本图规则表达。',
+    DNA_WEIGHT_RULE,
+    '新身份按有依据的标签细化头发底色、挑染、发长、直卷、刘海及扎发结构；五官只选准确的脸型、眉形、眼型、瞳色等标签，不为凑齐分缝、鼻梁、下巴等微细节追加自然语言。固有发色肤色不被环境光、腮红或当次妆容替代，发型不随情绪改变。',
+    '皮肤、雀斑、痣、疤痕、身体标记和体态用适用标签表达，细节以准确标签能表达为限；不把服装收腰或姿态透视当身体比例，不编造未知身高体重、围度或身体细节。全身保留适用身体标签，半身保留头肩躯干，头像保留头颈和发型锚点；三景别同源且不为详细而扩大镜头，已有身份逐字保留。',
+    '新衣装与普通配饰只用逗号分隔的英文 TAG，逐件表达适用的颜色、材质、款式、长度、纹样及层次；数量、形状、位置、左右和破损细节仅在有依据且可用准确标签表达时保留，左右按穿着者自身，无法准确表达则省略，不追加自然语言或自造标签。主色使用对应衣物的颜色标签，上装、下装、护甲、腰带、袜鞋分别绑定，不能只给护甲写 black、其余仅写 police uniform 或 tactical belt。首次建档即使只给衣装名，也在可用准确标签表达的范围内补全未限定主要衣物的主色和款式，不另加武器、身份标志或无依据损伤；破损服从剧情。同套差分复用同一份完整衣装 TAG，衣装 DNA 不随景别删件。已保存衣装及原 CG 快照逐字保留，不转换、不补全或重新设计。',
+    '服装 TAG 示例输入：蓝色短袖警衬衫、肩章、徽章，黑色轻型护甲，蓝色工装裤，黑腰带和黑色及膝系带靴，局部衣物破损。仅用准确标签表达这些已知特征，不补自然语言材质或位置说明；不能拿范例当本轮人物资料。',
+    'meta_outfit_description: 0 | 1.2::blue shirt::, collared shirt, short sleeves, epaulettes, badge, 1.2::black armor::, 1.2::blue pants::, cargo pants, black belt, black footwear, knee boots, lace-up boots, torn clothes',
     '眼型、瞳色是稳定身份，眼神气质不等于当次表情；喜怒、严肃或镇定神情、视线方向、闭眼或眯眼属于本图动态。明确的标志性饰物与普通穿戴物分开，换装不自动移除身份饰品。裁切或遮挡不等于特征不存在，不把已有角、尾巴或饰品机械写入 UC；明确摘下或遮挡时按剧情描写可见状态，不改保存 DNA。',
     'dna.defaultAppearance 是默认外观服装，不属于身份主语。无明确当次衣装时用于写词兜底；剧情明确换装、当前 outfit 或持续衣装状态优先并完整覆盖默认服装，正文与 meta_outfit_* 一致，不叠穿默认衣装，不改写保存 DNA。',
-    '新三景别先写完整身份母版，再只删除各景别画外的完整部位短语及其所属分隔符。共同可见部分的单词、修饰语、大小写、标点、顺序和句法结构必须逐字一致，不换词、不润色、不把 shoulder-length hair 缩成 hair，也不把 slim build 改成 slim upper-body silhouette。母版按名称与年龄感、头发、五官、肤色、头颈标志、肩颈躯干、全身体态与四肢排序，短语可独立删除，and 留在不裁切的共同短语内部。无额外可见信息时两个视图允许相同。已有景别逐字保留，补缺沿用保存措辞，存量矛盾不借补缺重写；手工清空并锁定的身份不得自动补建。',
-    '身份详细范例假定以下细节均来自角色资料：成年女性，银色齐肩直发、左分缝、斜刘海和内弯发梢；杏形蓝眼、深灰细弯眉、柔和椭圆脸、圆下巴、细直鼻梁、小鼻尖、清晰唇峰与稍丰满下唇、冷调白皙皮肤；左鬓一枚银色五角星发夹为明确标志；细颈、窄肩、纤细躯干、高挑且长腿。三行只示范身份字段，不是新任务，索引和人物名须替换为实际输入。',
-    'meta_dna_full_body: 0 | ExampleAdult, an adult woman with straight silver shoulder-length hair parted on the left, side-swept bangs and inward-curving ends, almond-shaped blue eyes, fine gently arched dark-gray eyebrows, a soft oval face with a rounded chin, a narrow straight nose bridge with a small tip, defined lips with a clear Cupid\'s bow and a slightly fuller lower lip, fair cool-toned skin, a single silver five-pointed star hair clip at her left temple, a slender neck, narrow shoulders, a slim torso, a tall stature, long slender legs,',
-    'meta_dna_half_body: 0 | ExampleAdult, an adult woman with straight silver shoulder-length hair parted on the left, side-swept bangs and inward-curving ends, almond-shaped blue eyes, fine gently arched dark-gray eyebrows, a soft oval face with a rounded chin, a narrow straight nose bridge with a small tip, defined lips with a clear Cupid\'s bow and a slightly fuller lower lip, fair cool-toned skin, a single silver five-pointed star hair clip at her left temple, a slender neck, narrow shoulders, a slim torso,',
-    'meta_dna_portrait: 0 | ExampleAdult, an adult woman with straight silver shoulder-length hair parted on the left, side-swept bangs and inward-curving ends, almond-shaped blue eyes, fine gently arched dark-gray eyebrows, a soft oval face with a rounded chin, a narrow straight nose bridge with a small tip, defined lips with a clear Cupid\'s bow and a slightly fuller lower lip, fair cool-toned skin, a single silver five-pointed star hair clip at her left temple, a slender neck,',
-    '上述 half_body 只删除 a tall stature, long slender legs,；头颈特写 portrait 再删除 narrow shoulders, a slim torso,，其余字符保留。头像若包含肩部则原样保留 narrow shoulders。全身母版保留来源已知的全身特征，不因本次只画半身而丢失；各景别不为画外特征扩大取景。',
-    '普通 CG（promptTask.purpose 为 cg）逐一对照画面出镜者与正文角色标签：每位有标签的出镜者均以本人规范键和 token 独立交齐 char/char_uc 及完整 meta，玩家、后景或局部人物不得只在 Scene 或他人动作中带过，未出镜者不硬塞。每个 named 固定写非空 meta_identity: 索引 | 详细英文身份主语 和 meta_signature: 索引 | 标志细节摘要，摘要无依据可空但字段保留。身份按首次立绘同等详细程度写清发色发型结构、脸型五官、眼型瞳色、固有肤色、骨架体态及适用身份锚点；保留已确定设定，未限定的普通视觉细节一次协调落实，不以职业、漂亮或 sharp eyes 代替，不新增无来源特殊特征或具体身体数值。身份与衣装、武器、灰尘、血污、临时伤势、表情和动作分开。本人正向 Char 写 <<dna:本人token>>，衣装模板再写 <<outfit:本人token>>，两个占位符各一次，再接动态；token 取本轮分配值。详细身份只写 meta_identity，不重复到 Char。meta_frame 按实际取景选择，不强制半身。',
+    '新三景别先写纯 TAG 身份母版，再只删除各景别画外部位的完整标签及分隔符，闭合权重组整体保留或删除。共同标签、大小写、标点和顺序逐字一致，不改写、不缩词。无额外画外标签时两个视图允许相同。已有景别逐字保留，补缺沿用保存标签，存量矛盾不借补缺重写；手工清空并锁定的身份不得自动补建。',
+    '身份 TAG 范例输入：成年女性，银色齐肩直发、斜刘海，蓝眼、细眉、白皙皮肤、星形发夹，纤细、高挑、长腿。三行只示范身份字段，不是新任务；编号、人物及特征取实际输入。',
+    'meta_dna_full_body: 0 | 1girl, adult, 1.2::silver hair::, medium hair, straight hair, swept bangs, blue eyes, thin eyebrows, pale skin, hairclip, 1.2::star hair ornament::, slim, tall, long legs,',
+    'meta_dna_half_body: 0 | 1girl, adult, 1.2::silver hair::, medium hair, straight hair, swept bangs, blue eyes, thin eyebrows, pale skin, hairclip, 1.2::star hair ornament::, slim,',
+    'meta_dna_portrait: 0 | 1girl, adult, 1.2::silver hair::, medium hair, straight hair, swept bangs, blue eyes, thin eyebrows, pale skin, hairclip, 1.2::star hair ornament::,',
+    '上述 half_body 只删除 tall, long legs,；portrait 再删除 slim,，其余标签及闭合权重逐字保留。全身母版保留来源已知的适用身体标签，不因本次只画半身而丢失；各景别不为画外特征扩大取景。',
+    '普通 CG（promptTask.purpose 为 cg）逐一对照画面出镜者与正文角色标签：每位有标签的出镜者均以本人规范键和 token 独立交齐 char/char_uc 及完整 meta，玩家、后景或局部人物不得只在 Scene 或他人动作中带过，未出镜者不硬塞。每个 named 固定写非空 meta_identity: 索引 | 完整英文身份 TAG 和 meta_signature: 索引 | 标志特征 TAG，摘要无依据可空但字段保留。本次新写衣装同样只用 TAG；无名临时人物的身份与衣装 TAG 直接放在自己的 Char，再接本图动态，不编造角色键或 token。身份按适用标签表达发色发型、眼型瞳色、肤色体态与身份锚点，保留已确定设定，不新增无来源特殊特征或具体身体数值。身份与衣装、武器、灰尘、血污、临时伤势、表情和动作分开。named 正向 Char 写 <<dna:本人token>>，衣装模板再写 <<outfit:本人token>>，两个占位符各一次，再接动态；token 取本轮分配值。身份 TAG 只写 meta_identity，不重复到 Char。meta_frame 按实际取景选择，不强制半身。',
     'derived/consistency 仍只引用保存 DNA，不输出 meta_identity 或 meta_signature，缺所需身份或景别停止对应图；cg/derived/consistency 均禁止 meta_dna_* 候选。不得删人、补画立绘、猜角色键或换用他人身份。',
     'consistency 的参考关系只写在 reference 自己的 char 自然语言中，使用独立身份占位符，不复制身份或衣装正文。显式校正的参考是完整人物立绘画布和可见衣装，与目标同人同套；reference 的衣装 metadata 仍为空，不使用衣装槽或制造第二份衣装候选。Scene 只写原图局部共同画面，不写技术分区；named 用自身衣装槽。',
     '仅 consistency 任务自身或所选 slot 显式指定 identityMode: appearance_correction 时写 identity_mode: appearance_correction 及对应校正字段；每个 named/reference 在自己的索引恰写一次 meta_correction_identity: 索引 | 英文身份校正主语，可选 meta_correction_uc: 索引 | 校正负面片段。未授权该模式不输出校正字段。',
@@ -63424,6 +63426,77 @@ __igsDefine(exports, "SPRITE_HALF_BODY_RULE", () => SPRITE_HALF_BODY_RULE);
 __igsDefine(exports, "BUILTIN_PROMPTS", () => BUILTIN_PROMPTS);
 __igsDefine(exports, "SCENE_DICTIONARY", () => SCENE_DICTIONARY);
 __igsDefine(exports, "DNA_TEMPLATE_WRITER_SYSTEM", () => DNA_TEMPLATE_WRITER_SYSTEM);
+});
+__igsRegister("src/generated-images/prompt-tasks/common.js", function(module, exports, require) {
+// 仅在需要该职责的任务中复用；不向模型广播其他任务协议。
+const OUTPUT_RULE = '直接输出本轮任务的扁平字段，不输出开场说明、思考标签、推理正文、JSON、Markdown、代码围栏、画师或第二份正文。字段名位于行首，具体字段、空值及分隔方式只遵守当前任务协议。示例不是任务，编号、人物、token 与设计必须替换为本轮输入。';
+const SOURCE_RULE = '以本次资料和显式要求为依据，不续写剧情、不增减任务或人物。保存资料、触发词和闭合权重原样复用，不同义清洗。缺失内容能否设计由当前任务声明，不把候选设计冒充已保存资料或原作事实；未提供的具体年龄、身高、体重及围度数值不编造。';
+// 复用原版预设的标签、权重、特征与着装条款，按纯 TAG 资料要求适配。
+const DNA_WEIGHT_RULE = '【核心 TAG 权重：新资料必写】新正向身份中的发色标签及资料明确的核心身份锚点必须使用 1.2::tag::；确认准确的同人角色标签使用 2::Name (Series)::，不能只凭中文姓名编造英文同人标签。新衣装中实际存在的主要衣物，其颜色与类别标签必须使用 1.2::tag::，如 1.2::black armor::；普通细节不机械全加权。无依据或不适用的标签省略，不为凑权重添加特征、衣物或同人名。各标签独立闭合，不嵌套、不包占位符；三景别共同标签及权重逐字相同。只强调当前身份或衣装字段，不因此生成动作、场景或画师词。已有身份、衣装、触发词及闭合权重逐字复用，即使没有权重也不补写。';
+const DNA_TAG_RULE = [
+    '# 提示词规则',
+    '- 纯 TAG：新人物 DNA、服装 DNA，以及 CG 当次身份、特征摘要和衣装字段只写逗号分隔的英文标签；主要特征和细节均用 TAG，不写自然语言句子、人物介绍、穿着谓语或解释性补述。',
+    '- 相邻排列（最高优先级）：关联度高的内容跨分类相邻排列；同一部位、同一衣物的标签相邻排列。',
+    '## 标签',
+    '- 中文特征拆译为视觉标签；用确定的 Danbooru 基础标签及复合标签表达，不把长句、with/and 从句或自造描述伪装成标签。没有准确标签的细节，用适用的已知标签组合表达；仍无法表达则省略该细节，不改为自然语言、不编造标签。',
+    '- 保留Danbooru复合标签（forest of magic）',
+    '- 禁止质量词（masterpiece）与画师名（@artist）',
+    '## 标签权重',
+    '- 数字权重：`n::tag::`或`n::tag1,tag2::`（n>1.0增强，n<1.0削弱，n<0反向排斥）',
+    '- 主体强调：准确的同人角色标签用 2::Name (Series)::，新身份发色与明确的核心锚点、新衣装主要衣物用 1.2::tag::，按下列要求执行，不只是格式示例。',
+    '【权重格式适配】本任务用上述数字权重，不写花括号权重，避免与资料变量占位语法混淆。',
+    '> 权重只套标签。',
+    DNA_WEIGHT_RULE,
+].join('\n');
+const IDENTITY_RULE = [
+    '先分清保存身份、来源已明确的外貌和首次候选：保存身份及已有景别逐字沿用；来源已明确的性别、年龄感、种族和身体特征不得改写。仅 promptTask.purpose 为 sprite 且缺身份景别、需要首次候选时，才在已知设定内一次协调设计尚未限定的普通可见外貌。candidate-required 是建立可用候选，不是把未知项抄成占位说明；saved-only 和 identity-cleared 不设计或补建。',
+    DNA_TAG_RULE,
+    '【DNA 适配】本任务只整理稳定身份，以上表达规则不授权写入场景、动作或表情。三景别及身份 UC 的新内容只用英文 TAG；年龄感按资料用适用标签，不因 1girl/1boy 推断具体年龄。',
+    '头发、五官、固有肤色、骨架与体态彼此协调，足以在换装后辨认同一个人。可补全的普通视觉细节在本次确定后贯穿三景别；不写 indeterminate、unspecified、unknown、fair to medium、某色或其他待定范围，不照抄范例人物的高矮、腿长、脸型或配饰。用户明确禁止设计的未知项不补，不用占位词凑齐描述。',
+    '### 特征',
+    '- 外貌特征：[头发/身体/面容/妆容及标志性特征（疤痕、体型）等]',
+    '- 气质特征：[年龄感、性格、身份气场、及身份标识物（专属配饰、长期持有物）等]',
+    '> 防幻觉铁律：不确定同人提示词是否真实存在→绝不编造，用确定的基础标签与适用的差异特征标签；UC 只排斥确实冲突的原特征。',
+    '> 原创角色：需要完合理细腻丰富补全细化特征提示词组，细节越丰富、辨识度越高，角色形象锚点越稳定一致（例：白发吸血鬼少女→补全→keke (original),very long hair,white hair,long twintails,hight twintails,ahoge,crossed bangs,red eyes,small breasts,pale skin,petite,vampire,bishoujo,fangs,skull hair ornament,mole under mouth）',
+    '【身份分栏适配】性格独立写 personality，可更换穿戴物和长期持有物归衣装或当次画面；明确的角色标志饰物才作为稳定身份。原创名只在本轮允许使用且有对应来源时填写，角色绑定字段仍逐字取 characterKey，不照抄范例姓名、种族或未知标签。',
+    '头发逐项落实具体底色、已有挑染或渐变的位置与颜色、长度、直卷与蓬松度、刘海形状、分缝、鬓发和扎发结构及位置；不只写 black hair 或 shoulder-length hair。已有颜色和发型优先，光照、灰尘或临时散乱不替代固有发色与结构。没有设定的挑染、复杂扎发不是必添项。',
+    '五官按设定选择可准确表达的脸型、眉形、眼型、瞳色与唇形标签，不以漂亮、英俊或职业气质代替，也不为凑齐鼻梁、下巴等微细节而写自然语言。常态眼型可以来自稳定设定，喜怒、闭眼、视线方向属于当次表情，不混入身份。',
+    '皮肤、雀斑、痣、疤痕、身体标记及体态用适用标签表达，细节以标签能准确表达为限；不把护甲厚度、衣物收腰或坐姿透视当身体比例，不默认人人窄肩、细腰、高个、长腿。具体身体数值只沿用输入，不自行补造。',
+    '逐项核对角、非人耳、尾巴、翅膀、身体标记与明确的标志饰品，保留已知数量、颜色、形状、位置，未知不填满清单。衣装、护甲、武器和普通战术耳机不是身份；灰尘、血污、临时伤势、当次表情、视线和姿态也不进入身份。',
+    '来源优先看保存资料、角色资料及设定，再看正文明确外貌；职业、战斗能力和人物姓名不自动推出脸型、发型或身材。首次未限定的普通外貌属于本次候选设计，不是从剧情提取到的事实；不得据此添加无来源的特殊种族、角尾、伤疤、刺青、超能力或标志饰品。性格独立保存，失忆、受伤、疲惫和当前警戒不是稳定性格。',
+    '三景别从同一纯 TAG 外貌母版仅删除画外部位的完整标签及其分隔符；权重组整体保留或移除，不拆坏闭合权重。共同标签、标点、顺序和结构逐字一致，不分别改写。全身保留已知身体锚点；半身删画外腿脚；头像再删躯干等画外部位，头部发型名称及长度仍保留。已有景别逐字保留，完整或主动清空的资料不重建。',
+].join('\n');
+const outfitRule = ({ outfitSelection } = {}) => [
+    outfitSelection === 'catalog'
+        ? '本轮 outfitCatalog 只列编号 id、角色 characterKey 和衣装名称 name。按实际画面选择属于本人的衣装编号，名称沿用该条名称；没有合适的保存衣装时编号显式留空，按剧情交付当次衣装名称。编号不能跨轮复用或借用他人衣装。不用 默认、原装、__proto__、constructor、prototype，不含 |、] 或换行。'
+        : '衣装原名是绑定键：本次 outfit.name 或对应正文服装栏有名称时逐字沿用，不翻译、不扩写、不因缺说明另起名。仅两者均未命名时才命名；不用 默认、原装、__proto__、constructor、prototype，不含 |、] 或换行。',
+    outfitSelection === 'catalog'
+        ? '每个 named 都写非空衣装名称与纯英文 TAG 衣装描述，Char 使用本人的 <<outfit:token>>。meta_outfit_id 填本轮属于本人的衣柜编号；选择当次衣装时竖线后留空。描述依据本次角色设定、剧情和衣装名称，不猜写未提供的保存资料。'
+        : '已保存衣装说明逐字复用。首次缺说明的新衣装保留全部已知设定，即使只提供衣装名称，也应为未限定的主要衣物确定具体颜色、材质、剪裁、领袖、开合、层次和必要普通配件，形成完整可复用设计；符合世界观、职业与场合，不把补全冒充原文事实。只有用户明确要求“不设计、仅照录已有细节”时才保留未限定项；本轮“资料提取”或“不生成画面”仅限定交付形式，不禁止细化衣装。',
+    '【服装 DNA 表达】新服装说明全部使用英文 TAG，颜色、款式、长度、材质和细节均按标签表达；不写 wears...、with...、layered over... 等自然语言补述。已有保存说明仍逐字复用，不自动转换。',
+    DNA_TAG_RULE,
+    '### 着装',
+    '- 详述：[颜色][材质][长度][名称]+[细节]+[位置/状态]；简述：[颜色][材质][长度][名称]',
+    '- 细节（按需）：改造/装饰/材质/纹理/图案/着装状态/暴露部位等',
+    '> 服装＝贴身衣物，拿掉露出内衣/皮肤（衬衫/裙子/内衣）；附件＝外侧挂载可独立移除，移除后衣物依然完整（配件/首饰/披风）',
+    '> 长度锚定：裙（mini/knee-length/maxi/floor-length）、靴（ankle/knee-high/thigh-high）、袜（ankle socks/knee-high/thigh-high/pantyhose）、外套（cropped/waist-length/long）四类必须带长度词（✗black boots→✓black thigh-high boots）',
+    '> 颜色铁律：每件服装必须带颜色（✗dress→✓red silk dress）；纯透明材质豁免（transparent本身即视觉信息）',
+    '> 叠穿：从内到外逐件独立列出（✗white t-shirt with blue jacket→✓white t-shirt,blue denim open jacket）',
+    '> 签名判定法：服装签名＝颜色＋款式核心词＋长度（如需）+细节（如需）；逐词自问「砍掉后 AI 还画同一件吗？不会→必须保留」',
+    '【衣装分栏适配】只描述本套实际包含的衣物和普通配件，不含人物身份、动作、表情、构图或环境。DNA 保存整套签名，不因当次立绘镜头裁切删件；已有说明及一致性冻结衣装不重新设计。',
+    '不用 muted tones、dark clothes、layered clothing、elegant outfit、matching accessories 或 standard military-grade 等概称代替设计。饰物保留已知数量、颜色、形状和佩戴位置，左右以穿着者为准；缺说明时补全普通服装结构，不新增武器、身份饰品或特殊装备。',
+    '破损、湿润、散乱服从正文及衣装名，描述已知破损位置、形状和仍覆盖范围。仅写“破损衣物”时先建立具体的上装、下装、颜色和材质，再以适量局部磨损表达破损，不以满身尘土、到处撕裂或血污替代衣物结构，不把未说明的伤口、裸露或新增血迹写成事实。持续状态无剧情触发不复原。',
+    '新说明只用 TAG，不含人物身份、动作、表情或占位；清理完全重复、语义重复及互斥词，保留更具体且有依据的标签。整套签名不随镜头删件，同套差分沿用同一完整说明。已有说明无论是 TAG 还是自然语言，即使简短也逐字复用，不自动转换或扩写；一致性任务使用冻结衣装，不重新设计。新默认仅取命名衣装，不从旧 defaultAppearance 推断。',
+].join('\n');
+const OUTFIT_RULE = outfitRule();
+
+__igsDefine(exports, "OUTPUT_RULE", () => OUTPUT_RULE);
+__igsDefine(exports, "SOURCE_RULE", () => SOURCE_RULE);
+__igsDefine(exports, "DNA_WEIGHT_RULE", () => DNA_WEIGHT_RULE);
+__igsDefine(exports, "DNA_TAG_RULE", () => DNA_TAG_RULE);
+__igsDefine(exports, "IDENTITY_RULE", () => IDENTITY_RULE);
+__igsDefine(exports, "outfitRule", () => outfitRule);
+__igsDefine(exports, "OUTFIT_RULE", () => OUTFIT_RULE);
 });
 __igsRegister("src/generated-images/image-prompt-runtime.js", function(module, exports, require) {
 const { createDefaultImagePromptPreset } = require("src/generated-images/image-prompt-defaults.js");
@@ -63499,7 +63572,7 @@ const { ITEM_TASK, ITEM_PLAN } = require("src/generated-images/prompt-tasks/item
 const { CG_TASK, CG_TEMPLATE, CG_PLAN } = require("src/generated-images/prompt-tasks/cg.js");
 const { CONSISTENCY_TASK, CONSISTENCY_TEMPLATE } = require("src/generated-images/prompt-tasks/consistency.js");
 const IMAGE_PROMPT_DEFAULT_ID = 'igs-imagegen-default-v1';
-const IMAGE_PROMPT_DEFAULT_VERSION = 28;
+const IMAGE_PROMPT_DEFAULT_VERSION = 31;
 
 // taskMap 选择用途，contentByFormat 仅选择该用途允许的协议。
 const TASKS = {
@@ -63547,40 +63620,6 @@ __igsDefine(exports, "createDefaultImagePromptPreset", () => createDefaultImageP
 __igsDefine(exports, "IMAGE_PROMPT_DEFAULT_ID", () => IMAGE_PROMPT_DEFAULT_ID);
 __igsDefine(exports, "IMAGE_PROMPT_DEFAULT_VERSION", () => IMAGE_PROMPT_DEFAULT_VERSION);
 });
-__igsRegister("src/generated-images/prompt-tasks/common.js", function(module, exports, require) {
-// 仅在需要该职责的任务中复用；不向模型广播其他任务协议。
-const OUTPUT_RULE = '直接输出本轮任务的扁平字段，不输出开场说明、思考标签、推理正文、JSON、Markdown、代码围栏、画师或第二份正文。字段名位于行首，具体字段、空值及分隔方式只遵守当前任务协议。示例不是任务，编号、人物、token 与设计必须替换为本轮输入。';
-const SOURCE_RULE = '以本次资料和显式要求为依据，不续写剧情、不增减任务或人物。保存资料、触发词和闭合权重原样复用，不同义清洗。缺失内容能否设计由当前任务声明，不把候选设计冒充已保存资料或原作事实；未提供的具体年龄、身高、体重及围度数值不编造。';
-const IDENTITY_RULE = [
-    '先分清保存身份、来源已明确的外貌和首次候选：保存身份及已有景别逐字沿用；来源已明确的性别、年龄感、种族和身体特征不得改写。仅 promptTask.purpose 为 sprite 且缺身份景别、需要首次候选时，才在已知设定内一次协调设计尚未限定的普通可见外貌。candidate-required 是建立可用候选，不是把未知项抄成占位说明；saved-only 和 identity-cleared 不设计或补建。',
-    '首次候选先形成完整而具体的英文身份母版：年龄感及性别表达按资料，头发、五官、固有肤色、骨架与体态彼此协调，足以在换装后辨认同一个人。可补全的普通视觉细节在本次确定后贯穿三景别；不写 indeterminate、unspecified、unknown、fair to medium、某色或其他待定范围，不照抄范例人物的高矮、腿长、脸型或配饰。用户明确禁止设计的未知项不补，不用占位词凑齐描述。',
-    '头发逐项落实具体底色、已有挑染或渐变的位置与颜色、长度、直卷与蓬松度、刘海形状、分缝、鬓发和扎发结构及位置；不只写 black hair 或 shoulder-length hair。已有颜色和发型优先，光照、灰尘或临时散乱不替代固有发色与结构。没有设定的挑染、复杂扎发不是必添项。',
-    '五官写出脸部轮廓与下巴、眉形及浓淡、眼型与瞳色、鼻梁鼻尖、唇形厚薄等相互协调的具体特征，不以漂亮、英俊、sharp eyes 或职业气质代替。常态眼神可以来自稳定设定，喜怒、闭眼、视线方向属于当次表情，不混入身份。',
-    '皮肤写明固有肤色及冷暖，保留已有雀斑、痣、疤痕和身体标记的位置。体态写清相对高矮感、骨架肩宽、颈部、躯干与四肢比例、腰胯轮廓、胖瘦和肌肉感；不把护甲厚度、衣物收腰或坐姿透视当身体比例，不默认人人窄肩、细腰、高个、长腿。具体身体数值只沿用输入，不自行补造。',
-    '逐项核对角、非人耳、尾巴、翅膀、身体标记与明确的标志饰品，保留已知数量、颜色、形状、位置，未知不填满清单。衣装、护甲、武器和普通战术耳机不是身份；灰尘、血污、临时伤势、当次表情、视线和姿态也不进入身份。',
-    '来源优先看保存资料、角色资料及设定，再看正文明确外貌；职业、战斗能力和人物姓名不自动推出脸型、发型或身材。首次未限定的普通外貌属于本次候选设计，不是从剧情提取到的事实；不得据此添加无来源的特殊种族、角尾、伤疤、刺青、超能力或标志饰品。性格独立保存，失忆、受伤、疲惫和当前警戒不是稳定性格。',
-    '三景别从同一详细外貌母版仅删除画外完整短语及其分隔符，共同措辞、标点、顺序和结构逐字一致，不能分别润色或压缩。全身保留已知整体比例和身体锚点；半身删画外腿脚；头像再删躯干等画外部位，头部发型名称及长度仍保留。已有景别逐字保留，完整或主动清空的资料不重建。',
-].join('\n');
-const outfitRule = ({ outfitSelection } = {}) => [
-    outfitSelection === 'catalog'
-        ? '本轮 outfitCatalog 只列编号 id、角色 characterKey 和衣装名称 name。按实际画面选择属于本人的衣装编号，名称沿用该条名称；没有合适的保存衣装时编号显式留空，按剧情交付当次衣装名称。编号不能跨轮复用或借用他人衣装。不用 默认、原装、__proto__、constructor、prototype，不含 |、] 或换行。'
-        : '衣装原名是绑定键：本次 outfit.name 或对应正文服装栏有名称时逐字沿用，不翻译、不扩写、不因缺说明另起名。仅两者均未命名时才命名；不用 默认、原装、__proto__、constructor、prototype，不含 |、] 或换行。',
-    outfitSelection === 'catalog'
-        ? '每个 named 都写非空衣装名称与完整英文穿着描述，Char 使用本人的 <<outfit:token>>。meta_outfit_id 填本轮属于本人的衣柜编号；选择当次衣装时竖线后留空。描述依据本次角色设定、剧情和衣装名称，不猜写未提供的保存资料。'
-        : '已保存衣装说明逐字复用。首次缺说明的新衣装保留全部已知设定，即使只提供衣装名称，也应为未限定的主要衣物确定具体颜色、材质、剪裁、领袖、开合、层次和必要普通配件，形成完整可复用设计；符合世界观、职业与场合，不把补全冒充原文事实。只有用户明确要求“不设计、仅照录已有细节”时才保留未限定项；本轮“资料提取”或“不生成画面”仅限定交付形式，不禁止细化衣装。',
-    '逐件描述本套实际包含的内搭、上装、下装或裙装、外套或护甲、腰带及袋具、袜鞋和必要普通配件。具体主辅色直接修饰所属衣物，每件写清材质或表面质感、贴身或宽松轮廓、长短、领型袖型、开合扣具、边饰纹样和内外穿戴关系；只写适用结构，不机械添加整张清单。不能仅给护甲写 black，其余仍是 police uniform、tactical belt 或 combat boots。',
-    '不用 muted tones、dark clothes、layered clothing、elegant outfit、matching accessories 或 standard military-grade 等概称代替设计。饰物保留已知数量、颜色、形状和佩戴位置，左右以穿着者为准；缺说明时补全普通服装结构，不新增武器、身份饰品或特殊装备。',
-    '破损、湿润、散乱服从正文及衣装名，描述已知破损位置、形状和仍覆盖范围。仅写“破损衣物”时先建立具体的上装、下装、颜色和材质，再以适量局部磨损表达破损，不以满身尘土、到处撕裂或血污替代衣物结构，不把未说明的伤口、裸露或新增血迹写成事实。持续状态无剧情触发不复原。',
-    '说明使用完整英文穿着谓语，不含人物身份、动作、表情或占位。整套签名不随镜头删件，同套差分沿用同一完整说明。已有说明即使简短也不自动扩写；一致性任务使用冻结衣装，不重新设计。新默认仅取命名衣装，不从旧 defaultAppearance 推断。',
-].join('\n');
-const OUTFIT_RULE = outfitRule();
-
-__igsDefine(exports, "OUTPUT_RULE", () => OUTPUT_RULE);
-__igsDefine(exports, "SOURCE_RULE", () => SOURCE_RULE);
-__igsDefine(exports, "IDENTITY_RULE", () => IDENTITY_RULE);
-__igsDefine(exports, "outfitRule", () => outfitRule);
-__igsDefine(exports, "OUTFIT_RULE", () => OUTFIT_RULE);
-});
 __igsRegister("src/generated-images/prompt-tasks/sprite.js", function(module, exports, require) {
 const { SOURCE_RULE, IDENTITY_RULE, OUTFIT_RULE } = require("src/generated-images/prompt-tasks/common.js");
 const { TEMPLATE_RULE, PICTURE_RULE } = require("src/generated-images/prompt-tasks/template.js");
@@ -63597,16 +63636,16 @@ const SPRITE_DATA = [
     '首次资料示例仅示范详细程度与字段，不是本轮人物。示例输入：林澄，slotId=7，成年女性，浅肤色、黑色齐肩发、杏形棕眼、鹅蛋脸，左侧银色星形发夹与小珍珠耳钉，纤细体态，性格沉静细心；衣装原名=日常裙装，蓝色及膝裙与白色开衫，允许补全未限定的普通细节。下例发型结构、局部五官和服装材质等为本次示例设计，不是额外来源事实。',
     'slotid: 7', 'character: 林澄', 'personality: composed, attentive, patient',
     'outfit_name: 日常裙装',
-    'outfit_description: wears a deep-blue matte cotton-twill knee-length A-line dress with a fitted bodice, a rounded neckline, short set-in sleeves, a narrow matching fabric waistband and evenly spaced skirt pleats, beneath an open ivory-white fine-knit cardigan with long ribbed cuffs, a straight hip-length hem and small pearl-white front buttons, paired with cream ribbed ankle socks and matte-black leather low-heeled round-toe shoes with slim instep straps',
-    'dna_full_body: An adult woman with light warm-toned skin, straight jet-black shoulder-length hair with a left-side part, softly curved ends and fine side-swept bangs, almond-shaped brown eyes, gently arched fine eyebrows, a soft oval face tapering to a rounded chin, a small straight nose and well-defined medium-full lips, a silver star-shaped hair clip above the left temple and small pearl stud earrings, a slender neck, gently sloping shoulders and a slim upper torso with a softly defined waist, balanced torso-to-leg proportions and slender limbs,',
-    'dna_half_body: An adult woman with light warm-toned skin, straight jet-black shoulder-length hair with a left-side part, softly curved ends and fine side-swept bangs, almond-shaped brown eyes, gently arched fine eyebrows, a soft oval face tapering to a rounded chin, a small straight nose and well-defined medium-full lips, a silver star-shaped hair clip above the left temple and small pearl stud earrings, a slender neck, gently sloping shoulders and a slim upper torso with a softly defined waist,',
-    'dna_portrait: An adult woman with light warm-toned skin, straight jet-black shoulder-length hair with a left-side part, softly curved ends and fine side-swept bangs, almond-shaped brown eyes, gently arched fine eyebrows, a soft oval face tapering to a rounded chin, a small straight nose and well-defined medium-full lips, a silver star-shaped hair clip above the left temple and small pearl stud earrings, a slender neck,',
-    '三份是同一角色资料，不是三张图。半身和头像只删画外完整短语，不追加衣领、内搭、裤子、鞋靴或改写共同描述。身体比例直接描述身体本身，不用衣服覆盖或剪裁作身体特征；衣装只写 outfit_description，当次表情、视线和姿势不写入身份。',
+    'outfit_description: 1.2::blue dress::, pleated dress, knee-length dress, short sleeves, 1.2::white cardigan::, open cardigan, long sleeves, hip-length cardigan, white socks, ankle socks, black footwear, mary janes, low heels',
+    'dna_full_body: 1girl, adult, 1.2::black hair::, medium hair, straight hair, swept bangs, brown eyes, thin eyebrows, light skin, hairclip, 1.2::star hair ornament::, earrings, 1.2::pearl earrings::, slim,',
+    'dna_half_body: 1girl, adult, 1.2::black hair::, medium hair, straight hair, swept bangs, brown eyes, thin eyebrows, light skin, hairclip, 1.2::star hair ornament::, earrings, 1.2::pearl earrings::, slim,',
+    'dna_portrait: 1girl, adult, 1.2::black hair::, medium hair, straight hair, swept bangs, brown eyes, thin eyebrows, light skin, hairclip, 1.2::star hair ornament::, earrings, 1.2::pearl earrings::,',
+    '三份是同一角色资料，不是三张图。三景别只从同一 TAG 母版删除画外部位的完整标签，不追加衣领、内搭、裤子、鞋靴或改写共同标签；无额外画外标签时全身与半身允许相同。身体标签直接表达身体本身，衣装只写 outfit_description，当次表情、视线和姿势不写入身份。',
     '可选 dna_uc_* 只写该景别身份需要排除的英文特征；无额外排除项时省略或留空，不写沿用正向、默认不变、表情姿势说明等自然语言指令。',
     '交付前先核对每份首行 slotid 和第二行 character 是否齐全且匹配本轮清单，再逐角色核对三景别、独立性格、衣装及全部必填字段；检查身份未混入穿戴物、景别共同描述保真和 UC 为实际排除项。只输出完整资料字段，不输出检查过程。',
 ].join('\n');
 const SPRITE_TEMPLATE = [...identity, TEMPLATE_RULE, PICTURE_RULE, SPRITE_HALF_BODY_RULE,
-    '本轮交单人立绘模板，不输出 at 或 CG 当次身份旁路。缺身份景别时同次交 meta_dna_full_body、meta_dna_half_body、meta_dna_portrait: 本图索引 | 英文身份主语，可附 meta_dna_uc_对应景别；半身立绘也必须交齐三景别候选，不新增 partial。',
+    '本轮交单人立绘模板，不输出 at 或 CG 当次身份旁路。缺身份景别时同次交 meta_dna_full_body、meta_dna_half_body、meta_dna_portrait: 本图索引 | 纯英文身份 TAG，可附 meta_dna_uc_对应景别；半身立绘也必须交齐三景别候选，不新增 partial。',
     '模板 Char 只引用自身身份和适用衣装槽，接默认站姿与平和表情，不照搬剧情动作。三景别身份不含衣装、表情、姿势或令牌；衣装旁路独立。逐槽完整写完后再分隔下一图，编号与任务一致。',
 ].join('\n');
 const SPRITE_CAPTION = [SOURCE_RULE, PICTURE_RULE, SPRITE_HALF_BODY_RULE,
@@ -63626,7 +63665,7 @@ const templateRule = ({ outfitSelection } = {}) => [
     '每张图以独立一行 slotid: 本轮允许正整数 开始，编号恰好一次。写 prompt_mode: dna_template、scene、scene_uc，可写 size: 宽x高 和 analysis。尺寸服从本次要求。除 analysis 可多行记录简短来源与检查结论外，每字段单行，不输出推理正文。',
     '先写本图全部 char/char_uc 对，再按 Char 顺序写各自 meta 字段。--- 只分隔完整的不同图片，之后下一非空行必须是新的 slotid；单图内部和末尾不写 ---，不同人物之间绝不分段。',
     'char 格式为实际数字坐标 | 英文正文，例如 char: 0.32,0.52 | <<dna:r0>> <<outfit:r0>> and waves.。坐标为0到1的数字，不写字面 x,y，不增加索引、kind 或角色名等额外列。每个 char 后紧接 char_uc，可空但字段不能省略。',
-    'named 正向 Char 恰好一次自己的 <<dna:token>> 作身份主语；任务 outfitMode 为 template 时另写 outfit_mode: template，本人 Char 恰好一次自己的 <<outfit:token>>，后接动作表情，不重复固定外貌或衣装正文。非衣装模板任务直接写当次衣装谓语。本人 char_uc 最多一次自己的 <<dna_uc:token>>；Scene、他人提及和元数据不放身份令牌。每段权重独立闭合，不用未闭合权重包住占位符。',
+    'named 正向 Char 恰好一次自己的 <<dna:token>> 作身份槽；任务 outfitMode 为 template 时另写 outfit_mode: template，本人 Char 恰好一次自己的 <<outfit:token>>，后接动作表情，不重复固定外貌或衣装正文。非衣装模板任务直接写当次衣装 TAG；已有保存说明仍原样复用。本人 char_uc 最多一次自己的 <<dna_uc:token>>；Scene、他人提及和元数据不放身份令牌。每段权重独立闭合，不用未闭合权重包住占位符。',
     '本图 Char 按实际出现顺序从0连续编号；每个索引各写 meta_kind、meta_key、meta_token、meta_frame、meta_outfit_name、meta_outfit_description 恰好一次，所有行内值都为 本图索引 | 值。前四项非空且匹配输入；衣装两项空值也必须保留索引和竖线。slotid、token 数字和原角色序号不是本图索引，不在末尾重复汇总。',
     'meta_frame 按输入及实际可见范围选 full_body、half_body、portrait，partial 只兼容输入明确指定的历史任务。输入有 outputs.rows 时按本图 captionIndex 对账；有 promptTask.slots 时仅绑定本槽全部 tokens，不照搬其他槽。',
     outfitSelection === 'catalog'
@@ -63652,9 +63691,9 @@ const DNA_TASK = '只整理本轮明确要求的可复用身份资料，不生�
 const DNA_DATA = [
     '【先交图头】回复第一行直接写 slotid: 本轮实际槽号，第二行写 character: 对应规范角色键，单人单份也不省略；输入已有 slotId 不代替回复中的图头。', SOURCE_RULE, IDENTITY_RULE, OUTFIT_RULE,
     '按本次 promptTask 与 outputs.identityRequirements 交付缺失资料，不覆盖完整或主动清空身份；只在明确 sprite 用途中建立三景别候选。稳定性格独立写 personality，已有值及显式空值保持，仅缺键时提取，无依据可空。',
-    '每份首行 slotid: 本轮编号，随后 character: 对应规范角色键、outfit_name、outfit_description。需要补身份时交 dna_full_body、dna_half_body、dna_portrait 及可选 dna_uc_对应景别；各身份主语非空且不超过4096字符，UC 可空。',
+    '每份首行 slotid: 本轮编号，随后 character: 对应规范角色键、outfit_name、outfit_description。需要补身份时交 dna_full_body、dna_half_body、dna_portrait 及可选 dna_uc_对应景别；新身份、身份 UC 和新衣装说明只用逗号分隔的英文 TAG，身份字段非空且不超过4096字符，UC 可空。',
     '本槽 slotId 对应唯一 token，再取其 characterKey；不填别名、token 或译名。字段无索引、竖线或 meta_ 前缀。每份字段完整才以独立行 --- 分隔下一份，不输出 scene、char、镜头、姿势、背景、质量或完整绘图正文。',
-    '三份身份来自同一完整外貌母版，只删除画外短语，不分别重写；衣装、灰尘、血污、临时伤势、当次表情与动作不进入身份或性格。最后逐槽核对原编号、角色键、必填字段与保存资料保真。',
+    '三份身份来自同一纯 TAG 外貌母版，只删除画外部位的完整标签，权重组保持闭合，共同标签不分别重写；衣装、灰尘、血污、临时伤势、当次表情与动作不进入身份或性格。最后逐槽核对原编号、角色键、必填字段与保存资料保真。',
     '身体直接描述自身结构，不夹带衣领、内搭、裤子或鞋靴，穿戴物只写 outfit_description。可选 dna_uc_* 只写英文身份排除项，无额外排除项可省略或留空，不写沿用正向、默认值、表情姿势或交付说明。',
 ].join('\n');
 
@@ -63712,7 +63751,7 @@ const { SPRITE_HALF_BODY_RULE } = require("src/generated-images/prompt-registry.
 const { EXPRESSION_FRAGMENTS } = require("src/generated-images/prompt-tasks/expression.js");
 const OUTFIT_TASK = '只处理指定角色的本套命名衣装与所需差分，不改变保存身份，不把剧情动作变成默认姿势。';
 const OUTFIT_DATA = [SOURCE_RULE, OUTFIT_RULE,
-    '本轮只交指定衣装资料：按本槽 token 找到 characterKey，再读取该角色 characterContext.outfit。outfit.name 是本次唯一衣装名称；outfit.description 非空时逐字使用，为空时依据衣装名称、本轮参考资料及角色 DNA 中的性别和体型设计这套衣装。每份首行 slotid: 本轮编号，随后 character: 规范角色键、outfit_name: outfit.name 原文、outfit_description: 完整英文穿着谓语。不更换角色或衣装名称，不写别名或译名。',
+    '本轮只交指定衣装资料：按本槽 token 找到 characterKey，再读取该角色 characterContext.outfit。outfit.name 是本次唯一衣装名称；outfit.description 非空时逐字使用，为空时依据衣装名称、本轮参考资料及角色 DNA 中的性别和体型设计这套衣装。每份首行 slotid: 本轮编号，随后 character: 规范角色键、outfit_name: outfit.name 原文、outfit_description: 逗号分隔的纯英文服装 TAG，细节也用标签，不写自然语言。不更换角色或衣装名称，不写别名或译名。',
     '每项字段各一次，直接写 字段名: 值，不带索引、竖线或 meta_ 前缀。完整写完一份才以独立行 --- 分隔下一份，单份不写分隔符。',
     '身份沿用已保存资料，不输出 dna_*、personality、scene、char、构图、姿势、背景、质量词或完整绘图词。不用临时身份描述或衣装说明填补缺失身份。',
     '交付前核对本轮槽号集合、规范角色键、衣装原名及独立说明；已有说明逐字保留，缺说明只完善本套衣装。',
@@ -63731,13 +63770,13 @@ __igsDefine(exports, "OUTFIT_EXPRESSION", () => OUTFIT_EXPRESSION);
 });
 __igsRegister("src/generated-images/prompt-tasks/wardrobe.js", function(module, exports, require) {
 const { SOURCE_RULE, OUTFIT_RULE } = require("src/generated-images/prompt-tasks/common.js");
-const WARDROBE_TASK = '只整理本套命名衣装的独立英文穿着说明，作为后续绘图的可复用资料，不绘制服装静物或人物。';
+const WARDROBE_TASK = '只整理本套命名衣装的独立纯英文 TAG 服装 DNA，作为后续绘图的可复用资料，不绘制服装静物或人物。';
 const WARDROBE_CAPTION = [SOURCE_RULE, OUTFIT_RULE,
-    '本轮是独立 outfit-dna 提取：从已提供正文与衣装要求提取整套穿戴谓语；不是画面写词，不套用质量、底色、透明底、镜头或人物动作规则。衣装原名和已有说明保真，首次未指定的视觉细节按衣装规则一次补全。',
-    '只使用 caption-slots 承载资料。每份从独立一行 #本轮编号 开始，随后 scene: 完整英文穿着谓语、char: 留空、uc: 留空。每个字段各一次，scene 非空；char 与 uc 留空也保留字段名。不写 slotid、at、meta、DNA、人物主语、解释或代码围栏。',
+    '本轮是独立 outfit-dna 提取：从已提供正文与衣装要求提取整套纯英文服装 TAG，细节也只用标签；不是画面写词，不套用质量、底色、透明底、镜头或人物动作规则。衣装原名和已有说明保真，首次未指定的视觉细节按衣装规则一次补全。',
+    '只使用 caption-slots 承载资料。每份从独立一行 #本轮编号 开始，随后 scene: 完整纯英文服装 TAG、char: 留空、uc: 留空。每个字段各一次，scene 非空；char 与 uc 留空也保留字段名。不写 slotid、at、meta、DNA、人物主语、解释或代码围栏。',
     '示例是格式说明，不是本轮设计，编号与衣装以实际输入为准：',
     '#1',
-    'scene: wears a light-blue cotton short-sleeved shirt with a pointed collar and dark-navy shoulder tabs beneath a matte-black lightweight armor vest, paired with deep-navy cargo trousers, a black nylon belt and black leather mid-calf lace-up boots',
+    'scene: blue shirt, collared shirt, short sleeves, epaulettes, black armor, blue pants, cargo pants, black belt, black footwear, knee boots, lace-up boots',
     'char:', 'uc:',
     '交付前对账槽号、衣装原名、已知主辅色与部位、材质剪裁和内外层；身体身份、性格、表情和剧情动作不进入说明。',
 ].join('\n');
@@ -63792,8 +63831,8 @@ const { templateRule, PICTURE_RULE } = require("src/generated-images/prompt-task
 const CG_TASK = '制作本轮普通剧情 CG：选择画面、组织场景与人物动作，按指定字段交付。';
 const rules = [SOURCE_RULE, PICTURE_RULE,
     '【出镜人物逐一描述】先核对本图实际出镜者与正文角色标签：画面中出现的每个人物，只要正文中有其角色标签，就必须作为本人独立描述，不能仅在 Scene 中带过、并入他人描述或降为无名背景人物。配角、玩家、后景人物、背影和局部出镜者同样逐人交付；正文有标签但本图未出镜者不强行加入画面。Scene 中的人数、身份指向与实际交付的人物组必须一致。',
-    '【CG 身份描述与立绘同等详细】每位具名出镜者的 meta_identity 写完整、具体且可辨识的英文身份主语，依据本轮角色设定与正文，保留已确定的外貌；未限定的普通视觉细节按首次立绘的详细程度一次协调落实。不要用姓名、职业、漂亮或 sharp eyes 代替身份，也不要套用同一张脸或范例人物。不猜写未提供的保存资料。',
-    '逐人写清发色、长度、直卷蓬松度、刘海、分缝、鬓发与适用扎发结构；脸部轮廓及下巴、眉形浓淡、眼型瞳色、鼻梁鼻尖和唇形；固有肤色冷暖、骨架肩宽、颈部、躯干比例及胖瘦肌肉感。全身补整体比例和四肢，半身不写画外腿脚，头像只保留头颈可见身份。已有挑染、非人身体特征、身体标记和明确标志饰物保留其数量、颜色、形状与位置；不新增无来源的特殊种族、角尾、伤疤、刺青或标志饰物，不编造具体年龄、身高体重或围度。用户明确禁止设计的细节不补。',
+    '【CG 临时身份与衣装只用 TAG】每位具名出镜者的 meta_identity、meta_signature 和本次新写的 meta_outfit_description 都只交付逗号分隔的英文 TAG，包括细节，不写自然语言句子或穿着谓语。身份与立绘采用同一套标签方案，依据本轮角色设定与正文保留已确定外貌；未限定的普通视觉细节在设定内协调落实，以准确标签能表达为限。不以姓名、职业或漂亮代替身份，不套用范例人物，不猜写未提供的保存资料。Scene 和 Char 的动作、表情及互动仍按画面规则表达。',
+    '逐人用适用标签表达发色、发长、直卷、刘海、眼型瞳色、眉形、肤色、体型与标志特征；全身补适用身体标签，半身不写画外腿脚，头像只保留头颈可见身份。没有准确标签的细节用已知标签组合表达，不能为凑齐五官或材质细节追加自然语言或编造标签。已有挑染、非人身体特征、身体标记和明确标志饰物按有依据的标签保留；不新增无来源的特殊种族、角尾、伤疤、刺青或标志饰物，不编造具体身体数值。用户明确禁止设计的细节不补。',
     '稳定身份、衣装和当次动态独立：发型、五官、肤色和身体比例不以制服、护甲、武器、警戒神态或姿势代替；衣装只写本人衣装字段，所持武器及其动作写本人 Char，表情、视线、灰尘、血污和临时伤势写本次画面，不混入身份主语。',
     '有构图备选时比较主体、核心动作、接触、空间与限定视角，选择一个完整骨架，不机械选首项、不混拼；全不成立才说明冲突。没有备选时按本轮画面要求构图，不编造 key 或召回结果。',
     '已提供前文只延续衣装、环境、标志物与光影，不能覆盖保存 DNA、搬用旧镜头或动作。衣装按生成点取值，不把楼末衣装套到前段；裁切不是换装，持续破损、湿润和散乱无触发不复原。',
@@ -63804,8 +63843,8 @@ const CG_TEMPLATE = [
     '【指定尺寸原样交付】本轮 writingRequirements.size 非空时，每图必须写 size: 该尺寸，宽高及顺序逐字一致，不省略、不改成相近面积或其他横竖比例。只在未指定尺寸时自行确定适用尺寸；示例尺寸不能覆盖本轮要求。',
     '【人物字段用法】从 promptTask.characters 取本人 characterKey 和 token。char 写作：char: 实际坐标 | <<dna:本人token>> <<outfit:本人token>> and 动作。两个占位符各一次，后面只写本图表情、视线、姿势与互动。characterContext.availableFrames 列出已有身份景别，meta_frame 仍按本图可见范围选择；身份描述写 meta_identity，衣装描述写 meta_outfit_description。',
     ...rules, outfitRule({ outfitSelection: 'catalog' }), templateRule({ outfitSelection: 'catalog' }),
-    'CG 从允许池中选择实际出镜者；正文有标签的每位出镜者独立 named，各交一对 char/char_uc 及完整的本人 meta 字段，即使位于后景或只露出局部也不省略。不能 Scene 写两人却只交一组人物字段。真正无名人物为 generic、动物或非人物客体为 object，二者只写 meta_kind 并直接描述。纯空镜不新增 Char 或身份旁路。reference 不属于普通 CG。',
-    '【逐人完整身份字段】每个 named 固定各写一次 meta_identity: 本图索引 | 详细英文身份主语 和 meta_signature: 本图索引 | 标志细节摘要。meta_identity 必须非空，按上述立绘同等详细程度描述本人，不以摘要代替；meta_signature 无依据可空但保留字段。字段要求对所有具名出镜者相同，不分支或省略。两字段不含衣装、灰尘、血污、临时伤势、表情、动作或令牌，不输出 meta_dna_*。',
+    'CG 从允许池中选择实际出镜者；正文有标签的每位出镜者独立 named，各交一对 char/char_uc 及完整的本人 meta 字段，即使位于后景或只露出局部也不省略。不能 Scene 写两人却只交一组人物字段。真正无名临时人物为 generic，其 Char 中的身份和衣装同样只用英文 TAG，再接本图动作、表情和互动，不编造角色键或 token。动物或非人物客体为 object；generic/object 只写 meta_kind 并直接描述，不使用身份或衣装槽。纯空镜不新增 Char 或身份旁路。reference 不属于普通 CG。',
+    '【逐人完整身份字段】每个 named 固定各写一次 meta_identity: 本图索引 | 完整英文身份 TAG 和 meta_signature: 本图索引 | 标志特征 TAG。meta_identity 必须非空，不能以摘要代替；meta_signature 无依据可空但保留字段。字段要求对所有具名出镜者相同，不分支或省略。两字段只用 TAG，不含衣装、灰尘、血污、临时伤势、表情、动作或令牌，不输出 meta_dna_*。',
     '每个 named 的正向 Char 始终恰好一次自己的 <<dna:token>> 和适用衣装槽，再接动态谓语；meta_identity 与 meta_signature 是独立字段，不复制进 Scene 或 Char。本人身份槽的 token、衣装槽的 token 与 meta_token 必须一致；提及互动对象时用普通名字或明确指向，不写对方的身份槽，提及不能代替对方自己的完整人物组。meta_region 可选，仅表示有依据的规划粗区域，不宣称已看图定位。',
     '【完整范例一：单人详细身份】示例输入：numbered-text，正文共8段，只允许 slotid 1，选第4段，指定1344x768及 High quality illustration.；正文角色标签 Nora 对应 r7，已明确成年女性、黑色短发，衣装名“蓝夹克”且无说明。画面只有 Nora 蹲在矮墙后观察街道。以下保留已知设定，协调落实未限定的普通五官、肤色与体态，完整身份写 meta_identity，警戒视线写 Char，衣装写衣装字段。本例不是本轮人物资料。',
     'slotid: 1', 'at: 4', 'prompt_mode: dna_template', 'outfit_mode: template', 'size: 1344x768',
@@ -63815,8 +63854,8 @@ const CG_TEMPLATE = [
     'char_uc:',
     'meta_kind: 0 | named', 'meta_key: 0 | Nora', 'meta_token: 0 | r7', 'meta_frame: 0 | half_body',
     'meta_outfit_id: 0 |', 'meta_outfit_name: 0 | 蓝夹克',
-    'meta_outfit_description: 0 | wears a waist-length blue cotton jacket with a stand collar, long sleeves and a silver front zipper over a white crew-neck cotton shirt, straight charcoal denim trousers and black leather lace-up ankle boots',
-    'meta_identity: 0 | An adult woman with short jet-black straight hair cut just below the ears, a right-side part and fine side-swept bangs, deep-brown almond-shaped eyes, gently arched medium-thick brows, an oval face with a softly squared jaw, a straight narrow nose and defined medium-full lips, light warm-toned skin, a medium-length neck, moderately broad shoulders and a lean upper torso,', 'meta_signature: 0 | ear-length black hair with a right-side part, softly squared jaw',
+    'meta_outfit_description: 0 | 1.2::white shirt::, 1.2::blue jacket::, cropped jacket, long sleeves, zipper, 1.2::grey pants::, jeans, black footwear, ankle boots, lace-up boots',
+    'meta_identity: 0 | 1girl, adult, 1.2::black hair::, short hair, straight hair, swept bangs, brown eyes, light skin, slim', 'meta_signature: 0 | 1.2::black hair::, short hair, swept bangs',
     '本例 char 的身份槽与详细 meta_identity 必须同时存在，衣装槽不能代替身份槽。示例落实的普通细节仅属该示例设计，不照搬到本轮人物。',
     '【完整范例二：两位标签人物都出镜】输入：outputs.selection 为 numbered-text，paragraphCount 为 12，只允许 slotid 1，writingRequirements.size 为 1344x768，quality 为 High quality illustration.；正文中 Alice 和 Bob 均有角色标签，第7段是 Alice 隔桌向 Bob 递红书，两人都在画面内。Alice/r0 为成年女性、黑色齐肩发、棕眼，Bob/r1 为成年男性、黑色短发；衣装分别只有“蓝外套”和“灰衬衫”名称、尚无说明。',
     '两人各交独立 char/char_uc、本人 token 和完整 meta 字段，meta_identity 均按同等详细程度描述。Bob 即使坐在后景也不能只出现在 Scene 或 Alice 的动作句中。下面的普通外貌细化只演示详细程度；实际任务以本轮已确定的外貌为准。',
@@ -63830,17 +63869,17 @@ const CG_TEMPLATE = [
     'char: 0.78,0.52 | <<dna:r1>> <<outfit:r1>> and reaches toward the book while looking at Alice.',
     'char_uc:',
     'meta_kind: 0 | named', 'meta_key: 0 | Alice', 'meta_token: 0 | r0', 'meta_frame: 0 | half_body',
-    'meta_outfit_id: 0 | 3', 'meta_outfit_name: 0 | 蓝外套', 'meta_outfit_description: 0 | wears a hip-length navy cotton coat with a notched collar, long sleeves and silver front buttons over a white crew-neck cotton shirt, straight black wool trousers and black leather lace-up ankle boots',
-    'meta_identity: 0 | An adult woman with straight jet-black shoulder-length hair, a left-side part, softly inward-curving ends and long side-swept bangs, brown almond-shaped eyes, fine gently arched brows, a soft oval face tapering to a rounded chin, a small straight nose and well-defined medium-full lips, light warm-toned skin, a slender neck, gently sloping shoulders and a slim upper torso with a softly defined waist,', 'meta_signature: 0 | shoulder-length black hair with inward-curving ends, rounded chin',
+    'meta_outfit_id: 0 | 3', 'meta_outfit_name: 0 | 蓝外套', 'meta_outfit_description: 0 | 1.2::white shirt::, 1.2::blue coat::, waist-length coat, long sleeves, buttons, 1.2::black pants::, black footwear, ankle boots, lace-up boots',
+    'meta_identity: 0 | 1girl, adult, 1.2::black hair::, medium hair, straight hair, swept bangs, brown eyes, thin eyebrows, light skin, slim', 'meta_signature: 0 | 1.2::black hair::, medium hair, brown eyes',
     'meta_kind: 1 | named', 'meta_key: 1 | Bob', 'meta_token: 1 | r1', 'meta_frame: 1 | half_body',
-    'meta_outfit_id: 1 |', 'meta_outfit_name: 1 | 灰衬衫', 'meta_outfit_description: 1 | wears a light-gray cotton shirt with a pointed collar, long cuffed sleeves and white front buttons, tucked into straight charcoal wool trousers with a plain brown leather belt, and dark-brown leather lace-up shoes',
-    'meta_identity: 1 | An adult man with short black slightly wavy hair, a right-side part, neatly tapered sides and a swept-back fringe, dark-brown narrow eyes, thick straight brows, an angular face with a broad jaw and a blunt chin, a prominent straight nose and thin well-defined lips, medium warm-toned skin, a sturdy neck, broad level shoulders and a solid upper torso with moderate muscle definition,', 'meta_signature: 1 | short wavy black hair with tapered sides, broad angular jaw',
+    'meta_outfit_id: 1 |', 'meta_outfit_name: 1 | 灰衬衫', 'meta_outfit_description: 1 | 1.2::grey shirt::, collared shirt, long sleeves, buttons, tucked in, 1.2::grey pants::, brown belt, leather belt, brown footwear, dress shoes',
+    'meta_identity: 1 | 1boy, adult, 1.2::black hair::, short hair, wavy hair, swept bangs, brown eyes, thick eyebrows, broad shoulders, muscular male', 'meta_signature: 1 | 1.2::black hair::, short hair, wavy hair, thick eyebrows',
     '【多图编号对照】假设正文共12段、允许两张图，分别选择第4段和第9段：第一张是 slotid 1、at 4，第二张是 slotid 2、at 9；两张都要完整交付图头、场景和适用的人物旁路，只在第一张全部字段结束后写独立一行 ---，再从第二张 slotid 开始。不能把第二张 at 写成图号2，也不能让两张复用同一个段号。此处只解释编号关系，不是新增任务或可直接交付的字段。',
     '【交付前逐图核对】先对照 Scene 实际出镜者与正文角色标签：每位有标签的出镜者是否都有独立 Char/UC、完整 meta 和详细身份，后景或局部人物是否漏交；未出镜的标签人物不硬塞。再核对 numbered-text 每图 slotid 后是否紧接且只出现一次非空整数 at，段号在范围内、多图递增不重复；size 原样交付；本图 meta 索引从0连续且每项恰好一次。按 meta_token 核对本人正向 char：完整 <<dna:该token>> 恰好一次，衣装模板另有一次 <<outfit:该token>>，无他人身份槽；meta_identity 逐人写清发型、五官、肤色、体态与适用身份锚点，不能以摘要或职业代替。身份、衣装与当次动态分开，Char 不重抄身份正文。发现遗漏先补齐再交付，不把检查或思考过程写进回复。',
     '最终回复第一行直接写 slotid，numbered-text 第二行直接写 at；不输出思考标签、推理正文、开场说明或范例说明。analysis 如需填写只记录简短检查结论。',
 ].join('\n');
 const CG_PLAN = [...rules, OUTFIT_RULE,
-    '每图写 slot: 从1开始的图序号、at: 正文段落整数、analysis: 简短中文检查结论、scene: 英文共同画面、scene_uc: 排除项。每人一对 char: 输入角色名 | 实际数字坐标 | 完整英文人物描述 和 char_uc: 排除项。at 不重复且递增，不越过编号正文。这里直接描述人物，不使用身份或衣装槽，不写 meta 字段。',
+    '每图写 slot: 从1开始的图序号、at: 正文段落整数、analysis: 简短中文检查结论、scene: 英文共同画面、scene_uc: 排除项。每人一对 char: 输入角色名 | 实际数字坐标 | 完整人物提示词 和 char_uc: 排除项。人物身份与衣装部分只用英文 TAG，再接本图动作、表情和互动；排除特征同样使用 TAG。at 不重复且递增，不越过编号正文。这里不使用身份或衣装槽，不写 meta 字段。',
 ].join('\n');
 
 __igsDefine(exports, "CG_TASK", () => CG_TASK);
@@ -65661,7 +65700,7 @@ const EXPRESSION_DIFF_BATCH_MAX = 9;
 // 数据库生图模式下的前端提示词接线：写词接口只说明画什么。
 // 正负模板在出图前合并进插件返回的 NaiCaption，不交给写词模型照抄。
 const OUTFIT_TEMPLATE_RULE = '任务 outfitMode 为 template 时，每份写 outfit_mode: template；named Char 在身份占位后恰写本人的 <<outfit:token>> 一次，再写动作与表情，不重复衣装说明。'
-    + 'meta_outfit_name 与 meta_outfit_description 是独立服装 DNA：本次 outfit.name 或对应正文服装栏已有名称时逐字沿用原名，尚未入柜或缺说明也不改名、不翻译、不另造英文名；只有正文和本次资料均未命名时才命名。已保存说明按原值复用，不改写或重新设计；缺说明的新装在同次回复提供完整英文穿着谓语，不增加写词请求。固定外貌、动作、表情和背景不进入服装 DNA。'
+    + 'meta_outfit_name 与 meta_outfit_description 是独立服装 DNA：本次 outfit.name 或对应正文服装栏已有名称时逐字沿用原名，尚未入柜或缺说明也不改名、不翻译、不另造英文名；只有正文和本次资料均未命名时才命名。已保存说明按原值复用，不改写或重新设计；缺说明的新装在同次回复提供逗号分隔的纯英文 TAG，细节同样用标签，不写自然语言穿着谓语，不增加写词请求。固定外貌、动作、表情和背景不进入服装 DNA。'
     + '新衣装逐件保留来源明确的主辅色、材质、剪裁、领袖与长度、内外层和纹样；首次建档未指定的视觉细节协调补全，不覆盖已知设定或已保存说明。配饰保留已知颜色、形状、数量与佩戴位置，左右按穿着者自身。不用泛称服装或配饰替代明确细节；同套差分复用同一说明，不随表情换色换饰。'
     + 'reference 的两项 meta_outfit_* 在自己的索引各写一次空值，reference、scene 与 UC 不使用衣装占位。';
 
@@ -67052,14 +67091,16 @@ const { CHARACTER_DNA_REQUIRED_VIEWS, CHARACTER_DNA_VIEWS, checkDnaViews, checkC
 const { isValidOutfitName } = require("src/scene/character-outfits.js");
 const { savedExpressionTemplate, bindAutoSpriteOutfitNames } = require("src/generated-images/illustration/character-prompt-task.js");
 const { checkPromptOutput, checkPromptTask } = require("src/schemas/prompt-recipe.js");
+const { DNA_WEIGHT_RULE } = require("src/generated-images/prompt-tasks/common.js");
 const SPRITE_DATA_RULE = [
     '仅 outputs.format 为 sprite-data 或 expression-fragments 时执行本段：只提取可复用资料，不生成 scene、char、构图、姿势、背景或完整绘图提示词。其他格式不执行本段。',
     '【先交图头】回复第一行必须是 slotid: 本轮实际槽号，第二行才写 character: 该槽唯一 token 对应的 promptTask.characters.characterKey。只有一个角色或一份资料也不能省略 slotid；输入中的 slotId 不能代替回复图头。每份从 slotid 重新开始，只输出本轮清单，角色键逐字照抄，不写 token、别名、译名或 DNA 中的英文名；字段各一次，多份用独立行 --- 分隔。',
-    '资料字段直接写 字段名: 值，不带 Char 索引或竖线，不加 meta_ 前缀。景别字段为 dna_full_body、dna_half_body、dna_portrait，值直接为英文身份主语。expression-fragments 同样按槽号和角色键绑定，不带索引。',
-    '缺身份景别时输出 dna_full_body、dna_half_body、dna_portrait，以及可选 dna_uc_对应景别。三份从同一详细外貌母版仅删除画外部位，共同描述逐字相同；已有景别逐字保留。身份只含稳定外貌，不含衣装、当次表情、灰尘、临时伤势、动作或场景。',
+    '资料字段直接写 字段名: 值，不带 Char 索引或竖线，不加 meta_ 前缀。景别字段为 dna_full_body、dna_half_body、dna_portrait，新身份及身份 UC 只写逗号分隔的英文 TAG，细节同样用标签，不写自然语言或人物介绍；已有身份逐字保留。expression-fragments 同样按槽号和角色键绑定，不带索引。',
+    '缺身份景别时输出 dna_full_body、dna_half_body、dna_portrait，以及可选 dna_uc_对应景别。三份从同一纯 TAG 外貌母版仅删除画外部位标签，共同标签逐字相同，权重组保持完整闭合；已有景别逐字保留。身份只含稳定外貌，不含衣装、当次表情、灰尘、临时伤势、动作或场景。',
+    DNA_WEIGHT_RULE,
     '身份主语中的躯干、四肢和颈部直接描述身体本身，不夹带身穿何物、衣领露出什么、裤子或靴子；穿戴内容只放 outfit_description。dna_uc_* 只写对应身份的英文排除项，无额外排除项可省略或留空，不写默认值说明、沿用正向、表情姿势说明或交付指令。',
     '仅 sprite 任务且 personality 字段缺失时另写 personality: 独立英文性格特点；只描述稳定性格，无依据留空，不写外貌、衣装、动作或当次心情。不得把性格复制进各景别。已有性格可省略或逐字保留，显式空值不补建。derived 衣装提取不输出身份和性格。',
-    '每份写 outfit_name 和 outfit_description。衣装原名逐字沿用输入，已保存说明逐字复用；缺说明时只建立完整英文穿着谓语，保留已知颜色、材质、剪裁和层次，首次未指定细节协调补全。不写人物身份、表情、动作或背景。',
+    '每份写 outfit_name 和 outfit_description。衣装原名逐字沿用输入，已保存说明逐字复用；缺说明时建立纯英文 TAG 服装 DNA，逐件绑定颜色、款式及适用长度，材质、剪裁及细节也只用标签，首次未指定细节协调补全。不写自然语言、人物身份、表情、动作或背景。',
     'expression-fragments 每份仅写 slotid、character、expression、expression_uc；只写指定表情的眼、眉、嘴等可见变化，可按性格表现，不写身份、衣装、身体姿势、道具、背景、镜头、底色或质量词。expression 非空，expression_uc 可空。',
     '不输出占位符、JSON、代码围栏、分析或思考正文，不照搬剧情的坐姿、动作和地点。',
 ].join('\n');
@@ -110106,7 +110147,7 @@ function createAutoIllustrationService(deps) {
                     `为本楼生成${decision.want}张CG，CG点自行选择。slotid沿用本次召回分配的编号，不重新从1开始。挂载点只从剧情正文里逐字摘原句，提示词、出图指导、标签和正文以外的内容不要拿来当挂载点，也不要画进CG。`,
                     cgFramePrompt(cgSize(s)),
                     characterState.timeline.length && `衣装变化按正文生成点取值，不把楼末衣装套在前面的场景：${JSON.stringify(characterState.timeline)}`,
-                    task ? '每图输出 dna_template，具名人物按允许 token 绑定，景别按实际画面选择，不为资料缺失改变镜头。每个 named 同次写 meta_identity 完整英文身份主语（含可见标志细节）和 meta_signature 锚点摘要：匹配保存景别优先；缺景别按已有身份与实际取景描述，完全无 DNA 时依据角色库和正文给保守当次身份。不生成 DNA 候选、不写回永久身份，不删人、不改成路人。'
+                    task ? '每图输出 dna_template，具名人物按允许 token 绑定，景别按实际画面选择，不为资料缺失改变镜头。每个 named 同次写 meta_identity 完整英文身份 TAG 和 meta_signature 标志特征 TAG，本次新写衣装也只用 TAG；无名临时人物的身份和衣装同样用 TAG。匹配保存景别优先；缺景别按已有身份与实际取景给当次身份标签，完全无 DNA 时依据角色库和正文给保守当次身份。不生成 DNA 候选、不写回永久身份，不删人、不改成路人。'
                         : characterState.context.length ? '场景描述人数、环境和共同互动；每个独立角色提示保留名字、固定外貌、标志细节、当前衣装及自身动作。默认立绘衣装不覆盖场景衣装。'
                         : template && '纯场景不需要 DNA 或身份任务；只写环境、光影与场景排除词，不输出人物身份占位或 DNA 候选。无独立主体时不写 Char 和 meta_ 旁路，也不要求 prompt_mode。',
                 ].filter(Boolean).join('\n'),
@@ -133297,6 +133338,7 @@ const { buildCharacterContext, spriteAdoptionEvidence } = require("src/scene/cha
 const { outfitAdoptionEvidence } = require("src/scene/outfit-identity.js");
 const { prepareCharacterCaption } = require("src/generated-images/character-caption.js");
 const { BUILTIN_PROMPTS } = require("src/generated-images/prompt-registry.js");
+const { DNA_WEIGHT_RULE } = require("src/generated-images/prompt-tasks/common.js");
 const { usesCharacterTemplates, characterPromptTask, singleCharacterContext, preflightCharacterTask, savedExpressionTemplate, characterTemplateInput, characterPromptRecovery, bindAutoSpriteOutfitNames, checkSpriteRecoveryBinding } = require("src/generated-images/illustration/character-prompt-task.js");
 const { inheritImageTaskLease } = require("src/generated-images/image-task-runtime.js");
 const { cgCharacterState } = require("src/generated-images/illustration/cg-character-bindings.js");
@@ -134001,7 +134043,7 @@ function createAssetGenerationService(deps) {
                 written = await writePrompt({
                     imagePromptTask: 'sprite',
                     ...(autoSpriteOutfitNames.length && { autoSpriteOutfitNames }),
-                    description: template ? '整理本轮角色的详细三景别外貌、独立性格与指定衣装 DNA。每份第一行必须是 slotid: 本轮实际槽号，第二行是 character: 规范角色键，单人单份也不能省略图头。首次身份候选在明确设定内协调补全普通外貌，新衣装缺说明时逐件完成颜色、材质与结构；已有资料逐字保留。三景别只写身体外貌，不夹带衣领、内搭、裤子或靴子；衣装独立交付。可选身份 UC 只写实际英文排除项，无额外项则省略或留空，不写默认值或沿用说明。只交资料字段，不生成构图、动作、场景或完整绘图提示词。'
+                    description: template ? '整理本轮角色的三景别纯 TAG 外貌、独立性格与指定衣装 DNA。每份第一行必须是 slotid: 本轮实际槽号，第二行是 character: 规范角色键，单人单份也不能省略图头。首次身份候选在明确设定内协调补全普通外貌，新衣装缺说明时逐件用准确英文 TAG 表达颜色、材质与款式，无法准确表达的细节省略；已有资料逐字保留。三景别只写稳定身体外貌，不夹带衣装、灰尘、临时伤势、表情或姿态；衣装独立交付。可选身份 UC 只写实际英文排除标签，无额外项则省略或留空，不写默认值或沿用说明。只交资料字段，不生成构图、动作、场景或完整绘图提示词。\n' + DNA_WEIGHT_RULE
                         : buildDbgenSpriteBatchDescription(batch.map((item) => item.need), { transparent, template }),
                     messageId: floor.messageId,
                     ...(builtin && { numberedText, previousText,

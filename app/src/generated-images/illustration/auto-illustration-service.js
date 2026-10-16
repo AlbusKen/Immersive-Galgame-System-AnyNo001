@@ -288,7 +288,7 @@ export function createAutoIllustrationService(deps) {
                     `为本楼生成${decision.want}张CG，CG点自行选择。slotid沿用本次召回分配的编号，不重新从1开始。挂载点只从剧情正文里逐字摘原句，提示词、出图指导、标签和正文以外的内容不要拿来当挂载点，也不要画进CG。`,
                     cgFramePrompt(cgSize(s)),
                     characterState.timeline.length && `衣装变化按正文生成点取值，不把楼末衣装套在前面的场景：${JSON.stringify(characterState.timeline)}`,
-                    task ? '每图输出 dna_template，具名人物按允许 token 绑定，景别按实际画面选择，不为资料缺失改变镜头。每个 named 同次写 meta_identity 完整英文身份主语（含可见标志细节）和 meta_signature 锚点摘要：匹配保存景别优先；缺景别按已有身份与实际取景描述，完全无 DNA 时依据角色库和正文给保守当次身份。不生成 DNA 候选、不写回永久身份，不删人、不改成路人。'
+                    task ? '每图输出 dna_template，具名人物按允许 token 绑定，景别按实际画面选择，不为资料缺失改变镜头。每个 named 同次写 meta_identity 完整英文身份 TAG 和 meta_signature 标志特征 TAG，本次新写衣装也只用 TAG；无名临时人物的身份和衣装同样用 TAG。匹配保存景别优先；缺景别按已有身份与实际取景给当次身份标签，完全无 DNA 时依据角色库和正文给保守当次身份。不生成 DNA 候选、不写回永久身份，不删人、不改成路人。'
                         : characterState.context.length ? '场景描述人数、环境和共同互动；每个独立角色提示保留名字、固定外貌、标志细节、当前衣装及自身动作。默认立绘衣装不覆盖场景衣装。'
                         : template && '纯场景不需要 DNA 或身份任务；只写环境、光影与场景排除词，不输出人物身份占位或 DNA 候选。无独立主体时不写 Char 和 meta_ 旁路，也不要求 prompt_mode。',
                 ].filter(Boolean).join('\n'),

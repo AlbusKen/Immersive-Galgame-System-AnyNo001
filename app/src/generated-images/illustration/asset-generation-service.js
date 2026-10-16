@@ -27,6 +27,7 @@ import { buildCharacterContext, spriteAdoptionEvidence } from '../../scene/chara
 import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
 import { prepareCharacterCaption } from '../character-caption.js';
 import { BUILTIN_PROMPTS } from '../prompt-registry.js';
+import { DNA_WEIGHT_RULE } from '../prompt-tasks/common.js';
 import { usesCharacterTemplates, characterPromptTask, singleCharacterContext, preflightCharacterTask, savedExpressionTemplate, characterTemplateInput, characterPromptRecovery, bindAutoSpriteOutfitNames, checkSpriteRecoveryBinding } from './character-prompt-task.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
 import { cgCharacterState } from './cg-character-bindings.js';
@@ -733,7 +734,7 @@ export function createAssetGenerationService(deps) {
                 written = await writePrompt({
                     imagePromptTask: 'sprite',
                     ...(autoSpriteOutfitNames.length && { autoSpriteOutfitNames }),
-                    description: template ? '整理本轮角色的详细三景别外貌、独立性格与指定衣装 DNA。每份第一行必须是 slotid: 本轮实际槽号，第二行是 character: 规范角色键，单人单份也不能省略图头。首次身份候选在明确设定内协调补全普通外貌，新衣装缺说明时逐件完成颜色、材质与结构；已有资料逐字保留。三景别只写身体外貌，不夹带衣领、内搭、裤子或靴子；衣装独立交付。可选身份 UC 只写实际英文排除项，无额外项则省略或留空，不写默认值或沿用说明。只交资料字段，不生成构图、动作、场景或完整绘图提示词。'
+                    description: template ? '整理本轮角色的三景别纯 TAG 外貌、独立性格与指定衣装 DNA。每份第一行必须是 slotid: 本轮实际槽号，第二行是 character: 规范角色键，单人单份也不能省略图头。首次身份候选在明确设定内协调补全普通外貌，新衣装缺说明时逐件用准确英文 TAG 表达颜色、材质与款式，无法准确表达的细节省略；已有资料逐字保留。三景别只写稳定身体外貌，不夹带衣装、灰尘、临时伤势、表情或姿态；衣装独立交付。可选身份 UC 只写实际英文排除标签，无额外项则省略或留空，不写默认值或沿用说明。只交资料字段，不生成构图、动作、场景或完整绘图提示词。\n' + DNA_WEIGHT_RULE
                         : buildDbgenSpriteBatchDescription(batch.map((item) => item.need), { transparent, template }),
                     messageId: floor.messageId,
                     ...(builtin && { numberedText, previousText,
