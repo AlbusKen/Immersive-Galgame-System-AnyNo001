@@ -1614,8 +1614,8 @@ export async function handleSettingsAction(action, ctx) {
         if (legacyRedraw && !generatedAssetIdOf(current)) return { ok: false, reason: 'sprite-source-missing' };
         if (!legacyRedraw && !selected.ok && selected.reason !== 'default-outfit-unset')
             return generatedOperationFailure(dialogs, globalObj, '默认衣装记录失效，请先重新指定。', selected.reason);
-        const sourceAppearance = spriteAppearanceBaseline(sceneAssets, name);
-        const sourceWardrobe = JSON.stringify(outfitAdoptionReadOptions(settingsState, target).readWardrobe);
+        let sourceAppearance = spriteAppearanceBaseline(sceneAssets, name);
+        let sourceWardrobe = JSON.stringify(outfitAdoptionReadOptions(settingsState, target).readWardrobe);
         const targetUnchanged = () => {
             const live = spriteAdoptionTarget(settingsState, name);
             return live.library === sceneAssets && live.scope === sourceScope && live.owner === target.owner
@@ -1665,9 +1665,36 @@ export async function handleSettingsAction(action, ctx) {
             progress.end();
             return generationFailure(globalObj, dialogs, `「${name}」的默认立绘未能生成：${errorText(error, '未返回原因')}${current ? '\n原有图片保持不变。' : ''}`, 'sprite-generate-failed');
         };
+        const onOutfitDna = async clothing => {
+            if (!targetUnchanged()) return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '目标已变化，未保存服装 DNA' };
+            const prepared = prepareOutfitDnaSave(sceneAssets, name, clothing.name, clothing.description,
+                { readWardrobe: outfitAdoptionReadOptions(settingsState, target).readWardrobe });
+            if (!prepared.ok) return prepared;
+            const previous = captureAdoptionFields(sceneAssets, ['characterOutfits', 'wardrobe']);
+            Object.assign(sceneAssets, prepared.patch);
+            const expectedAppearance = spriteAppearanceBaseline(sceneAssets, name);
+            const expectedWardrobe = JSON.stringify(outfitAdoptionReadOptions(settingsState, target).readWardrobe);
+            const persisted = persistGeneratedLibrary(persistSettingsDraft);
+            if (operationFailed(persisted)) {
+                restoreAdoptionFields(sceneAssets, previous);
+                return { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存失败，未发起绘图' };
+            }
+            const live = spriteAdoptionTarget(settingsState, name);
+            const readWardrobe = outfitAdoptionReadOptions(settingsState, live).readWardrobe;
+            if (live.library !== sceneAssets || live.scope !== sourceScope || live.owner !== target.owner || live.borrowed
+                || JSON.stringify(normalizeCharacterDna(characterExpressionDna(sceneAssets, name))) !== JSON.stringify(sourceDna)
+                || spriteAppearanceBaseline(sceneAssets, name) !== expectedAppearance
+                || JSON.stringify(readWardrobe) !== expectedWardrobe
+                || resolveWardrobePrompt(readWardrobe, sceneAssets.characterOutfits?.[name]?.[clothing.name], clothing.name)?.prompt !== clothing.description)
+                return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '服装保存回读或目标核验失败，未发起绘图' };
+            sourceAppearance = expectedAppearance;
+            sourceWardrobe = expectedWardrobe;
+            return { ok: true };
+        };
         try {
             result = await service.generateCharacterSprite({ name, dna, note: spriteNote, caption: redrawCaption,
                 characterMeta: redrawMeta, exact: redrawExact, onProgress: progress.onProgress, shouldStart: targetUnchanged,
+                onOutfitDna,
                 ...(redrawHistory && { history: redrawHistory, ...(redrawHistory.promptRecipe && { promptRecipe: redrawHistory.promptRecipe }) }) });
         } catch (error) {
             return failed(error);

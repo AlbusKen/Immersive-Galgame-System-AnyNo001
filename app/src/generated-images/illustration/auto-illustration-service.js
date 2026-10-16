@@ -678,7 +678,7 @@ export function createAutoIllustrationService(deps) {
                     ...(typeof llm?.prepareImagePrompt === 'function' && s.llm.prompts.illustration !== PLANNER_SYSTEM_PROMPT
                         && { userPrompts: { writing: s.llm.prompts.illustration } }),
                     description: [user, `本次允许 slotid 为 1 到 ${decision.want}；不得改用其他编号。`,
-                        '具名角色按允许池显式绑定，镜头不受 DNA 景别是否齐全限制。每个 named 同次写 meta_identity 完整英文身份主语（含可见标志细节）及 meta_signature 锚点摘要；匹配保存景别优先，否则按已有身份、角色库及正文给保守当次描述，不登记永久 DNA、不生成候选。',
+                        '先逐一核对实际出镜者与正文角色标签：每位有标签的出镜者都须按本人规范键和 token 独立交付 char/char_uc 及完整 meta 字段，玩家、后景和局部出镜者也不能只在 Scene 或他人动作中带过；未出镜者不强行加入。每个 named 都交付非空 meta_identity，按首次立绘同等详细程度写清发型、五官、固有肤色、体态及适用身份锚点，保留已确定外貌，协调落实未限定的普通视觉细节，不以职业或 sharp eyes 等保守短句替代。meta_signature 字段保留，摘要无依据可空。交付未展开模板：本人正向 char 恰好一次 <<dna:token>>，衣装模板另有一次同 token 的 <<outfit:token>>，token 取本轮分配值；身份描述只放独立字段，不提前展开或删槽。身份、衣装和当次动态分开，不登记永久 DNA、不生成三景别候选。',
                         characterState.timeline.length && `当楼衣装时间线：${JSON.stringify(characterState.timeline)}`,
                     ].filter(Boolean).join('\n'),
                     systemPrompt: [CG_TEMPLATE_PLANNER_SYSTEM,
@@ -738,7 +738,8 @@ export function createAutoIllustrationService(deps) {
             await store.putFloor(key, { ...base, status: 'failed', error: plan.error, updatedAt: now() });
             report('error', `第 ${messageId} 楼插图规划失败，未发送生图请求：${plan.error}`);
             progress(floor, { phase: 'done' });
-            return { ok: false, reason: 'plan-failed', error: plan.error };
+            return { ok: false, reason: 'plan-failed', error: plan.error,
+                ...(plan.diagnostic && { diagnostic: plan.diagnostic }) };
         }
         if (!template) {
             const bound = bindCharacterDnaToSlots(plan.slots, readSceneAssets(), numbered.characters);

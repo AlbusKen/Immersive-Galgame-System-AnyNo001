@@ -6,7 +6,7 @@ import { createBuiltinImageTaskRuntime } from '../../src/generated-images/builti
 import { createImagePromptLlm } from '../../src/generated-images/image-prompt-runtime.js';
 import { createNaiOfficialClient } from '../../src/generated-images/nai-official-client.js';
 import { createNaiRequestQueue } from '../../src/generated-images/nai-request-queue.js';
-import { characterWriteFixture } from './prompt-provenance.js';
+import { characterWriteFixture, spriteDataReply } from './prompt-provenance.js';
 import { pngFixture } from './png-fixture.js';
 
 // 实际预设、解析、客户端和队列；只隔离写词 transport 与图像网络端口。
@@ -23,7 +23,9 @@ export function builtinImageHarness(options = {}) {
         const input = JSON.parse(request.messages[2].content);
         writes.push({ request, settings, input }); events.push('write');
         options.beforeWrite?.(input);
-        const reply = options.reply ? options.reply(input) : input.outputs.format === 'dna-template' ? templateReply(input, options)
+        const reply = options.reply ? options.reply(input)
+            : ['sprite-data', 'expression-fragments'].includes(input.outputs.format) ? spriteDataReply(input, { ...options, outfitDescription: 'wears a white dress' })
+            : input.outputs.format === 'dna-template' ? templateReply(input, options)
             : '#1\nscene: wears a white dress\nchar:\nuc:';
         if (waitWriting) await pause();
         options.afterWrite?.(input);

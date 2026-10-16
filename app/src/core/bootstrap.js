@@ -45,6 +45,7 @@ import { createReaderImageService } from '../generated-images/reader-image-servi
 import { createPromptInjector } from '../host/prompt-injector.js';
 import { createIllustrationMessageHost } from '../host/illustration-message-host.js';
 import { createSecondaryLlm } from '../host/secondary-llm.js';
+import { createImageWorldInfoSource } from '../host/image-world-info.js';
 import { createImagePromptLlm } from '../generated-images/image-prompt-runtime.js';
 import { createBuiltinImageTaskRuntime } from '../generated-images/builtin-image-task-runtime.js';
 import { createImageBackend, mergeLegacyNaiSettings } from '../generated-images/image-backend.js';
@@ -135,7 +136,8 @@ export function bootstrapIGS(options = {}) {
     const imageTaskRuntime = createBuiltinImageTaskRuntime({ readBridge: readImageBridge, registry: presetRegistry,
         subscribeSettings: handler => events.on('igs:legacy-settings-updated', handler) });
     const secondaryLlm = createImagePromptLlm(options.secondaryLlm
-        || createSecondaryLlm(globalObject, { fetch: options.fetch }), presetRegistry, imageTaskRuntime);
+        || createSecondaryLlm(globalObject, { fetch: options.fetch }), presetRegistry, imageTaskRuntime,
+        createImageWorldInfoSource(globalObject));
     const imageJobLog = options.imageJobLog || createImageJobLog({
         storage: storageLike,
         getSettings: () => cloneData(peekBridge().imageJobLog),

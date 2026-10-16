@@ -1,5 +1,5 @@
 // IGS 请求与模板交接边界；不依赖 DBGen 的运行时，也不改写正文。
-import { CHARACTER_DNA_VIEWS, CHARACTER_DNA_REQUIRED_VIEWS, checkDnaViews } from '../scene/character-dna.js';
+import { CHARACTER_DNA_VIEWS, CHARACTER_DNA_REQUIRED_VIEWS, checkDnaViews, checkCharacterPersonality } from '../scene/character-dna.js';
 import { checkOutfitTemplates } from './outfit-template.js';
 const plain = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const keyOk = (v) => typeof v === 'string' && v === v.trim() && v.length > 0 && v.length <= 128
@@ -86,7 +86,12 @@ export function checkPromptRecipe(raw, caption, task, { allowArchivedCorrection 
         || (!task && !allowArchivedCorrection) || (task && task.purpose !== 'consistency')))
         return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.identityMode');
     if (task && raw?.identityMode !== task.identityMode)
-        return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.identityMode', 'mismatch');
+        return fail('PROMPT_MODE_CONFLICT', 'promptRecipe.identityMode', 'mismatch', {
+            expectedIdentityMode: task.identityMode === 'appearance_correction' ? 'appearance_correction'
+                : task.identityMode === undefined ? 'absent' : 'invalid',
+            actualIdentityMode: raw?.identityMode === 'appearance_correction' ? 'appearance_correction'
+                : raw?.identityMode === undefined ? 'absent' : 'invalid',
+        });
     if (!plain(raw) || raw.version !== 1 || raw.mode !== 'dna_template'
         || (raw.outfitMode !== undefined && raw.outfitMode !== 'template')
         || !Array.isArray(raw.bindings) || raw.bindings.length > 16) return fail('DNA_TEMPLATE_BINDING', 'promptRecipe');
@@ -166,7 +171,8 @@ export function checkDnaCandidates(raw, { task, context, recipe } = {}) {
         const source = context?.find((x) => x.characterKey === c?.characterKey);
         if (!plain(c) || !keyOk(c.characterKey) || keys.has(c.characterKey) || !source
             || !recipe?.bindings.some((b) => b.kind === 'named' && b.characterKey === c.characterKey)
-            || CHARACTER_DNA_REQUIRED_VIEWS.every((f) => source.dna?.views?.[f]?.subject?.trim()))
+            || (CHARACTER_DNA_REQUIRED_VIEWS.every((f) => source.dna?.views?.[f]?.subject?.trim())
+                &&(source.dna?.personality !== undefined || c.personality === undefined)))
             return fail('DNA_TEMPLATE_BINDING', 'dnaCandidates.characters', 'mismatch', where);
         if (source.dna?.identityInitialized === true && !source.dna.identity?.trim()
             && !Object.values(source.dna.views || {}).some((v) => v.subject?.trim()))
@@ -188,7 +194,13 @@ export function checkDnaCandidates(raw, { task, context, recipe } = {}) {
                 || (saved.negative || '') !== checked.value[frame].negative))
                 return fail('DNA_TEMPLATE_BINDING', `dna.views.${frame}`, 'preserved', where);
         }
-        keys.add(c.characterKey); characters.push({ characterKey: c.characterKey, views: checked.value });
+        const personality = checkCharacterPersonality(c.personality);
+        if (!personality.ok) return personality;
+        if (c.personality !== undefined && source.dna?.personality !== undefined
+            && personality.value !== source.dna.personality)
+            return fail('DNA_TEMPLATE_BINDING', 'dna.personality', 'preserved', where);
+        keys.add(c.characterKey); characters.push({ characterKey: c.characterKey, views: checked.value,
+            ...(c.personality !== undefined && { personality: personality.value }) });
     }
     return { ok: true, value: { version: 1, characters } };
 }

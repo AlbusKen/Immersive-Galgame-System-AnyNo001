@@ -68,8 +68,8 @@ for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch
             return { ok: true };
         });
         const result = await handleSettingsAction(outfitAction('outfit-expression-set'), ctx);
-        assert.equal(f.writes.length, 1, '服装候选与动态模板同次写词');
-        assert.equal(f.writes[0].input.outputs.format, 'dna-template');
+        assert.equal(f.writes.length, 1, '仅提取一次服装资料，平和构图由程序组装');
+        assert.equal(f.writes[0].input.outputs.format, 'sprite-data');
 
         assert.deepEqual(saves[0].characterOutfits.Alice.礼服.moods, {});
         if (['save-failed', 'readback-mismatch'].includes(mode)) {
@@ -154,8 +154,8 @@ for (const phase of ['writing', 'queued', 'inflight']) {
             await waitFor(() => f.gates.length === 1);
         }
         const pending = f.service.generateExpressionSet({ name: 'Alice', dna: assets.characterDna.Alice,
-            outfit: { name: '礼服' }, moods: ['平和'], shouldStart: () => live,
-            ...(phase === 'writing' && { note: '这次采用额外动作要求' }) });
+            outfit: { name: '礼服' }, moods: [phase === 'writing' ? '喜悦' : '平和'],
+            shouldStart: () => live });
         await waitFor(() => phase === 'writing' ? f.gates.length === 1
             : f.wires.length === 1);
         if (phase === 'queued') await new Promise(resolve => setTimeout(resolve, 20));
@@ -328,16 +328,15 @@ for (const mode of ['write-failed', 'save-failed', 'paint-failed', 'recovery-sav
     });
 }
 
-test('gate:builtin-outfit:批内衣装说明冲突零保存零绘图', async t => {
-    const f = outfitBuiltinFixture({ transformWritten(written) {
-        written.captions[1].characterMeta.characters[0].outfit.description = 'wears a blue coat';
-    } });
+test('gate:builtin-outfit:资料回复重复衣装字段零保存零绘图', async t => {
+    const f = outfitBuiltinFixture({ reply: () => 'slotid: 1\ncharacter: Alice\noutfit_name: 礼服\n'
+        + 'outfit_description: wears a white dress\noutfit_description: wears a blue coat' });
     t.after(() => f.dispose());
     const before = structuredClone(f.assets);
     let saves = 0;
     const result = await f.service.generateExpressionSet({ name: 'Alice', dna: f.assets.characterDna.Alice,
         outfit: { name: '礼服' }, moods: ['平和', '喜悦'], onOutfitDna() { saves++; return { ok: true }; } });
-    assert.equal(result.ok, false); assert.equal(result.reason, 'OUTFIT_ADOPTION_CONFLICT');
+    assert.equal(result.ok, false); assert.equal(result.reason, 'SPRITE_DATA_INVALID');
     assert.equal(f.writes.length, 1); assert.equal(saves, 0); assert.equal(f.wires.length, 0);
     assert.deepEqual(f.assets, before);
 });

@@ -71,12 +71,12 @@ test('gate:builtin-entry:现场混合模板结构拒绝且素材日志保留脱�
     assert.equal(result.ok, false);
     assert.equal(f.writes.length, 1);
     assert.equal(f.wires.length, 0, '协议错误不得绘图或自动修词补发');
-    assert.ok(reports.some(row => /字段=meta_fields.*lineNumber=9/.test(row.message)));
+    assert.ok(reports.some(row => /字段=response_format.*lineNumber=2/.test(row.message)));
     assert.doesNotMatch(JSON.stringify(reports), /private reasoning|<<dna|<<outfit|wears armor/);
     const records = await createIndexedDbGeneratedAssetStore({ indexedDB: f.indexedDB }).getAssetsByChat(floor.chatId);
     assert.equal(records.length, 1);
     assert.equal(records[0].status, 'failed');
-    assert.match(records[0].error, /字段=meta_fields.*lineNumber=9/);
+    assert.match(records[0].error, /字段=response_format.*lineNumber=2/);
     assert.deepEqual(f.assets, before);
 });
 
@@ -159,7 +159,7 @@ test('gate:builtin-entry:背景 task 无人物无 DNA，实际发送后跨连接
     assert.deepEqual(assets, before);
 });
 
-for (const scenario of ['legacy', 'named', 'renamed', 'invalid-at'])
+for (const scenario of ['legacy', 'named', 'renamed', 'invalid-at', 'missing-at', 'empty-at', 'unknown-key', 'invalid-region'])
 test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词且保留原衣装-${scenario}`, async t => {
     const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
@@ -167,16 +167,19 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
     const before = structuredClone(assets);
     const h = builtinImageHarness({ reply(input) {
         const row = input.promptTask.characters[0];
-        return ['slotid: 1', `at: ${scenario === 'invalid-at' ? 999 : 1}`,
+        return ['slotid: 1',
+            ...(scenario === 'missing-at' ? []
+                : [`at: ${scenario === 'empty-at' ? '' : scenario === 'invalid-at' ? 999 : 1}`]),
             'prompt_mode: dna_template', 'outfit_mode: template',
             'scene: Alice meets a friend in a cafe.', 'scene_uc: blurry',
             `char: 0.3,0.5 | <<dna:${row.token}>> <<outfit:${row.token}>> and waves.`,
             `char_uc: <<dna_uc:${row.token}>>`, 'meta_kind: 0 | named',
-            `meta_key: 0 | ${row.characterKey}`, `meta_token: 0 | ${row.token}`, 'meta_frame: 0 | half_body',
+            `meta_key: 0 | ${scenario === 'unknown-key' ? 'PrivateUnknown' : row.characterKey}`, `meta_token: 0 | ${row.token}`, 'meta_frame: 0 | half_body',
             `meta_outfit_name: 0 | ${scenario === 'legacy' ? 'Coat' : scenario === 'renamed' ? 'Blue coat' : '蓝色外套'}`,
             'meta_outfit_description: 0 | wears a blue coat',
             'meta_identity: 0 | Alice, an adult woman with silver hair and blue eyes,',
-            'meta_signature: 0 | silver hair'].join('\n');
+            'meta_signature: 0 | silver hair',
+            ...(scenario === 'invalid-region' ? ['meta_region: 0 | 0.9,0.2,0.2,0.3'] : [])].join('\n');
     } });
     t.after(() => h.dispose());
     Object.assign(h.bridge.autoIllustration, { interludeEnabled: true, interludeMaxCount: 1 });
@@ -192,11 +195,29 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
     const service = createAutoIllustrationService({ nai: h.backend, llm: h.llm, store,
         messageHost: host, getSettings: () => h.bridge.autoIllustration, getSceneAssets: () => assets, report() {} });
     const result = await service.processMessage(5, { manual: true });
-    if (scenario === 'renamed' || scenario === 'invalid-at') {
+    if (['unknown-key', 'invalid-region'].includes(scenario)) {
+        const unknown = scenario === 'unknown-key';
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, 'plan-failed');
+        assert.deepEqual(result.diagnostic, {
+            code: unknown ? 'character-meta-binding' : 'character-meta-region',
+            field: unknown ? 'binding.characterKey' : 'meta_region',
+            issue: unknown ? 'mismatch' : 'invalid', captionIndex: 0,
+            stage: 'prompt-parse', slotId: 1, lineNumber: unknown ? 10 : 17 });
+        assert.match(result.error, /角色资料无法可靠绑定.*slotId=1.*lineNumber=/);
+        assert.doesNotMatch(JSON.stringify(result), /PrivateUnknown|silver hair|wears a blue coat|<<dna/);
+        assert.equal(h.writes.length, 1);
+        assert.equal(h.wires.length, 0, '角色元数据失败不得补发或绘图');
+        assert.deepEqual(assets, before);
+        return;
+    }
+    if (scenario === 'renamed' || scenario.endsWith('-at')) {
         assert.equal(result.ok, false, JSON.stringify(result));
         assert.match(result.error, scenario === 'renamed' ? /衣装模板校验失败：outfit\.name/ : /字段=at/);
+        if (scenario.endsWith('-at')) assert.match(result.error,
+            scenario === 'missing-at' ? /缺少必需字段/ : /格式或取值无效/);
         assert.equal(h.writes.length, 1);
-        assert.equal(h.wires.length, 0, '错名或无效生成点不补发、不绘图');
+        assert.equal(h.wires.length, 0, '错名、缺号或无效生成点不补发、不绘图');
         assert.deepEqual(assets, before);
         return;
     }
@@ -424,9 +445,10 @@ test('gate:builtin-entry:v4身份衣装动态分层发送且采用资料不串�
         assert.doesNotMatch(view.subject, /wears|combat suit|armor|headset|expression|alert/);
     }
     assert.equal(image.outfitSnapshot.characters[0].description, outfit);
-    assert.match(image.promptRecipe.caption.v4_prompt.caption.char_captions[0].char_caption, /<<outfit:.*serious expression/);
+    assert.doesNotMatch(JSON.stringify(image.promptRecipe), /serious expression|looks alert/);
+    assert.match(image.promptRecipe.caption.v4_prompt.caption.char_captions[0].char_caption, /<<outfit:.*calm, relaxed, closed mouth/);
     assert.equal(f.wires[0].parameters.v4_prompt.caption.char_captions[0].char_caption,
-        `${identity} ${outfit} ${dynamic}`);
+        `${identity} ${outfit} calm, relaxed, closed mouth`);
     assert.deepEqual(f.assets, before, '生成和准备采用都不直接改已有资料');
 });
 
@@ -566,7 +588,10 @@ for (const [state, dna, mode] of [
     assert.deepEqual(f.assets, before, '声明清单与生成不改写保存身份');
     if (manual.ok) {
         const image = await f.open().readStoredImage(manual.imageId);
-        if (mode === 'saved-only') assert.equal(image.dnaCandidates, undefined);
+        if (mode === 'saved-only') {
+            assert.deepEqual(image.dnaCandidates.characters[0].views, dna.views);
+            assert.equal(image.dnaCandidates.characters[0].personality, '', '仅补缺失性格，不重写已有景别');
+        }
         else {
             assert.deepEqual(Object.keys(image.dnaCandidates.characters[0].views).sort(), ['full_body', 'half_body', 'portrait']);
             if (state === 'partial') assert.deepEqual(image.dnaCandidates.characters[0].views.half_body, dna.views.half_body);
@@ -645,5 +670,42 @@ for (const mode of ['success', 'save-failed', 'default-changed']) {
         assert.equal(image.outfitSnapshot.characters[0].description, assets.wardrobe.coat.prompt);
         assert.equal(image.outfitSnapshot.characters[0].source, 'saved');
         assert.equal(assets.characterDna.Alice.defaultAppearance, '旧衣装');
+    });
+}
+
+for (const mode of ['success', 'save-failed', 'readback-mismatch']) {
+    test(`gate:builtin-entry:默认立绘新衣装先保存再绘图-${mode}`, async t => {
+        const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
+        const assets = { characters: { Alice: { 默认: 'original.png' } }, characterDna: {},
+            characterOutfits: {}, wardrobe: {} };
+        const before = structuredClone(assets), saves = [];
+        const f = entryFixture({ assets }); t.after(() => f.dispose());
+        const result = await handleSettingsAction('char-generate-sprite:Alice', {
+            state: { activeSettings: { draft: { bridge: { ...f.bridge, sceneAssets: assets } }, asyncState: {} } },
+            options: { global: { alert() {} }, generatedAssets: f.service },
+            dialogs: { confirm: async () => true, edit: async () => '', alert() {} },
+            persistSettingsDraft() {
+                saves.push(structuredClone(assets));
+                if (saves.length === 1) {
+                    assert.equal(f.wires.length, 0, '衣装提交之前不发图');
+                    assert.deepEqual(assets.characterDna, before.characterDna, '候选尚未采用');
+                    if (mode === 'save-failed') return { ok: false, reason: 'fixture-save' };
+                    if (mode === 'readback-mismatch') assets.wardrobe = {};
+                }
+                return { ok: true };
+            }, rerenderSettings: () => ({ ok: true }),
+        });
+        assert.equal(f.writes.length, 1);
+        assert.equal(saves.length > 0, true);
+        assert.equal(result.ok, mode === 'success', JSON.stringify(result));
+        assert.equal(f.wires.length, mode === 'success' ? 1 : 0);
+        if (mode === 'save-failed') assert.deepEqual(assets, before);
+        if (mode === 'success') {
+            const name = assets.characterDefaultOutfits.Alice.outfitName;
+            const outfit = assets.characterOutfits.Alice[name];
+            const image = await f.open().readStoredImage(outfit.moods.平和.slice(8));
+            assert.equal(image.outfitSnapshot.characters[0].description, assets.wardrobe[outfit.wardrobe].prompt);
+            assert.deepEqual(image.dnaCandidates.characters[0].views, assets.characterDna.Alice.views);
+        }
     });
 }

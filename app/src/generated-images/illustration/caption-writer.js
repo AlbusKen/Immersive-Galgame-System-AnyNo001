@@ -6,6 +6,7 @@ import { DNA_TEMPLATE_WRITER_SYSTEM } from '../prompt-registry.js';
 import { parseTemplateCaptionSlots } from './template-caption-parser.js';
 import { checkPromptTask } from '../../schemas/prompt-recipe.js';
 import { spriteIdentityRequirements, characterWritingContext } from './character-prompt-task.js';
+import { SPRITE_DATA_RULE, parseSpriteData } from './sprite-data.js';
 import { prepareImageWritingRequest } from '../image-prompt-runtime.js';
 import { imageWritingContext } from '../image-prompt-context.js';
 import { secondaryLlmFailure, secondaryLlmText } from '../../host/secondary-llm-result.js';
@@ -170,6 +171,7 @@ export async function writeTemplateCaptionsWithLlm(llm, llmSettings, meta = {}) 
 async function writeTemplateCaptions(llm, llmSettings, meta) {
     const task = checkPromptTask(meta.promptTask, meta.characterContext);
     if (!task.ok) return task;
+    const dataOnly = ['sprite-data', 'expression-fragments'].includes(meta.outputs?.format);
     if (!task.value) return { ok: false, reason: 'PROMPT_MODE_CONFLICT', error: '动态写词缺少显式任务' };
     const ready = describeLlmReady(llmSettings);
     if (!ready.ok) return ready;
@@ -198,16 +200,18 @@ async function writeTemplateCaptions(llm, llmSettings, meta) {
                     ...(character.framing !== undefined && { framing: character.framing }) };
             })),
         }),
-        ...(meta.outputs !== undefined && meta.outputs), format: 'dna-template',
+        ...(meta.outputs !== undefined && meta.outputs), format: dataOnly ? meta.outputs.format : 'dna-template',
         ...(task.value.purpose === 'sprite' && {
-            identityRequirements: spriteIdentityRequirements(task.value, input.characterContext) }),
+            identityRequirements: spriteIdentityRequirements(task.value, input.characterContext, dataOnly ? meta.outputs.format : 'dna-template') }),
     };
-    const prepared = prepareImageWritingRequest(llm,
+    const prepared = await prepareImageWritingRequest(llm,
         meta.imagePromptTask || (task.value.purpose === 'derived' ? 'expression' : task.value.purpose),
-        { ...input, description, outputs },
-        { system: meta.systemPrompt || DNA_TEMPLATE_WRITER_SYSTEM,
+        { ...input, description, outputs, ...(meta.signal && { signal: meta.signal }),
+            ...(meta.shouldStart && { shouldStart: meta.shouldStart }) },
+        { system: dataOnly ? SPRITE_DATA_RULE : meta.systemPrompt || DNA_TEMPLATE_WRITER_SYSTEM,
             user: description + '\n本次任务与角色资料（仅作输入，不输出 JSON）：\n' + JSON.stringify({ ...input, outputs }) });
     if (!prepared.ok) return prepared;
+    if (stale()) return { ok: false, reason: 'request-stale', stopGeneration: true, error: '任务已取消或目标失效' };
     let reply;
     try {
         reply = await llm.request(prepared.request,
@@ -216,7 +220,8 @@ async function writeTemplateCaptions(llm, llmSettings, meta) {
         return secondaryLlmFailure(error);
     }
     if (stale()) return { ok: false, reason: 'request-stale', error: '任务已取消或目标失效' };
-    const parsed = parseTemplateCaptionSlots(reply, { ...input,
+    const parsed = dataOnly ? parseSpriteData(reply, { ...meta, promptTask: task.value, outputs })
+        : parseTemplateCaptionSlots(reply, { ...input, outputs,
         ...(meta.autoSpriteOutfitNames !== undefined && {
             autoSpriteOutfitNames: meta.autoSpriteOutfitNames }),
         ...(meta.characterContextForEntry !== undefined && {
@@ -225,6 +230,7 @@ async function writeTemplateCaptions(llm, llmSettings, meta) {
     const first = parsed.captions[0];
     return { ok: true, caption: first.caption, captions: parsed.captions,
         characterMeta: first.characterMeta, promptRecipe: first.promptRecipe, promptTask: input.promptTask,
+        ...(first.expression !== undefined && { expression: first.expression }),
         ...(first.dnaCandidates !== undefined && { dnaCandidates: first.dnaCandidates }),
         ...(first.width !== undefined && { width: first.width, height: first.height }) };
 }

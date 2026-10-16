@@ -2,6 +2,7 @@ import { clonePromptData, IMAGE_PROMPT_TASKS, PROVIDED_PROMPT_DATA_FIELDS, valid
 
 const fail = (reason, errors = []) => ({ ok: false, reason, errors });
 const present = (value) => value !== undefined && value !== null && value !== '';
+const worldInfoVariable = /\{\{\s*世界书\s*\}\}/g;
 
 // 预览和发送共用：只在声明槽中替换一次，不求值注入资料里的占位符。
 export function renderImagePromptPreset(data, task, input = {}) {
@@ -24,13 +25,39 @@ export function renderImagePromptPreset(data, task, input = {}) {
     } catch {
         return fail('invalid-prompt-data');
     }
+    const format = context.outputs?.format;
+    const selectContent = block => {
+        if (block.contentByFormat === undefined) return block.content;
+        if (typeof format !== 'string' || !Object.hasOwn(block.contentByFormat, format)) return undefined;
+        return [block.content, block.contentByFormat[format]].filter(Boolean).join('\n');
+    };
+    // taskMap 先选具体任务；格式只在该任务内部选择，绝不合并其他任务规则。
+    const moduleContent = selectContent(module);
+    if (moduleContent === undefined) return fail('unsupported-prompt-format', [{ field: 'outputs.format', reason: 'unmapped-format' }]);
     const byId = new Map(data.prompts.map((block) => [block.identifier, block]));
-    const blocks = data.prompt_order.filter((entry) => entry.enabled !== false)
-        .map((entry) => byId.get(entry.identifier)).filter((block) => block.enabled !== false)
-        .map((block) => ({ identifier: block.identifier, role: block.role,
-            content: block.kind === 'task-slot' ? module.content
-                : block.kind === 'data-slot' ? JSON.stringify(context) : block.content }));
+    const blocks = [];
+    let needsWorldInfo = false;
+    const fillReference = content => {
+        if (data.literalVariables?.includes('世界书')) return content;
+        if (!/\{\{\s*世界书\s*\}\}/.test(content)) return content;
+        needsWorldInfo = true;
+        return content.replace(worldInfoVariable, () => typeof input.worldInfo === 'string' ? input.worldInfo : '');
+    };
+    for (const entry of data.prompt_order.filter(entry => entry.enabled !== false)) {
+        const block = byId.get(entry.identifier);
+        if (block.enabled === false) continue;
+        const source = block.kind === 'task-slot' ? moduleContent
+            : block.kind === 'data-slot' ? JSON.stringify(context) : selectContent(block);
+        if (source === undefined) return fail('unsupported-prompt-format', [{
+            field: `prompts.${block.identifier}.contentByFormat`, reason: 'unmapped-format' }]);
+        // 提供资料模式整块省略世界书参考，既不扫描也不读取资料 getter。
+        const reference = block.kind !== 'data-slot' && !data.literalVariables?.includes('世界书')
+            && /\{\{\s*世界书\s*\}\}/.test(source);
+        if (reference && input.contextMode === 'provided') continue;
+        const content = block.kind === 'data-slot' ? source : fillReference(source);
+        blocks.push({ identifier: block.identifier, role: block.role, content });
+    }
     const messages = blocks.map(({ role, content }) => ({ role, content }));
     return { ok: true, task, revision: data.revision, moduleId: module.identifier,
-        blocks, request: { messages } };
+        blocks, needsWorldInfo, request: { messages } };
 }

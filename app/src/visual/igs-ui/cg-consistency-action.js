@@ -1,21 +1,10 @@
 // 阅读器只协调任务与弹窗，不处理提示词、像素或持久化。
-function progressText(detail = {}) {
-    const labels = { prepare: '准备', reference: '读取参考立绘', write: '写提示词',
-        paint: '局部重绘', compose: '合成候选' };
-    if (!Object.hasOwn(labels, detail.phase)) return '';
-    const count = Number.isInteger(detail.done) && Number.isInteger(detail.total)
-        && detail.total > 0 && detail.done >= 0 && detail.done <= detail.total
-        ? ` ${detail.done}/${detail.total}` : '';
-    return `一致性重绘：${labels[detail.phase]}${count}…`;
-}
-
 export async function runCgConsistencyAction({ service, query, modal, signal: parentSignal, stillCurrent, onProgress }) {
     const controller = new AbortController(), signal = controller.signal;
-    let candidateId = '', preflightToken = '', progress = null, dialog = null, generating = false;
+    let candidateId = '', preflightToken = '', dialog = null, generating = false;
     const cancelled = () => signal.aborted || !stillCurrent();
     const stop = () => controller.abort();
-    const closeProgress = () => { generating = false; progress?.close(); progress = null; };
-    const closeOwned = () => { closeProgress(); dialog?.cancel?.(); };
+    const closeOwned = () => { generating = false; dialog?.cancel?.(); };
     parentSignal.addEventListener('abort', stop, { once: true });
     signal.addEventListener('abort', closeOwned, { once: true });
     if (parentSignal.aborted) stop();
@@ -39,18 +28,15 @@ export async function runCgConsistencyAction({ service, query, modal, signal: pa
         }
         if (cancelled()) return { ok: true, reason: 'cancelled' };
         generating = true;
-        progress = modal.progress(progressText({ phase: 'prepare' }), stop);
         const result = await service.redrawConsistency(query, {
             signal, shouldStart: () => !cancelled(),
             ...(preflightToken && { preflightToken, confirmed }),
             onProgress: (detail) => {
                 if (!generating || cancelled()) return;
-                const text = progressText(detail);
-                if (text) progress?.update(text);
                 onProgress?.(detail);
             },
         });
-        closeProgress();
+        generating = false;
         candidateId = result?.candidateId || '';
         if (cancelled()) return { ok: true, reason: 'cancelled' };
         if (!result?.ok) return result || { ok: false, reason: 'consistency-failed' };

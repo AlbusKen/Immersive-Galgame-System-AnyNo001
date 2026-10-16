@@ -657,8 +657,64 @@ test('gate:dna-template:拒绝诊断只含字段原因和位置且不回显模�
         assert.match(result.error, /已停止写词交接.*字段=/);
         assert.doesNotMatch(JSON.stringify(result), /secret|private content|rA7|Alice|blue coat/);
     }
+    const metaCases = [
+        [fixture.reply.replace('meta_key: 0 | Alice', 'meta_key: 0 | private character'),
+            'character-meta-binding', 'binding.characterKey', 'mismatch', 'meta_key'],
+        [fixture.reply.replace('meta_key: 0 | Alice', 'meta_key: 0 | ' + 'x'.repeat(129)),
+            'character-meta-key', 'binding.characterKey', 'invalid', 'meta_key'],
+        [fixture.reply + '\nmeta_identity: 0 | ' + 'x'.repeat(4097),
+            'character-meta-text', 'meta_identity', 'invalid', 'meta_identity', 'text-too-long'],
+        [fixture.reply + '\nmeta_signature: 0 | ' + 'x'.repeat(4097),
+            'character-meta-text', 'meta_signature', 'invalid', 'meta_signature', 'text-too-long'],
+        [fixture.reply.replace('meta_outfit_name: 0 | Coat', 'meta_outfit_name: 0 | ' + 'x'.repeat(129)),
+            'character-meta-text', 'meta_outfit_name', 'invalid', 'meta_outfit_name', 'text-too-long'],
+        [fixture.reply.replace('meta_outfit_description: 0 | A blue coat.', 'meta_outfit_description: 0 | ' + 'x'.repeat(4097)),
+            'character-meta-text', 'meta_outfit_description', 'invalid', 'meta_outfit_description', 'text-too-long'],
+        [fixture.reply + '\nmeta_region: 0 | 0.9,0.2,0.2,0.3',
+            'character-meta-region', 'meta_region', 'invalid', 'meta_region'],
+    ];
+    for (const [reply, code, field, issue, sourceField, detail] of metaCases) {
+        const result = parseTemplateCaptionSlots(reply, fixture);
+        const lineNumber = reply.split('\n').findIndex(line => line.startsWith(sourceField + ':')) + 1;
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, code);
+        assert.deepEqual(result.diagnostic, { code, field, issue, captionIndex: 0,
+            ...(detail && { detail }), stage: 'prompt-parse', slotId: 6, lineNumber });
+        assert.match(result.error, /角色资料无法可靠绑定.*字段=.*slotId=6.*lineNumber=/);
+        assert.doesNotMatch(JSON.stringify(result), /private character|rA7|Alice|blue coat|xxxxx/);
+    }
     assert.deepEqual(fixture, before);
     assert.equal(parseTemplateCaptionSlots(fixture.reply, fixture).ok, true);
+    const outputs = { selection: 'numbered-text', paragraphCount: 2 };
+    let contextReads = 0;
+    const characterContextForEntry = entry => {
+        contextReads++;
+        assert.ok([1, 2].includes(entry.at));
+        return fixture.characterContext;
+    };
+    for (const [value, issue] of [[undefined, 'missing'], ['', 'invalid'],
+        ['0', 'invalid'], ['3', 'invalid'], ['1.5', 'invalid'], ['private content', 'invalid']]) {
+        const reply = fixture.reply + (value === undefined ? '' : `\nat: ${value}`);
+        const rejected = parseTemplateCaptionSlots(reply, { ...fixture, outputs, characterContextForEntry });
+        assert.equal(rejected.ok, false);
+        assert.equal(rejected.diagnostic.field, 'at');
+        assert.equal(rejected.diagnostic.issue, issue);
+        assert.equal(rejected.diagnostic.slotId, 6);
+        assert.equal(contextReads, 0, '无效段号不得读取生成点衣装快照');
+        assert.doesNotMatch(JSON.stringify(rejected), /private content|rA7|Alice|blue coat/);
+    }
+    const missing = parseTemplateCaptionSlots(fixture.reply, { ...fixture, outputs });
+    assert.equal(missing.diagnostic.issue, 'missing', '无回调的编号任务同样要求段号');
+    const callbackOnly = parseTemplateCaptionSlots(fixture.reply, { ...fixture, characterContextForEntry });
+    assert.equal(callbackOnly.diagnostic.issue, 'missing');
+    assert.equal(contextReads, 0);
+    for (const at of [1, 2]) {
+        const parsed = parseTemplateCaptionSlots(fixture.reply + `\nat: ${at}`,
+            { ...fixture, outputs, characterContextForEntry });
+        assert.equal(parsed.ok, true, parsed.error);
+        assert.equal(parsed.captions[0].at, at);
+    }
+    assert.equal(contextReads, 2);
 });
 
 test('gate:dna-template:内置单次写词经真实解析和发送保留正文与候选', async () => {
@@ -1906,4 +1962,50 @@ test('gate:provided:过滤与任务归一复制保留私有租约，配置变化
         assert.equal(result.reason, 'stale-config'); assert.equal(result.stopGeneration, true);
         assert.equal(calls, 0); assert.equal(h.calls.length, 0);
     } finally { h.close(); }
+});
+
+
+test('gate:image-worldinfo:扫描失败或期间失效均阻止写词发送', async () => {
+    const { createPresetRegistry } = await import('../src/presets/preset-registry.js');
+    const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
+    const { requestWithSoftRetry } = await import('../src/generated-images/illustration/prompt-kit.js');
+    for (const mode of ['failure', 'cancel', 'preset-change']) {
+        const registry = createPresetRegistry();
+        const controller = new AbortController();
+        let scans = 0, writes = 0;
+        const llm = createImagePromptLlm({ async request() { writes++; throw new Error('不得发送'); } },
+            registry, undefined, async () => {
+                scans++;
+                if (mode === 'failure') return { ok: false, reason: 'WORLDINFO_RESOLVE_FAILED', stopGeneration: true };
+                if (mode === 'cancel') controller.abort();
+                else {
+                    const current = registry.getCurrent('prompt-preset');
+                    current.name = '已变更';
+                    assert.equal(registry.savePromptPreset(current, current.data.revision).ok, true);
+                }
+                return { ok: true, text: '' };
+            });
+        const result = await requestWithSoftRetry(llm, { system: '', user: '', signal: controller.signal,
+            imagePrompt: { task: 'background', input: { description: '本次任务', outputs: { format: 'asset-plan' } } },
+            parse() { assert.fail('停发后不得解析'); } }, {});
+        assert.equal(result.reason, mode === 'failure' ? 'WORLDINFO_RESOLVE_FAILED' : 'stale-config');
+        assert.equal(result.stopGeneration, true);
+        assert.equal(scans, 1); assert.equal(writes, 0);
+    }
+});
+
+test('gate:image-worldinfo:provided与关闭参考块均不读取宿主或世界书getter', async () => {
+    const { createPresetRegistry } = await import('../src/presets/preset-registry.js');
+    const { createDefaultImagePromptPreset } = await import('../src/generated-images/image-prompt-defaults.js');
+    const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
+    const registry = createPresetRegistry();
+    const llm = createImagePromptLlm({}, registry, undefined, () => assert.fail('禁止扫描'));
+    const input = { contextMode: 'provided', description: '明确资料', outputs: { format: 'dna-template' } };
+    Object.defineProperty(input, 'worldInfo', { enumerable: true, get() { assert.fail('禁止读取'); } });
+    assert.equal((await llm.prepareImagePrompt('consistency', input)).ok, true);
+    const preset = createDefaultImagePromptPreset();
+    preset.data.prompts.find(block => block.identifier === 'igs-image-world').enabled = false;
+    assert.equal(registry.savePromptPreset(preset, 1).ok, true);
+    assert.equal((await llm.prepareImagePrompt('background', {
+        description: '本次任务', outputs: { format: 'asset-plan' } })).ok, true);
 });

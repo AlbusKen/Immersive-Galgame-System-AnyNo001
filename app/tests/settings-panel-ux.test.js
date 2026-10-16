@@ -672,28 +672,28 @@ test('gate:page-modal:transformed-host-does-not-become-the-screen', async () => 
     assert.equal(await pending, true);
 });
 
-test('gate:page-modal:一致性进度更新后交接双图审核', async () => {
+test('gate:page-modal:一致性生成不弹框且进度透传后交接双图审核', async () => {
     const { runCgConsistencyAction } = await import('../src/visual/igs-ui/cg-consistency-action.js');
     for (const accept of [true, false]) {
         const doc = makeDoc();
         const modal = createIgsModal({ getHost: () => doc.body, global: { document: doc } });
         modal.confirm = () => { throw new Error('无衣装回退不额外确认'); };
-        const accepted = [], discarded = [];
+        modal.progress = () => { throw new Error('生成期间不打开进度弹框'); };
+        const accepted = [], discarded = [], progress = [];
         const service = {
             describeConsistency: () => ({ ok: true }),
             async redrawConsistency(_query, options) {
-                assert.equal(modal.isOpen(), true);
-                assert.match(doc.body.querySelector('.igs-page-modal-msg').textContent, /准备/);
+                assert.equal(modal.isOpen(), false);
                 options.onProgress({ phase: 'paint', done: 1, total: 3 });
-                assert.match(doc.body.querySelector('.igs-page-modal-msg').textContent, /局部重绘 1\/3/);
-                assert.equal(doc.body.querySelector('[data-igs-modal="cancel"]').textContent, '停止');
+                assert.equal(modal.isOpen(), false);
+                assert.deepEqual(progress, [{ phase: 'paint', done: 1, total: 3 }]);
                 return { ok: true, candidateId: 'candidate', dataUrl: 'candidate-image', originalDataUrl: 'original-image' };
             },
             async acceptConsistency(id) { accepted.push(id); return { ok: true, reason: 'accepted' }; },
             cancelConsistency(id) { discarded.push(id); },
         };
         const pending = runCgConsistencyAction({ service, query: {}, modal,
-            signal: new AbortController().signal, stillCurrent: () => true });
+            signal: new AbortController().signal, stillCurrent: () => true, onProgress: detail => progress.push(detail) });
         await new Promise((resolve) => setTimeout(resolve, 0));
         const comparison = doc.body.querySelector('.igs-page-modal-comparison');
         assert.ok(comparison);
@@ -721,7 +721,6 @@ for (const confirm of [false, true]) test(`衣装预检：UI集中确认与释�
         cancelConsistency(id) { calls.push(id); },
     };
     const modal = { async confirm(message) { confirms.push(message); return confirm; },
-        progress() { return { update() {}, close() {} }; },
         async confirmImage() { return false; }, cancel() {} };
     const result = await runCgConsistencyAction({ service, query: {}, modal,
         signal: new AbortController().signal, stillCurrent: () => true });
@@ -1922,4 +1921,30 @@ test('gate:nai-settings:四来源可见性、管理权限与保存重开', async
         assert.equal(bridge.autoIllustration.consistencyStrength, 0.4);
         assert.equal(bridge.autoIllustration.consistencyModel, 'nai-diffusion-4-5-full-inpainting');
     } finally { reopened.vn.destroy(); }
+});
+
+
+test('gate:image-prompt-ui:分格式规则保存回读与非法草稿隔离', async () => {
+    const { registry, editor, storage } = await imagePromptUiFixture();
+    const { createPresetRegistry } = await import('../src/index.js');
+    const { createImagePromptEditor } = await import('../src/visual/igs-ui/settings-image-prompt-editor.js');
+    const address = imagePromptAddress('modules', 'igs-task-cg', 'contentByFormat');
+    const formats = { 'dna-template': '合成模板规则', 'cg-plan': '合成规划规则' };
+    assert.equal(editor.edit(address, JSON.stringify(formats)).ok, true);
+    assert.equal(editor.save().ok, true);
+    const reopenedRegistry = createPresetRegistry({ storage });
+    assert.deepEqual(reopenedRegistry.getCurrent('prompt-preset').data.modules.find(m => m.task === 'cg').contentByFormat, formats);
+    assert.equal(editor.edit(address, '{未完成').reason, 'invalid-json');
+    assert.equal(editor.saveDraft().ok, true);
+    const recovered = createImagePromptEditor(createPresetRegistry({ storage }));
+    assert.equal(recovered.initialize().ok, true);
+    assert.equal(recovered.state.rawFields[address], '{未完成');
+    assert.equal(recovered.save().reason, 'invalid-prompt-fields');
+    assert.deepEqual(registry.getCurrent('prompt-preset').data.modules.find(m => m.task === 'cg').contentByFormat, formats);
+    assert.equal(recovered.edit(address, '').ok, true);
+    assert.equal(recovered.save().ok, true);
+    assert.equal(Object.hasOwn(recovered.state.preset.data.modules.find(m => m.task === 'cg'), 'contentByFormat'), false);
+    assert.equal(recovered.restore('modules', 'igs-task-cg').ok, true);
+    assert.deepEqual(recovered.state.preset.data.modules.find(m => m.task === 'cg').contentByFormat,
+        recovered.state.preset.data.defaultState.baseline.modules.find(m => m.task === 'cg').contentByFormat);
 });

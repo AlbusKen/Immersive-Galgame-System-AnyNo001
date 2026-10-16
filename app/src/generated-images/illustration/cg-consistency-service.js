@@ -77,6 +77,10 @@ export function createCgConsistencyService(deps) {
             ['prompt-input', 'prompt-parse', 'prompt-output', 'prompt-write', 'igs-prompt-input', 'igs-prompt-output'].includes(d?.stage) ? d.stage : '',
             diagnosticFields.has(d?.field) ? d.field : '',
             ['invalid', 'missing', 'mismatch', 'duplicate', 'placeholder', 'preserved', 'locked'].includes(d?.issue) ? d.issue : '',
+            d?.field === 'promptRecipe.identityMode'
+                && ['appearance_correction', 'absent', 'invalid'].includes(d.expectedIdentityMode)
+                && ['appearance_correction', 'absent', 'invalid'].includes(d.actualIdentityMode)
+                ? `身份模式要求 ${d.expectedIdentityMode}，回复 ${d.actualIdentityMode}` : '',
             Number.isInteger(d?.slotId) && d.slotId >= 1 && d.slotId <= 9999 ? `slotid ${d.slotId}` : '',
             Number.isInteger(d?.characterIndex) && d.characterIndex >= 0 && d.characterIndex < 16 ? `角色 ${d.characterIndex}` : '',
             Number.isInteger(d?.status) && d.status >= 100 && d.status <= 599 ? `HTTP ${d.status}` : '',
@@ -224,6 +228,8 @@ export function createCgConsistencyService(deps) {
             const characterContext = bundle.characterContext.filter((c) =>
                 promptTask.characters.some((b) => b.characterKey === c.characterKey));
             const output = { slotId: expected.slotId, size: expected.size || task.record.originalSize,
+                ...(slot.identityMode !== undefined && { identity_mode: slot.identityMode }),
+                ...(promptTask.outfitMode !== undefined && { outfit_mode: promptTask.outfitMode }),
                 characterKey: expected.characterKey, layout: expected.layout,
                 rows: expected.rows.map((row, captionIndex) => ({ captionIndex, kind: row.kind,
                     characterKey: row.characterKey, token: row.token, framing: row.framing,
@@ -234,8 +240,11 @@ export function createCgConsistencyService(deps) {
             if (!canStart(task)) throw new Error('stale-config');
             const result = await wait(task, writePrompt({
                 imagePromptTask: 'consistency',
-                outputs: { slotIds: [expected.slotId], rows: clone(output.rows) },
+                outputs: { slotIds: [expected.slotId], size: clone(output.size), rows: clone(output.rows) },
                 description: bundle.description
+                    + (slot.identityMode === 'appearance_correction'
+                        ? '\n本槽必须输出 identity_mode: appearance_correction；不可省略。'
+                        : '\n本槽未授权临时身份校正；不输出 identity_mode 或 meta_correction_*。')
                     + `\n本次只输出 slotid ${expected.slotId}，共 ${output.rows.length} 个 Char。其他轮次由独立请求完成。`
                     + '\n本次输出清单（captionIndex 是本图连续零基索引，每个字段只写一次）：\n'
                     + JSON.stringify(output),
@@ -243,7 +252,8 @@ export function createCgConsistencyService(deps) {
                 contextMode: 'provided',
                 originalPrompt: clone(task.record.promptEdited ? task.record.prompt?.caption || task.record.prompt || task.record.caption : task.record.promptRecipe.caption),
                 layout: clone(expected.layout),
-                ...(task.writingRequirements && { writingRequirements: clone(task.writingRequirements) }),
+                writingRequirements: { ...clone(task.writingRequirements || {}),
+                    size: `${output.size.width}x${output.size.height}` },
                 signal: task.controller.signal, shouldStart: () => canStart(task) }));
             await unchanged(task);
             if (!result?.ok) return result ? { ...result, diagnostics: {
@@ -281,16 +291,19 @@ export function createCgConsistencyService(deps) {
     });
     // 等所有本地分支收敛；失败后禁止排队分支开始，不提交部分成功。
     async function collect(task, jobs) {
+        let firstFailure;
+        const stop = outcome => {
+            firstFailure ||= outcome;
+            task.failed = true;
+        };
         const settled = await Promise.allSettled(jobs.map((job) => Promise.resolve(job).then((result) => {
-            if (!result?.ok) task.failed = true;
+            if (!result?.ok) stop({ status: 'fulfilled', value: result });
             return result;
-        }, (error) => { task.failed = true; throw error; })));
+        }, (error) => { stop({ status: 'rejected', reason: error }); throw error; })));
         guard(task);
-        // 保留实际分支失败，不让同组停发产生的派生错误掩盖诊断。
-        const failed = settled.find((r) => r.status === 'fulfilled' && !r.value?.ok);
-        if (failed) return failed.value || failure('consistency-failed');
-        const rejected = settled.find((r) => r.status === 'rejected');
-        if (rejected) throw rejected.reason;
+        // 按发生顺序保留首个失败；其他分支因停发返回的失效结果不能覆盖它。
+        if (firstFailure?.status === 'fulfilled') return firstFailure.value || failure('consistency-failed');
+        if (firstFailure) throw firstFailure.reason;
         return { ok: true, values: settled.map((r) => r.value) };
     }
     function release(task) {
@@ -429,6 +442,8 @@ export function createCgConsistencyService(deps) {
                 || JSON.stringify(task.target) !== JSON.stringify(target)) return Promise.resolve(failure('stale-preflight'));
             if (task.appearance.confirmations.length && options.confirmed !== true)
                 return Promise.resolve(failure('confirmation-required'));
+            if (options.onProgress !== undefined)
+                task.options = { ...task.options, onProgress: options.onProgress };
             task.state = 'running';
             task.confirmed = options.confirmed === true;
             return generate(task).then(result => {

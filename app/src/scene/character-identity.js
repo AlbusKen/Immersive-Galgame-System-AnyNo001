@@ -74,9 +74,12 @@ export function prepareSpriteIdentityAdoption(assets, name, imageId, record = {}
     const candidate = candidates[0];
     const snapshot = record.dnaSnapshot?.characters?.filter((c) => c.characterKey === sourceName && c.source === 'candidate');
     if (record.dnaSnapshot?.version !== 1 || snapshot?.length !== 1
-        || JSON.stringify(normalizeCharacterDna(snapshot[0].profile).views) !== JSON.stringify(candidate.views)) return fail('DNA_ADOPTION_INVALID');
+        || JSON.stringify(normalizeCharacterDna(snapshot[0].profile).views) !== JSON.stringify(candidate.views)
+        || (candidate.personality !== undefined && snapshot[0].profile?.personality !== candidate.personality))
+        return fail('DNA_ADOPTION_INVALID');
     // 显式立绘转换可补齐旧身份的景别，但旧字段及已存在景别必须原样保留。
     const nextDna = { ...dna, version: 2, views: structuredClone({ ...dna.views, ...candidate.views }),
+        ...(candidate.personality !== undefined && { personality: candidate.personality }),
         identityInitialized: true, identitySource: dna.identitySource || imageId };
     return { ok: true, ...(clothes.outfitName && { outfitName: clothes.outfitName }),
         patch: { ...clothes.patch, characterDna: { ...assets.characterDna, [name]: nextDna } } };

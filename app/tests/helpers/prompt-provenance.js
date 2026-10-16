@@ -83,6 +83,34 @@ export function characterWriteFixture(request, { subject, scene = 'One woman sta
     return { ok: true, ...captions[0], captions };
 }
 
+// 隔离模型端口的资料回文；生产解析器负责拒收和模板组装。
+export function spriteDataReply(request, options = {}) {
+    const written = characterWriteFixture(request, options);
+    options.transformWritten?.(written, request);
+    return written.captions.slice().reverse().map(entry => {
+        const binding = entry.promptRecipe.bindings[0];
+        const source = request.characterContext.find(c => c.characterKey === binding.characterKey);
+        const header = [`slotid: ${entry.slotId}`, `character: ${binding.characterKey}`];
+        if (request.outputs.format === 'expression-fragments') return header.concat([
+            `expression: ${entry.slotId === 1 ? 'smiling eyes, upturned mouth' : 'furrowed brows, tense lips'}`,
+            'expression_uc: distorted mouth',
+        ]).join('\n');
+        const outfit = entry.characterMeta.characters[0].outfit;
+        const saved = source.outfits?.find(o => o.name === outfit.name);
+        const candidate = entry.dnaCandidates?.characters[0];
+        return header.concat([
+            `outfit_name: ${outfit.name}`,
+            `outfit_description: ${outfit.description || saved?.description || source.outfit?.description || ''}`,
+            ...(candidate ? Object.entries(candidate.views).flatMap(([frame, view]) => [
+                ...(view.subject !== undefined ? [`dna_${frame}: ${view.subject}`] : []),
+                `dna_uc_${frame}: ${view.negative || ''}`]) : []),
+            ...(request.promptTask.purpose === 'sprite' && source.dna?.personality === undefined
+                ? [`personality: ${options.personality ?? ''}`] : []),
+        ]).join('\n');
+    }).join('\n---\n');
+}
+
+
 // UI 采用 fixture 仍经过实际任务校验、身份展开和定稿快照入口。
 export async function spriteAdoptionFixture(name = 'Alice', dna = {}, characterContext) {
     const { characterPromptTask } = await import('../../src/generated-images/illustration/character-prompt-task.js');

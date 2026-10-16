@@ -44,7 +44,7 @@ export function createIllustrationMessageHost(globalObject = globalThis) {
         return ctx && typeof ctx.name1 === 'string' ? ctx.name1 : '';
     }
 
-    // 立绘写词的外貌参考：用户角色读人设描述，角色卡读描述，世界书只取关键词或标题含该名字的条目。
+    // 用户人设与角色卡参考；内置写词通过 includeWorldInfo:false 将世界书交给原生触发扫描。
     // 只在角色没登记 DNA 时调用，每人限字，不整本塞进副 LLM。
     async function readCharacterLore(names = [], limits = {}) {
         const ctx = context();
@@ -53,7 +53,7 @@ export function createIllustrationMessageHost(globalObject = globalThis) {
         const total = Number(limits.total) || 1800;
         const flat = (text) => String(text || '').replace(/\s+/g, ' ').trim();
         const characters = Array.isArray(ctx.characters) ? ctx.characters : [];
-        const entries = await readWorldInfoEntries(ctx, characters);
+        const entries = limits.includeWorldInfo === false ? [] : await readWorldInfoEntries(ctx, characters);
         const out = [];
         let used = 0;
         for (const name of names.map((n) => String(n || '').trim()).filter(Boolean)) {

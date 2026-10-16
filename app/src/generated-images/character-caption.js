@@ -94,7 +94,8 @@ export function prepareCharacterCaption(input = {}) {
         if (!b.token) continue;
         const saved = characterContext.find((c) => c.characterKey === b.characterKey)?.dna;
         const candidate = output.value.dnaCandidates?.characters.find((c) => c.characterKey === b.characterKey);
-        const dna = candidate ? { ...normalizeCharacterDna(saved), version: 2, views: candidate.views } : saved;
+        const dna = candidate ? { ...normalizeCharacterDna(saved), version: 2, views: candidate.views,
+            ...(candidate.personality !== undefined && { personality: candidate.personality }) } : saved;
         const metadata = input.characterMeta?.characters?.find((c) => c.characterKey === b.characterKey && c.captionIndex === b.captionIndex);
         const view = readCaptionIdentity(dna, b.framing, selected.value?.purpose, metadata);
         if (!view.ok) return { ...view, characterKey: b.characterKey, framing: b.framing };

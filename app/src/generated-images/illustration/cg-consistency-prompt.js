@@ -79,7 +79,7 @@ export function consistencyPromptTask(record, characters, assets, plans, appeara
             '本轮输出清单的 characterKey 是目标；layout.sourceSize/crop 是原图裁剪依据，work/reference 是工作区与辅助图区域。根据原词、原角色位置及裁剪结构筛选局部元素，不把粗裁剪区视为整块重设计许可。只输出清单指定的角色，画外内容不强行移入；没有位置依据的物件不猜测位置，不声称看过图片。',
             '每个工作轮次独立用于实际重绘，从随图保存的原词与裁剪布局派生。保留元素的姿势、动作、身体朝向、表情、视线、遮挡和互动接触关系尽量复用原提示词，不笼统省略成仅身份与衣装或保持原姿势。只对局部裁剪确实需要的描述作最小调整，不重写整份动态描述。',
             '只反推动作、表情、互动与局部环境；复用原 named 的角色 token 和景别，Char 恰有自身 <<dna:token>> 一次，负向可引用自身 <<dna_uc:token>> 一次。不重写身份正文，不输出 meta_identity、meta_signature、identity_mode、meta_correction_identity、meta_correction_uc 或 meta_dna_*。reference 使用本次清单的独立身份 token，不生成替代 DNA，不套用普通 CG 的身份旁路。',
-            '具名人物的 meta_outfit_name 与 meta_outfit_description 必须从本次角色资料的 outfit.name/description 逐字照抄；这些字段来自原 CG 衣装快照，不是参照立绘衣装。不改写、不翻译、不补全，空值保持为空。衣装模板模式下，Char 只用衣装槽引用该原衣装，不再复述 wearing/wears 或衣装清单；没有衣装模板时才在 Char 中保真写原衣装，不迁移参照图衣装。',
+            '具名人物的 meta_outfit_name 逐字照抄本次 outfit.name。衣装模板模式下，meta_outfit_description 保留本图索引和竖线，值留空以引用本次冻结说明，不重抄全文；若填写非空值，须与 outfit.description 逐字一致，包括尾部标点、权重和触发词。非衣装模板任务仍逐字照抄说明，空值保持为空。这些资料来自原 CG 衣装快照，不是参照立绘衣装；不改写、不翻译、不补全。衣装模板 Char 只用衣装槽，其他任务才保真写原衣装，不迁移参照图衣装。',
             ...(recipe.outfitMode === 'template' ? ['每份写 outfit_mode: template；named Char 恰写本人的 <<outfit:token>> 一次，不另写衣装说明。reference 与所有 UC 不使用衣装占位。原 CG 衣装仅按快照展开，不采用新候选或参照图服装。'] : []),
             '以本次输出清单的 captionIndex 作为本图 Char 的零基索引，从 0 连续编号。每个 meta_* 字段都写为 字段名: captionIndex | 值，包括 meta_key、meta_token、meta_frame。例如索引0须写 meta_key: 0 | 输入角色键、meta_token: 0 | 输入token、meta_frame: 0 | 输入景别，不能只写值。slotid、原图角色序号和 token 中的数字都不是本图索引。同一 characterKey 的 named 与 reference 是两个独立 Char，各用自己的索引和 token；每个字段恰好一次，不在图末重复汇总。',
             '参考关系只写进对应 reference 的 char 英文自然语言：辅助人像对应本轮目标，仅比较脸、头发及可见稳定身份细节；主工作区保留原 CG 动作、衣装和环境，不采用参考立绘的姿态、表情、服装、背景或画风。Scene 只描述原 CG 裁剪内的共同画面，不写技术分区。reference 是 meta_kind 的取值，不是字段名；不输出 reference:、reference_uc:、额外参考说明段落或独立 reference inset 行，也不把该技术标签写进正文。',
@@ -98,7 +98,7 @@ function consistencyTargetDescription(record, recipe) {
         '允许发型、脸型、五官及衣装设计带来的必要局部轮廓改变；保留头部与身体位置、尺度、骨架姿态和手脚接触点，不把参考立绘的姿态、表情、视线、背景、光照或画风迁移到 CG。粗裁剪不是分割，区外旧发尾不能自动删除，不擅自扩区。',
         '每份使用本次 slot 的 identityMode: appearance_correction，输出 identity_mode: appearance_correction。每个 named/reference 用独立 token，在自身 Char 恰引用 <<dna:token>> 一次，可在自身 UC 引用 <<dna_uc:token>> 一次；各自输出 meta_correction_identity 和可选 meta_correction_uc。',
         '临时校正主语只提炼保存资料中适用、无矛盾的身份支持，保守表达脸、头发、非人特征及明确标志饰品；不复制完整身体比例或用负面词强制相反身份，不凭空猜参考图片细节，不声称看过图。未知或遮挡不强补；不输出 meta_identity、meta_signature、meta_dna_*，不改永久 DNA。',
-        '每份写 outfit_mode: template。named 的 meta_outfit_name 和 meta_outfit_description 必须逐字照抄本次 outfit；正向 Char 恰写本人的 <<outfit:token>> 一次，不复述衣装清单。原 CG 快照仅作历史依据，不是本次目标。',
+        '每份写 outfit_mode: template。named 的 meta_outfit_name 逐字照抄本次 outfit.name；meta_outfit_description 保留本图索引和竖线，值留空以引用本次冻结的 outfit.description，不重抄全文。若填写非空值，须与本次说明逐字一致，包括尾部标点、权重和触发词。正向 Char 恰写本人的 <<outfit:token>> 一次，不复述衣装清单。原 CG 快照仅作历史依据，不是本次目标。',
         'reference 展示完整已保存人物立绘画布，包括可见衣装，不是头像限定。用输入景别、独立 token 和自身连续 captionIndex；参考关系写在 reference 的 char 自然语言中，说明与目标同人且同套有效衣装，不复制服装正文或新增第二份衣装候选。reference 的两项 meta_outfit_* 各写一次空值，正负向都不写衣装占位。',
         '全部 meta_* 使用本图从0连续的 captionIndex | 值，每项恰好一次，角色键、token、景别照抄 outputs.rows，不以 slotid 或原图索引替代。只输出本轮 slot；不输出 reference:、reference_uc: 或独立 reference inset 行。',
         'Scene 只写原图裁剪内共同画面，不写技术分区；排除额外相框、描边、分栏、拼贴和重复剧情人物等伪影，不误删原图真实物件。画师由发送层处理，其余质量、动态及 UC 在本次写词完成。',
@@ -107,7 +107,7 @@ function consistencyTargetDescription(record, recipe) {
     ].join('\n');
 }
 
-// 返回顺序不代表轮次；按 slotId/token 对账后仅装配几何字段。
+// 返回顺序不代表轮次；按 slotId/token 对账，衣装只取已校验的冻结快照。
 export function checkConsistencyCaptions(written, bundle, characters) {
     if (!written?.ok) return written || fail('consistency-write-failed');
     const entries = written.captions;
@@ -148,8 +148,13 @@ export function checkConsistencyCaptions(written, bundle, characters) {
             if (binding.kind === 'named') {
                 const returned = meta.value.characters.find((c) => c.captionIndex === binding.captionIndex);
                 if (!original || !returned) return fail('DNA_TEMPLATE_BINDING', 'characterMeta.binding', where);
+                const outfit = recipe.outfitMode === 'template'
+                    ? output.value.outfitSnapshot.characters.find(c => c.characterKey === binding.characterKey
+                        && c.captionIndex === binding.captionIndex && c.token === binding.token)
+                    : returned.outfit;
+                if (!outfit) return fail('DNA_TEMPLATE_BINDING', 'characterMeta.binding', where);
                 for (const field of ['name', 'description']) {
-                    if (returned.outfit[field] !== original.outfit[field])
+                    if (outfit[field] !== original.outfit[field])
                         return fail('DNA_TEMPLATE_BINDING', `outfit.${field}`, where);
                 }
                 metadata.push({ ...structuredClone(original), captionIndex: binding.captionIndex,

@@ -1,7 +1,7 @@
 // 角色 DNA：结构化文本角色资料的规范化、别名解析与提示词片段合并。
 // 数据位于 sceneAssets.characterDna，与情绪槽映射 sceneAssets.characters 并列，互不混入。
 
-export const CHARACTER_DNA_FIELDS = Object.freeze(['identity', 'defaultAppearance', 'negative', 'triggerWords']);
+export const CHARACTER_DNA_FIELDS = Object.freeze(['identity', 'defaultAppearance', 'negative', 'triggerWords', 'personality']);
 export const CHARACTER_DNA_REQUIRED_VIEWS = Object.freeze(['full_body', 'half_body', 'portrait']);
 // partial 只兼容历史资料与明确的旧任务，不参与新建完整性要求。
 export const CHARACTER_DNA_VIEWS = Object.freeze(['full_body', 'half_body', 'portrait', 'partial']);
@@ -60,7 +60,18 @@ export function readCharacterDnaView(raw, framing) {
     const checked = checkDnaViews(raw.views, { allowEmpty: true });
     if (!checked.ok) return checked;
     if (!checked.value[framing]?.subject) return { ok: false, reason: 'DNA_VIEW_MISSING', error: '角色缺少对应景别 DNA，请通过立绘补齐' };
-    return { ok: true, value: checked.value[framing] };
+    const personality = checkCharacterPersonality(raw.personality);
+    if (!personality.ok) return personality;
+    const view = checked.value[framing];
+    return { ok: true, value: { ...view, subject: [view.subject, personality.value].filter(Boolean).join(' ') } };
+}
+
+export function checkCharacterPersonality(value) {
+    if (value === undefined) return { ok: true, value: '' };
+    if (typeof value !== 'string' || value.length > 4096 || /<<\s*(?:dna|outfit)/i.test(value))
+        return { ok: false, reason: 'DNA_VIEW_INVALID', error: '性格 DNA 必须是无占位符的独立文本',
+            diagnostic: { code: 'DNA_VIEW_INVALID', field: 'dna.personality', issue: 'invalid' } };
+    return { ok: true, value: cleanText(value) };
 }
 
 export function editCharacterDnaField(raw, field, value) {
@@ -91,7 +102,9 @@ function cleanText(value) {
 export function normalizeCharacterDna(raw) {
     const source = plainObject(raw) || {};
     const dna = {};
-    for (const field of CHARACTER_DNA_FIELDS) dna[field] = cleanText(source[field]);
+    for (const field of CHARACTER_DNA_FIELDS) {
+        if (field !== 'personality' || hasOwn(source, field)) dna[field] = cleanText(source[field]);
+    }
     if (source.identityInitialized === true) dna.identityInitialized = true;
     if (typeof source.identitySource === 'string' && source.identitySource) dna.identitySource = source.identitySource;
     if (source.version === 2) {
@@ -189,10 +202,10 @@ export function mergePromptTags(...parts) {
     return out.join(', ');
 }
 
-// 固定顺序：triggerWords → identity →（立绘链才追加）defaultAppearance；空字段不注入。
+// 性格独立保存，使用时与身份合并；不复制进各景别资料。
 export function buildCharacterDnaPromptParts(dna, { includeDefaultAppearance = false } = {}) {
     const d = normalizeCharacterDna(dna);
-    const positive = [d.triggerWords, d.identity];
+    const positive = [d.triggerWords, d.identity, d.personality];
     if (includeDefaultAppearance) positive.push(d.defaultAppearance);
     return { positive: mergePromptTags(positive), negative: mergePromptTags(d.negative) };
 }

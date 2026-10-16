@@ -11,7 +11,7 @@ export function createImagePromptEditor(registry) {
     const state = { preset: null, baseRevision: null, draftRevision: null, dirty: false, editRevision: 0,
         rawFields: {}, errors: {}, preview: null, importPreview: null, importChoices: {},
         previewTask: 'sprite', previewInput: JSON.stringify({ description: '合成预览资料，不发送请求',
-            outputs: { format: 'caption-slots', count: 1 } }, null, 2), status: '' };
+            outputs: { format: 'sprite-data', slotIds: [1] } }, null, 2), status: '' };
     const ready = () => registry?.getStatus?.().ok === true;
     function load(id, restore = true) {
         state.editRevision += 1;

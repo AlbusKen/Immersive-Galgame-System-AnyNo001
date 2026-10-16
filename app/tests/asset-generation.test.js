@@ -14,7 +14,7 @@ import { normalizeAutoIllustrationSettings, isStrictBackgroundMatch } from '../s
 import { matteSolidBackground, findOpaqueBounds } from '../src/media/alpha-matte.js';
 import { createMemoryGeneratedAssetStore } from '../src/media/generated-asset-store.js';
 import { createAssetGenerationService } from '../src/generated-images/illustration/asset-generation-service.js';
-import { characterViewsFixture, characterWriteFixture } from './helpers/prompt-provenance.js';
+import { characterViewsFixture, characterWriteFixture, spriteDataReply } from './helpers/prompt-provenance.js';
 import { prepareCharacterCaption } from '../src/generated-images/character-caption.js';
 import { pngFixture, imageZipFixture } from './helpers/png-fixture.js';
 import { deflateRawSync } from 'node:zlib';
@@ -2039,12 +2039,12 @@ test('gate:assets:dna-composition-reaches-final-dbgen-caption-and-saved-prompt',
     const backend = createImageBackend({ nai: {}, global: {
         btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
         NaiDbGen: {
-            getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1 }),
+            getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, spriteData: 1 }),
             async generateSinglePrompt(req) {
                 writes.push(req);
-                return { ok: true, value: characterWriteFixture(req, {
+                return { ok: true, value: { format: req.outputs.format, text: spriteDataReply(req, {
                     subject: 'Alice, alice_tag, 1girl, silver hair, blue eyes,',
-                }) };
+                }) } };
             },
             async generate(req) {
                 requests.push(req);
@@ -2064,7 +2064,7 @@ test('gate:assets:dna-composition-reaches-final-dbgen-caption-and-saved-prompt',
     const wire = requests[0];
     const role = wire.caption.v4_prompt.caption.char_captions[0];
     assert.equal(writes.length, 1);
-    assert.equal(role.char_caption, 'Alice, alice_tag, 1girl, silver hair, blue eyes, ' + assets.wardrobe.hoodie.prompt + ' and smiles.');
+    assert.equal(role.char_caption, 'Alice, alice_tag, 1girl, silver hair, blue eyes, ' + assets.wardrobe.hoodie.prompt + ' calm, relaxed, closed mouth');
     assert.deepEqual(role.centers, [{ x: 0.5, y: 0.5 }]);
     const positive = JSON.stringify(wire.caption.v4_prompt);
     assert.doesNotMatch(positive, /black hair|brown hair|green eyes|maid outfit/);
@@ -2136,11 +2136,11 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
         const backend = createImageBackend({ nai: {}, global: {
             btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
             NaiDbGen: {
-                getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1 }),
+                getPromptCapabilities: () => ({ finalCaption: 1, promptSnapshot: 1, spriteData: 1 }),
                 async generateSinglePrompt(req) {
                     writes.push(req);
-                    return { ok: true, value: characterWriteFixture(req, { action: 'wears a white dress and smiles.',
-                        outfitDescription: fixture.outfit?.prompt || 'wears a white dress' }) };
+                    return { ok: true, value: { format: req.outputs.format, text: spriteDataReply(req, {
+                        outfitDescription: fixture.outfit?.prompt || 'wears a white dress' }) } };
                 },
                 async generate(req) { paints.push(req); return pipeline.imageGen.generate(req); },
             },
@@ -2158,11 +2158,18 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
         const before = structuredClone(fixture.dna);
         const old = cap('brown hair, maid outfit, smile');
         const result = await service.generateExpressionSet({ name: 'Alice', moods: ['喜悦'],
-            basePrompt: { caption: old }, dna: fixture.dna, outfit: fixture.outfit, note: '本次需重新写词' });
+            basePrompt: { caption: old }, dna: fixture.dna, outfit: fixture.outfit, note: '本次需重新写词',
+            async onOutfitDna(clothing) {
+                const { prepareOutfitDnaSave } = await import('../src/scene/outfit-identity.js');
+                const saved = prepareOutfitDnaSave(assets, 'Alice', clothing.name, clothing.description);
+                if (saved.ok) Object.assign(assets, saved.patch);
+                return saved;
+            } });
         assert.equal(result.ok, true, result.error);
         assert.equal(result.items[0].ok, true, result.items[0].error);
 
-        assert.equal(writes.length, 1);
+        const writeCount = fixture.outfit && !fixture.outfit.prompt ? 2 : 1;
+        assert.equal(writes.length, writeCount);
 
         assert.equal(writes[0].promptTask.purpose, 'derived');
         assert.equal(writes[0].promptTask.characters[0].framing, 'half_body');
@@ -2183,7 +2190,7 @@ test('gate:assets:景别 DNA 与当次衣装进入写词，模板续画不重新
             items: [{ mood: '喜悦', ...saved }], basePrompt: { caption: old },
             dna: fixture.dna, outfit: fixture.outfit });
         assert.equal(resumed.items[0].ok, true, resumed.items[0].error);
-        assert.equal(writes.length, 1, '继续生图复用已写好的单份结果');
+        assert.equal(writes.length, writeCount, '继续生图复用已写好的表情片段');
         assert.deepEqual(paints[1].caption.v4_prompt, paints[0].caption.v4_prompt, '续画保留实际衣装正文');
         assert.doesNotMatch(JSON.stringify(paints[1].caption.v4_prompt), /brown hair|maid outfit|red hoodie/);
         pipeline.imageGen.dispose();
@@ -2330,15 +2337,11 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
             const data = JSON.parse(request.messages[2].content);
             inputs.push(data);
             const c = data.promptTask.characters[0];
-            return ['slotid: 1', 'prompt_mode: dna_template', 'outfit_mode: template',
-                'scene: One woman stands in soft light.', 'scene_uc: blurry',
-                `char: <<dna:${c.token}>> <<outfit:${c.token}>> smiles.`, 'char_uc:',
-                'meta_kind: 0 | named', `meta_key: 0 | ${c.characterKey}`,
-                `meta_token: 0 | ${c.token}`, 'meta_frame: 0 | half_body',
-                `meta_outfit_name: 0 | ${renamed ? 'Blue coat' : '蓝色外套'}`,
-                'meta_outfit_description: 0 | wears a blue coat',
+            return ['slotid: 1', `character: ${c.characterKey}`, 'personality: reserved',
+                `outfit_name: ${renamed ? 'Blue coat' : '蓝色外套'}`,
+                'outfit_description: wears a blue coat',
                 ...['full_body', 'half_body', 'portrait'].map(frame =>
-                    `meta_dna_${frame}: 0 | Alice, an adult woman with silver hair and blue eyes,`),
+                    `dna_${frame}: Alice, an adult woman with silver hair and blue eyes,`),
             ].join('\n');
         } }, createPresetRegistry());
         const backend = createImageBackend({ llm, global: {}, getBridge: () => bridge,
@@ -2364,6 +2367,11 @@ test('gate:image-preset:内置自动立绘同次承接资料并保存身份候�
         if (unreadable) {
             assert.equal(result.ok, false);
             assert.deepEqual([inputs.length, paints.length], [0, 0]);
+            continue;
+        }
+        if (renamed) {
+            assert.equal(result.ok, false, '资料协议不允许改写指定衣装原名');
+            assert.deepEqual([inputs.length, paints.length], [1, 0]);
             continue;
         }
         assert.equal(result.ok, true, result.error);
@@ -2397,10 +2405,13 @@ test('gate:image-preset:剧情服装DNA传入正文，缺资料和过期结果�
     const { createImagePromptLlm } = await import('../src/generated-images/image-prompt-runtime.js');
     const { createImageBackend } = await import('../src/generated-images/image-backend.js');
     const requests = [];
-    let finish;
+    let finish, onRequest;
+    let requested = new Promise(resolve => { onRequest = resolve; });
     const llm = createImagePromptLlm({ request(request, settings) {
         requests.push({ request: structuredClone(request), settings });
-        return new Promise(resolve => { finish = resolve; });
+        const response = new Promise(resolve => { finish = resolve; });
+        onRequest();
+        return response;
     } }, createPresetRegistry());
     const bridge = { imageApi: { mode: 'nai' }, autoIllustration: { nai: { apiKey: 'fake' } } };
     const backend = createImageBackend({ llm, global: {}, getBridge: () => bridge });
@@ -2410,6 +2421,7 @@ test('gate:image-preset:剧情服装DNA传入正文，缺资料和过期结果�
     const controller = new AbortController();
     const pending = service.writeWardrobePrompt({ character: 'Alice', outfit: '外套',
         messageId: 3, sourceText, signal: controller.signal, shouldStart: () => true });
+    await requested;
     assert.equal(requests.length, 1);
     const data = JSON.parse(requests[0].request.messages[2].content);
     assert.equal(data.numberedText, sourceText);
@@ -2423,8 +2435,10 @@ test('gate:image-preset:剧情服装DNA传入正文，缺资料和过期结果�
         sourceText, shouldStart: () => false })).reason, 'request-stale');
     assert.equal(requests.length, 1);
     let current = true;
+    requested = new Promise(resolve => { onRequest = resolve; });
     const late = service.writeWardrobePrompt({ outfit: '外套', messageId: 3,
         sourceText, shouldStart: () => current });
+    await requested;
     current = false;
     finish('#1\nscene: wears another coat\nchar:\nuc:');
     assert.equal((await late).reason, 'request-stale');
@@ -2438,11 +2452,15 @@ test('gate:image-preset:指定衣装使用换装模块，默认差分使用表�
             async writePrompt(input) { writes.push(input); return { ok: false, error: 'fake-write-stop' }; },
             async generateCaption() { assert.fail('本测试只核对写词任务，不能出图'); } },
         messageHost: fakeHost(''), store: createMemoryGeneratedAssetStore(),
-        getSettings: () => ({ sceneAssets: {}, autoIllustration: {} }) });
+        getSettings: () => ({ sceneAssets: {
+            characterOutfits: { Alice: { 常服: { wardrobe: 'dress', moods: {} } } },
+            characterDefaultOutfits: { Alice: { version: 1, outfitName: '常服' } },
+            wardrobe: { dress: { prompt: 'wears a white dress' } },
+        }, autoIllustration: {} }) });
     const dna = { version: 2, views: characterViewsFixture() };
     for (const [outfit, expected] of [[undefined, 'expression'],
         [{ name: '外套', prompt: 'wears a blue coat' }, 'outfit'], [{ nude: true }, 'outfit']]) {
-        const result = await service.generateExpressionSet({ name: 'Alice', dna, outfit, moods: ['平和'], note: '本次需重新写词' });
+        const result = await service.generateExpressionSet({ name: 'Alice', dna, outfit, moods: ['喜悦'] });
         assert.equal(result.ok, false);
         assert.equal(writes.at(-1).imagePromptTask, expected);
         assert.equal(writes.at(-1).promptTask.purpose, 'derived');

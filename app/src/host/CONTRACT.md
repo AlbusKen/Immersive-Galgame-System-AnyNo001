@@ -10,6 +10,8 @@
 - 独立副 LLM 优先通过宿主 `ChatCompletionService` 的 custom 通道，使用 IGS 本次私有地址、模型、消息及 Authorization，不读取 DBG 配置，不修改酒馆主模型配置。宿主缺少发送能力时才走浏览器直连；已选通道失败后不切换、不自动补发。
 - 两条独立 API 路径固定 `stream: false`，不主动追加未配置的采样参数或 JSON schema。响应仅剥离前置且完整闭合的 `<think>` 块，未闭合思考不作为正式结果；直连保留 JSON／SSE 解析。
 - HTTP 拒绝通过 `SecondaryLlmError` 传递状态、通道和白名单字段名，正文、地址及凭据不进入诊断。写词层透传受控失败，取消／超时保留停止语义；模型列表在宿主发送能力及请求头能力齐全时走酒馆 custom status 通道，否则直连。
+- 生图世界书适配由 `image-world-info.js` 调用宿主 `getWorldInfoPrompt` 的 dryRun：扫描调用方给定的新到旧写词窗口，不自行遍历全量聊天或重写关键词／常量触发。汇总各注入位置的已激活文本；本适配器扫描串行并恢复作者注释，接口缺失／异常／无效返回受控失败。dryRun 其他内部副作用以及与主生成／外部插件的并发隔离不作保证，需真实宿主复验。内置立绘的 `readCharacterLore(..., { includeWorldInfo: false })` 仅补人设与角色卡，世界书统一走原生扫描。
+
 - 自动插图楼层读写、生成事件订阅及 `[igs-img]` 标记对外隐藏（`illustration-message-host.js`）。
 - 自动插图 `writeFloor(messageId, text, expectedFloor)` 写回前复核聊天、楼层、swipe、最新 AI 身份与原文；发生变化返回 `stale`，不写入。宿主 API 未提供原子条件写入，复核与实际调用之间的极窄竞态仍需真机验证。
 - `onImageFloorReady(handler)` 合并主生成期间的渲染通知，在 `GENERATION_ENDED` 后读取当前聊天的最终 AI 楼层；缺渲染通知时按结束事件和当前轮楼层补交。忽略 dryRun、非 quietToLoud 的 quiet、impersonate 和 IGS 后台请求；后台结束不提前收束主生成。停止、换聊天、下一轮或卸载使排队交付失效，停止后的迟到渲染不重启自动生图；正常新一轮才解除拒收。生命周期事件缺失的旧宿主保留渲染入口，真实宿主事件顺序仍需现场复验。

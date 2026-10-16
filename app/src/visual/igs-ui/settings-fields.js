@@ -639,6 +639,7 @@ function renderCharacterSpriteHeightRow(charName, { sceneAssets, reader }) {
 
 const CHARACTER_DNA_FIELD_LABELS = [
     ['triggerWords', '触发词', '模型token / LoRA触发词等纯文本'],
+    ['personality', '性格特点 DNA', '只描述该角色稳定的性格特点，不含外貌、衣装、当次表情、动作或场景；生图时与所选景别身份一起使用'],
     ...[['full_body', '全身'], ['half_body', '半身'], ['portrait', '头像']].flatMap(([view, label]) => [
         [`views.${view}.subject`, `${label}身份（含年龄感）`, '英文身份主语片段；核对有依据的年龄感、角、尾巴、非人耳及标志饰品。全身保留已知身体特征，头像保留头颈锚点；三景别同一身份，不含普通服装、动作或临时表情'],
         [`views.${view}.negative`, `${label}身份负面词`, '该景别固定身份的排除词，可留空'],

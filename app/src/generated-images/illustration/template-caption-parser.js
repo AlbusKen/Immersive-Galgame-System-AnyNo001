@@ -19,14 +19,21 @@ const fail = (reason = 'DNA_TEMPLATE_BINDING', field = 'meta_fields', issue = 'i
 };
 const atBlock = (result, block) => {
     const diagnostic = { ...result.diagnostic, stage: 'prompt-parse', slotId: block.slotId };
-    if (result.reason !== 'DNA_VIEW_INVALID') return { ...result, diagnostic };
-    const field = /^dna\.views\.(full_body|half_body|portrait|partial)(?:\.(subject|negative))?$/.exec(diagnostic.field);
+    const characterMetaFailure = result.reason?.startsWith('character-meta-');
+    if (result.reason !== 'DNA_VIEW_INVALID' && !characterMetaFailure) return { ...result, diagnostic };
+    const field = /^dna\.views\.(full_body|half_body|portrait|partial)(?:\.(subject|negative))?$/.exec(diagnostic.field || '');
+    let key;
     if (field) {
-        const key = `meta_dna_${field[2] === 'negative' ? 'uc_' : ''}${field[1]}`;
+        key = `meta_dna_${field[2] === 'negative' ? 'uc_' : ''}${field[1]}`;
+    } else if (characterMetaFailure) {
+        key = diagnostic.field === 'binding.characterKey' ? 'meta_key'
+            : metaFields.has(diagnostic.field) ? diagnostic.field : undefined;
+    }
+    if (key) {
         const lineNumber = block.rowLines.get(diagnostic.captionIndex)?.[key];
         if (lineNumber !== undefined) diagnostic.lineNumber = lineNumber;
     }
-    const details = ['slotId', 'captionIndex', 'lineNumber']
+    const details = (characterMetaFailure ? ['slotId', 'lineNumber'] : ['slotId', 'captionIndex', 'lineNumber'])
         .filter(key => diagnostic[key] !== undefined).map(key => `${key}=${diagnostic[key]}`);
     return { ...result, diagnostic,
         error: `${result.error} [${details.join('；')}]` };
@@ -36,7 +43,7 @@ const position = (slotId, captionIndex) => ({
     ...(Number.isInteger(captionIndex) && captionIndex >= 0 && captionIndex < 16 && { captionIndex }) });
 const side = (base, chars) => ({ caption: { base_caption: base, char_captions: chars } });
 
-export function parseTemplateCaptionSlots(text, { promptTask, characterContext, characterContextForEntry, autoSpriteOutfitNames } = {}) {
+export function parseTemplateCaptionSlots(text, { promptTask, characterContext, characterContextForEntry, autoSpriteOutfitNames, outputs } = {}) {
     const task = checkPromptTask(promptTask, characterContext);
     if (!task.ok) return task;
     if (!task.value) return fail('PROMPT_MODE_CONFLICT', 'promptTask', 'missing');
@@ -155,9 +162,14 @@ export function parseTemplateCaptionSlots(text, { promptTask, characterContext, 
                 ...(block.outfit_mode !== undefined && { outfitMode: block.outfit_mode }) },
             ...(candidates.length && { dnaCandidates: { version: 1, characters: candidates } }),
             ...(block.analysis !== undefined && { analysis: block.analysis }) };
+        const numberedCg = task.value.purpose === 'cg' && outputs?.selection === 'numbered-text';
+        if (task.value.purpose === 'cg' && (numberedCg || characterContextForEntry !== undefined)
+            && block.at === undefined) return reject('at', 'missing');
         if (block.at !== undefined) {
             if (task.value.purpose !== 'cg' || !/^\d+$/.test(block.at)
-                || !Number.isSafeInteger(Number(block.at)) || Number(block.at) < 1) return reject('at');
+                || !Number.isSafeInteger(Number(block.at)) || Number(block.at) < 1
+                || (numberedCg && Number.isSafeInteger(outputs.paragraphCount)
+                    && Number(block.at) > outputs.paragraphCount)) return reject('at');
             entry.at = Number(block.at);
         }
         if (block.size !== undefined) {

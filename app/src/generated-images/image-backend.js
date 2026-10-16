@@ -15,6 +15,7 @@ import { prepareCharacterCaption } from './character-caption.js';
 import { runImageTask, staleImageTask, inheritImageTaskLease } from './image-task-runtime.js';
 import { imageWritingContext } from './image-prompt-context.js';
 import { bindAutoSpriteOutfitNames } from './illustration/character-prompt-task.js';
+import { parseSpriteData } from './illustration/sprite-data.js';
 
 // 生图来源：nai = IGS 内置 NAI；dbgen = 数据库生图插件（window.NaiDbGen）；
 // extension = 智绘姬：剧情 CG、素材与物品图经智绘姬的出图事件生成，剧情 CG 优先用它写在楼层里的词；
@@ -83,7 +84,11 @@ function promptDiagnostic(result, stage, slotId) {
         ...result?.diagnostic, ...result?.diagnostics };
     const diagnostic = {};
     const code = result?.reason || source.code || error?.code;
-    if (typeof code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) diagnostic.code = code;
+    const characterMetaCodes = ['character-meta-shape', 'character-meta-caption', 'character-meta-key',
+        'character-meta-binding', 'character-meta-index', 'character-meta-text', 'character-meta-position',
+        'character-meta-position-mismatch', 'character-meta-region'];
+    if (typeof code === 'string' && (/^[A-Z][A-Z0-9_]{0,63}$/.test(code)
+        || characterMetaCodes.includes(code))) diagnostic.code = code;
     const stages = ['prompt-input', 'prompt-parse', 'prompt-output', 'prompt-write', 'igs-prompt-input', 'igs-prompt-output'];
     diagnostic.stage = stages.includes(source.stage) ? source.stage : stage;
     const fields = ['promptTask', 'promptTask.characters', 'promptTask.characters.characterKey',
@@ -213,9 +218,9 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
     const timeouts = { ...DBGEN_TIMEOUTS, ...(dbgenTimeouts && typeof dbgenTimeouts === 'object' ? dbgenTimeouts : {}) };
     const readBridge = (override) => (override && typeof override === 'object' ? override : (getBridge ? getBridge() || {} : {}));
     const sendNai = (method, input, settings, meta = {}, slotArtist = false) => runImageTask(taskRuntime,
-        inheritImageTaskLease(input, { ...meta, ...(!meta.caption && input?.caption && { caption: input.caption }),
+        inheritImageTaskLease(meta, inheritImageTaskLease(input, { ...meta, ...(!meta.caption && input?.caption && { caption: input.caption }),
             signal: meta.signal || input?.signal || settings?.signal,
-            shouldStart: meta.shouldStart || input?.shouldStart || settings?.shouldStart }),
+            shouldStart: meta.shouldStart || input?.shouldStart || settings?.shouldStart })),
         (guarded, lease) => {
             const config = lease?.state?.config;
             const base = config?.autoIllustration?.nai;
@@ -338,6 +343,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         }
         const api = findDbgenApi(globalObject);
         if (!api) return { ok: false, error: `未检测到${DBGEN_LABEL}` };
+        const dataOnly = ['sprite-data', 'expression-fragments'].includes(meta.outputs?.format);
+        if (dataOnly && api.getPromptCapabilities?.()?.spriteData !== 1)
+            return { ok: false, reason: 'dbgen-sprite-data-required', stopGeneration: true,
+                error: '请升级数据库生图插件以支持立绘资料与表情片段协议；未发送旧画面写词请求' };
         if (meta.contextMode === 'provided' && api.getPromptCapabilities?.()?.providedPromptContext !== 1)
             return { ok: false, reason: 'dbgen-provided-context-required',
                 error: '请升级数据库生图插件以支持仅使用 CG 保存资料写词' };
@@ -356,12 +365,21 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                     : { skipRecall: true, ...(meta.messageId != null && { messageId: Number(meta.messageId) }) }),
                 ...(meta.characterContext !== undefined && { characterContext: meta.characterContext }),
                 ...(task.value !== undefined && { promptTask: task.value }),
+                ...(dataOnly && { outputs: { format: meta.outputs.format } }),
                 ...(task.value && meta.userPrompts !== undefined && { userPrompts: structuredClone(meta.userPrompts) }),
                 ...(task.value && meta.writingRequirements !== undefined && { writingRequirements: structuredClone(meta.writingRequirements) }),
                 ...(meta.signal && { signal: meta.signal }),
             }), timeouts.write);
         } catch (error) {
             return describePromptException(error);
+        }
+        if (dataOnly) {
+            if (!written?.ok) return describePromptFailure(written || { reason: 'DBGEN_PROMPT_EMPTY' }, 'prompt-write');
+            if (written.value?.format !== meta.outputs.format || typeof written.value.text !== 'string')
+                return { ok: false, reason: 'SPRITE_DATA_INVALID', error: '写词来源未返回本轮资料协议，未继续绘图' };
+            if ((meta.shouldStart && !meta.shouldStart())) return staleImageTask();
+            // 原始资料仅由 IGS 严格解析；插件完整 caption 不能冒充资料片段。
+            return parseSpriteData(written.value.text, { ...meta, promptTask: task.value });
         }
         if (!written || !written.ok || !written.value || !written.value.caption) {
             return describePromptFailure(written || { reason: 'DBGEN_PROMPT_EMPTY' }, 'prompt-write', undefined, `${DBGEN_LABEL}写提示词失败：`);

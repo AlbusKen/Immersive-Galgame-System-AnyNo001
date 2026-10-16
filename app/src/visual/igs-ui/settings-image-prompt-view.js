@@ -27,7 +27,7 @@ export function renderImagePromptPanel(editor, advancedOpen = {}) {
     if (!view?.ok) return `<div class="igs-source-filter" data-image-prompt-panel>${note('写词预设读取不可用，未初始化或重置存量数据。')}${action('reload', '重新读取')}</div>`;
     const { state, items, current, saved, activation } = view;
     let html = `<div class="igs-source-filter igs-settings-full" data-image-prompt-panel><div class="igs-source-filter-title">生图提示块与任务模块</div>`;
-    html += note('共享框架在声明的中间槽替换任务与资料。草稿不参与运行；预览仅使用下方本地资料，不联网。默认框架 v10 支持本次有效衣装与临时身份校正；自定义正文不会自动覆盖，可能仍有旧衣装规则。内置预设可逐块“恢复默认正文”，其他自定义预设请自行同步后保存。');
+    html += note('内置 NAI 按具体任务选择模块，再按 outputs.format 选择专属规则；未映射格式停止装配。默认框架 v23 将独立 user 世界书参考块放在本轮任务资料之前，正式写词按本次正文／描述与前文调用酒馆原生扫描，保留关键词和常量触发；provided 模式不读取世界书。关闭参考块即不扫描。预览不调用宿主扫描，可在预览资料的 worldInfo 字段填写示例文本。旧内置预设升级前备份，仅未手调的基线顺序跟随新版，保留自定义正文、角色、顺序与开关；更早版本补入新参考块。其他自定义预设须自行声明“世界书”变量并加入含 {{世界书}} 的共享参考块后保存、激活。');
     html += note(`当前生效：${current?.name || '未选择'}${current ? ` · r${current.data.revision}` : ''}`);
 
     html += `<label class="igs-settings-field"><span>编辑预设</span><select data-image-prompt-select aria-label="编辑预设"><option value="">请选择</option>${choices(items.map(p => [p.id, `${p.name || p.id}${p.draftOnly ? ' · 仅草稿' : ''}`]), state.preset?.id)}</select></label>`;
@@ -83,6 +83,10 @@ function renderBlock(state, group, block, advancedOpen, entry, ordered = [], ind
     html += field(state, group, id, 'enabled', '启用此块', block.enabled, 'boolean');
     html += field(state, group, id, module ? 'task' : 'kind', module ? '任务用途' : '块用途', module ? block.task : block.kind || '', 'select', module ? IMAGE_PROMPT_TASKS : [['', '未映射'], ...kinds]);
     html += field(state, group, id, 'content', module ? '任务正文' : '提示块正文', block.content, 'textarea');
+    if (module || block.kind === 'shared') {
+        html += field(state, group, id, 'contentByFormat', '分格式规则（JSON 对象，留空仅用正文）',
+            block.contentByFormat === undefined ? '' : block.contentByFormat, 'json');
+    }
     if (module) {
         html += field(state, group, id, 'dataFields', '允许资料字段（JSON 数组）', block.dataFields || [], 'json');
         html += field(state, group, id, 'requiredFields', '必填资料字段（JSON 数组）', block.requiredFields || [], 'json');

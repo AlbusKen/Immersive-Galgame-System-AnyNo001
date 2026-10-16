@@ -10666,7 +10666,7 @@ test('gate:simulation:toolbar-split-moves-nav-buttons-under-dialog', async () =>
 });
 
 
-for (const decision of ['accept', 'cancel', 'stop', 'modal-stop', 'close', 'switch']) test(`gate:cg-consistency:reader-phone-${decision}`, async () => {
+for (const decision of ['accept', 'cancel', 'stop', 'close', 'switch']) test(`gate:cg-consistency:reader-phone-${decision}`, async () => {
     const document = createFakeDocument({ innerWidth: 390, innerHeight: 844 });
     const raw = '当前 CG 的正文。\n[igs-img:7]';
     const calls = [];
@@ -10682,7 +10682,7 @@ for (const decision of ['accept', 'cancel', 'stop', 'modal-stop', 'close', 'swit
             describeConsistency: () => ({ ok: true }),
             async redrawConsistency(query, options) {
                 calls.push(['run', query]);
-                assert.ok(document.querySelector('.igs-page-modal'), '生成期间显示进度框');
+                assert.equal(document.querySelector('.igs-page-modal'), null, '生成期间不弹框');
                 options.onProgress({ phase: 'write', done: 0, total: 3 });
                 started();
                 await new Promise((resolve) => {
@@ -10707,8 +10707,7 @@ for (const decision of ['accept', 'cancel', 'stop', 'modal-stop', 'close', 'swit
         assert.match(button.getAttribute('aria-label'), /角色一致性重绘/);
         const pending = opened.controller.invokeAction('consistency-cg');
         await ready;
-        assert.match(document.querySelector('.igs-page-modal-msg').textContent, /一致性重绘：写提示词 0\/3/);
-        assert.equal(document.querySelector('[data-igs-modal="cancel"]').textContent, '停止');
+        assert.equal(document.querySelector('.igs-page-modal'), null, '阶段进度只通过原有细线显示');
         const strip = document.getElementById('igs-gen-strip');
         assert.ok(strip);
         assert.equal(strip.getAttribute('data-state'), 'busy');
@@ -10719,7 +10718,6 @@ for (const decision of ['accept', 'cancel', 'stop', 'modal-stop', 'close', 'swit
         assert.equal(calls.filter(([name]) => name === 'run').length, 1);
         assert.deepEqual(calls[0][1], { chatId: 'fixture-reader', messageId: 5, swipeId: 0, slot: 7 });
         if (decision === 'stop') assert.equal((await opened.controller.invokeAction('consistency-cg')).reason, 'cancelled');
-        else if (decision === 'modal-stop') clickModal('cancel');
         else if (decision === 'close') host.closeReader();
         else if (decision === 'switch') {
             host.replaceReader({ messageId: 6, message: { id: 6, text: raw }, raw });

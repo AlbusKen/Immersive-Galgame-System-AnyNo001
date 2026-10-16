@@ -2,6 +2,9 @@
 export const IMAGE_PROMPT_TASKS = Object.freeze([
     'sprite', 'dna', 'expression', 'avatar', 'wardrobe', 'outfit', 'background', 'item', 'cg', 'consistency',
 ]);
+export const IMAGE_PROMPT_FORMATS = Object.freeze([
+    'sprite-data', 'expression-fragments', 'dna-template', 'caption-slots', 'asset-plan', 'cg-plan',
+]);
 export const PROMPT_VARIABLES = Object.freeze(['任务提示词', '任务资料', '世界书', '当前上下文',
     '角色库', '特征参考', '常驻标签', '近期生图记录', '构图标签', '用户描述']);
 export const clonePromptData = (value) => JSON.parse(JSON.stringify(value));
@@ -65,9 +68,10 @@ export function validatePromptActivation(data) {
             errors.push(error(field, 'unsupported-injection'));
         for (const key of Object.keys(block)) {
             if (!['identifier', 'name', 'role', 'content', 'enabled', 'workbenchOnly', 'kind',
-                'injection_position', 'injection_depth', 'injection_order', 'metadata'].includes(key))
+                'injection_position', 'injection_depth', 'injection_order', 'metadata', 'contentByFormat'].includes(key))
                 errors.push(error(`${field}.${key}`, 'unknown-execution-field'));
         }
+        validateFormatContent(block, field, data, errors);
     }
     for (const [index, variable] of ['任务提示词', '任务资料'].entries()) {
         const slot = slots[index][0];
@@ -99,6 +103,7 @@ function validateModules(data, taskSlot, errors) {
             || module.requiredFields.some((key) => !module.dataFields.includes(key)))
             errors.push(error(`${field}.requiredFields`, 'invalid-required-fields'));
         if (typeof module.content === 'string') validateVariables(module.content, field, data, errors);
+        validateFormatContent(module, field, data, errors);
     }
     if (!object(data.taskMap)) { errors.push(error('taskMap', 'missing-task-map')); return; }
     for (const [task, id] of Object.entries(data.taskMap)) {
@@ -111,12 +116,29 @@ function validateModules(data, taskSlot, errors) {
     }
 }
 
+function validateFormatContent(block, field, data, errors) {
+    if (block.contentByFormat === undefined) return;
+    if (!object(block.contentByFormat) || (block.kind && block.kind !== 'shared')) {
+        errors.push(error(`${field}.contentByFormat`, 'invalid-format-content'));
+        return;
+    }
+    for (const [format, content] of Object.entries(block.contentByFormat)) {
+        if (!IMAGE_PROMPT_FORMATS.includes(format) || !text(content)) {
+            errors.push(error(`${field}.contentByFormat`, 'invalid-format-content'));
+            continue;
+        }
+        validateVariables(content, `${field}.contentByFormat.${format}`, data, errors);
+        if (/\{\{\s*(?:任务提示词|任务资料)\s*\}\}/.test(content))
+            errors.push(error(`${field}.contentByFormat.${format}`, 'invalid-slot-content'));
+    }
+}
+
 function validateVariables(content, field, data, errors) {
     const variables = Array.isArray(data.variables) ? data.variables : [];
     const literals = Array.isArray(data.literalVariables) ? data.literalVariables : [];
     for (const match of content.matchAll(/\{\{([^{}]+)\}\}/g)) {
         const name = match[1].trim();
-        if (!literals.includes(name) && (!variables.includes(name) || !['任务提示词', '任务资料'].includes(name)))
+        if (!literals.includes(name) && (!variables.includes(name) || !['任务提示词', '任务资料', '世界书'].includes(name)))
             errors.push(error(field, 'unsupported-variable'));
     }
 }

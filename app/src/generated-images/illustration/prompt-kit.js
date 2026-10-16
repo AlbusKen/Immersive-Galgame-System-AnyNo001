@@ -58,8 +58,9 @@ async function requestSoft(llm, { system, user, softSystem, softUser, parse, ima
     const stale = () => signal?.aborted || (typeof shouldStart === 'function' && !shouldStart());
     const cancelled = () => ({ ok: false, reason: 'request-stale', stopGeneration: true, error: '写词任务已取消或目标失效' });
     if (stale()) return cancelled();
-    const prepared = imagePrompt ? prepareImageWritingRequest(llm, imagePrompt.task,
-        imagePrompt.input, { system, user }) : { ok: true, request: { system, user } };
+    const prepared = imagePrompt ? await prepareImageWritingRequest(llm, imagePrompt.task,
+        { ...imagePrompt.input, ...(signal && { signal }), ...(shouldStart && { shouldStart }) },
+        { system, user }) : { ok: true, request: { system, user } };
     if (!prepared.ok) return prepared;
     if (stale()) return cancelled();
     const settings = signal ? { ...llmSettings, signal } : llmSettings;

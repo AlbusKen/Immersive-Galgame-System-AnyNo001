@@ -1,10 +1,10 @@
 // 人物任务交接：冻结输入资料，不展开身份、不加工模型返回的正文。
 import { normalizeCharacterDna, readCharacterDnaView,
     CHARACTER_DNA_REQUIRED_VIEWS, CHARACTER_DNA_VIEWS } from '../../scene/character-dna.js';
-import { moodPresetEntry, moodPresetTags } from '../../scene/mood-groups.js';
 import { savedCharacterOutfits } from '../../scene/outfit-identity.js';
 import { isValidOutfitName } from '../../scene/character-outfits.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
+import { checkPromptRecipe, checkRecipeCharacterMeta } from '../../schemas/prompt-recipe.js';
 
 export const usesCharacterTemplates = (backend) => ['nai', 'dbgen'].includes(backend?.describe?.().mode);
 
@@ -29,7 +29,8 @@ export function characterPromptTask(context, purpose, framing, slotKeys) {
 }
 
 // 仅声明本轮身份字段交付要求；画面景别与候选完整性分开，不生成或改写 DNA。
-export function spriteIdentityRequirements(task, context) {
+export function spriteIdentityRequirements(task, context, format = 'dna-template') {
+    const dataOnly = format === 'sprite-data';
     return task.characters.map(character => {
         const dna = context.find(source => source.characterKey === character.characterKey)?.dna;
         const preservedViews = CHARACTER_DNA_VIEWS.filter(view =>
@@ -41,7 +42,9 @@ export function spriteIdentityRequirements(task, context) {
         return { characterKey: character.characterKey, token: character.token,
             ...(character.framing !== undefined && { imageFraming: character.framing }),
             mode: complete ? 'saved-only' : cleared ? 'identity-cleared' : 'candidate-required',
-            requiredViews, requiredFields: requiredViews.map(view => `meta_dna_${view}`),
+            requiredViews, requiredFields: [
+                ...requiredViews.map(view => `${dataOnly ? 'dna' : 'meta_dna'}_${view}`),
+                ...(dataOnly && !cleared && dna?.personality === undefined ? ['personality'] : [])],
             preservedViews };
     });
 }
@@ -54,7 +57,8 @@ export function singleCharacterContext(name, dna, outfit, assets = {}) {
     return [{ characterKey: name, dna: profile, outfits, outfit: {
         name: String(outfit?.name || (outfit?.nude ? '裸体' : original?.name) || ''),
         description: outfit?.nude ? 'No clothing; retain the fixed identifying features.'
-            : String(outfit?.prompt || (outfit?.name ? '' : original?.description) || ''),
+            : String(outfit?.prompt || (outfit?.name ? outfits.find(o => o.name === outfit.name)?.description
+                : original?.description) || ''),
         ...(Array.isArray(outfit?.words) && { words: [...outfit.words] }),
         ...(outfit?.nsfwBoost === true && { nsfwBoost: true }),
     } }];
@@ -72,35 +76,49 @@ export function preflightCharacterTask(context, purpose, framing, outfit) {
     return { ok: true };
 }
 
-// 无额外要求的预设表情：固定模板仍交唯一准备入口核验并展开双 DNA。
-// 未保存衣装时不猜穿着；调用方保留同次提取衣装的写词流程。
-export function savedExpressionTemplate(context, mood, prompts, { nsfw = false } = {}) {
-    if (context.length !== 1 || !moodPresetEntry(mood)) return { ok: true, available: false };
+// 默认平和或独立表情片段只替换表情槽，构图来自程序模板。
+export function savedExpressionTemplate(context, mood, prompts, { expression,
+    purpose = 'derived', framing = 'half_body', slotId = 1, dnaCandidates, promptTask } = {}) {
+    if (context.length !== 1 || (expression === undefined && !['默认', '平和'].includes(mood)))
+        return { ok: true, available: false };
+    if (expression !== undefined && (!expression || typeof expression !== 'object' || Array.isArray(expression)
+        || typeof expression.positive !== 'string' || !expression.positive.trim()
+        || typeof expression.negative !== 'string'
+        || [expression.positive, expression.negative].some(text => text.length > 4096 || /<<\s*(?:dna|outfit)/i.test(text))))
+        return { ok: false, reason: 'SPRITE_DATA_INVALID', error: '独立表情资料无效，未继续绘图' };
     const source = context[0], outfit = source.outfit;
     const clothing = outfit?.description || source.outfits?.find(o => o.name === outfit?.name)?.description;
     if (!clothing?.trim()) return { ok: true, available: false };
-    const task = characterPromptTask(context, 'derived', 'half_body', [[source.characterKey]]);
+    const task = characterPromptTask(context, purpose, framing, [[source.characterKey]]);
+    if (promptTask) {
+        const original = promptTask.characters.find(c => c.characterKey === source.characterKey);
+        if (!original) return { ok: false, reason: 'DNA_TEMPLATE_BINDING' };
+        task.promptTask = { ...promptTask, characters: [original], slots: [{ slotId, tokens: [original.token] }] };
+    }
+    task.promptTask.slots[0].slotId = slotId;
     const binding = { kind: 'named', ...task.promptTask.characters[0], captionIndex: 0 };
     const centers = [{ x: 0.5, y: 0.5 }];
-    const tags = mood === '默认' || mood === '平和'
-        ? 'calm, relaxed, closed mouth, natural relaxed standing pose, looking at viewer'
-        : moodPresetTags(mood, { nsfw });
+    const tags = expression?.positive ?? 'calm, relaxed, closed mouth';
+    const fragment = expression === undefined ? undefined : {
+        positive: String(expression.positive || ''), negative: String(expression.negative || '') };
     const caption = {
         v4_prompt: { caption: { base_caption: prompts.positive, char_captions: [{
             char_caption: `<<dna:${binding.token}>> <<outfit:${binding.token}>> ${tags}`,
             centers,
         }] } },
         v4_negative_prompt: { caption: { base_caption: prompts.negative, char_captions: [{
-            char_caption: `<<dna_uc:${binding.token}>>`,
+            char_caption: [`<<dna_uc:${binding.token}>>`, fragment?.negative].filter(Boolean).join(', '),
         }] } },
     };
-    return { ok: true, available: true, value: { slotId: 1, caption,
+    return { ok: true, available: true, value: { slotId, caption,
         promptRecipe: { version: 1, mode: 'dna_template', outfitMode: 'template',
             caption, bindings: [binding] },
         characterMeta: { version: 1, characters: [{ characterKey: source.characterKey,
-            captionIndex: 0, outfit: { name: outfit.name, description: clothing },
+            captionIndex: 0, identityAnchor: '', signatureDetails: '', outfit: { name: outfit.name, description: clothing },
             centers, positionExplicit: true }] },
         promptTask: task.promptTask,
+        ...(fragment && { expression: fragment }),
+        ...(dnaCandidates !== undefined && { dnaCandidates }),
     } };
 }
 
@@ -134,16 +152,38 @@ export function characterTemplateInput(entry, task, context) {
     }
     return inheritImageTaskLease(entry, { caption: entry.promptRecipe?.caption || entry.caption,
         ...(entry.slotId !== undefined && { slotId: entry.slotId }),
+        ...(entry.expression !== undefined && { expression: structuredClone(entry.expression) }),
         ...(metadata !== undefined && { characterMeta: metadata }),
         ...(entry.promptRecipe !== undefined && { promptRecipe: entry.promptRecipe }),
         ...(entry.dnaCandidates !== undefined && { dnaCandidates: entry.dnaCandidates }),
         ...(task !== undefined && { promptTask: task }), characterContext: context });
 }
 
+// 历史正文不再发送，但不能通过重组洗掉旧记录的错绑。
+export function checkSpriteRecoveryBinding(entry, name, outfitName) {
+    const fail = () => ({ ok: false, reason: 'DNA_TEMPLATE_BINDING', error: '恢复资料的人物或衣装与当前目标不一致，未继续生成' });
+    const recipe = entry.promptRecipe, meta = entry.characterMeta;
+    if (recipe !== undefined) {
+        const checked = checkPromptRecipe(recipe, recipe?.caption);
+        if (!checked.ok) return checked;
+        const binding = checked.value.bindings;
+        if (binding.length !== 1 || binding[0].kind !== 'named' || binding[0].characterKey !== name) return fail();
+        const metadata = checkRecipeCharacterMeta(checked.value, meta);
+        if (!metadata.ok) return metadata;
+    }
+    if (meta !== undefined) {
+        if (meta?.version !== 1 || !Array.isArray(meta.characters) || meta.characters.length !== 1
+            || meta.characters[0]?.characterKey !== name) return fail();
+        const previousOutfit = meta.characters[0].outfit?.name;
+        if (previousOutfit && previousOutfit !== outfitName) return fail();
+    }
+    return { ok: true };
+}
+
 // 恢复资料只保存旁路，不保存当次角色上下文；下一次显式续画读取当前 DNA。
 export function characterPromptRecovery(entry = {}) {
     const out = {};
-    for (const key of ['promptRecipe', 'characterMeta', 'promptTask', 'dnaCandidates', 'slotId']) {
+    for (const key of ['promptRecipe', 'characterMeta', 'promptTask', 'dnaCandidates', 'slotId', 'expression']) {
         if (entry[key] !== undefined) out[key] = structuredClone(entry[key]);
     }
     if (entry.edited === true || entry.promptEdited === true) out.edited = true;

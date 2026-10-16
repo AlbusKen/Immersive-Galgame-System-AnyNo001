@@ -4727,7 +4727,7 @@ test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async (
     const empty = renderCharacterDnaEditor('白墨', null);
     assert.ok(empty.includes('角色DNA（未填写）'));
     assert.deepEqual([...empty.matchAll(/data-dna-field="([^"]+)"/g)].map((match) => match[1]), [
-        'triggerWords',
+        'triggerWords', 'personality',
         ...['full_body', 'half_body', 'portrait']
             .flatMap((view) => [`views.${view}.subject`, `views.${view}.negative`]),
     ]);
@@ -4900,6 +4900,83 @@ test('gate:generated-images:sprite-lore-reads-persona-card-and-matching-worldinf
     assert.match(lore[1].text, /红色斗篷/);
     assert.doesNotMatch(lore[1].text, /黑龙|已关闭/);
 });
+
+test('gate:image-worldinfo:原生扫描窗口与预算正确且恢复作者注释', async () => {
+    const { createImageWorldInfoSource } = await import('../src/host/image-world-info.js');
+    const note = { value: '原注释', position: 1, depth: 2, filter: () => true };
+    const calls = [];
+    const ctx = { name2: '角色', mainApi: 'openai', maxContext: 4096,
+        chatCompletionSettings: { openai_max_context: 32000, openai_max_tokens: 2000 },
+        extensionPrompts: { '2_floating_prompt': note, other: { value: '其他扩展' } },
+        getCharacterCardFields: () => ({ persona: '人设', description: '角色设定', scenario: '场景' }),
+        async getWorldInfoPrompt(...args) {
+            calls.push(args);
+            this.extensionPrompts['2_floating_prompt'] = { value: '扫描副作用' };
+            return { worldInfoString: '常量资料', worldInfoExamples: [{ content: '示例资料' }],
+                worldInfoDepth: [{ entries: ['深度资料'] }], anBefore: '前注释资料',
+                anAfter: ['后注释资料'], outletEntries: { ref: ['出口资料'] } };
+        } };
+    const source = createImageWorldInfoSource({ SillyTavern: { getContext: () => ctx } },
+        { readIncludeNames: () => false });
+    const input = { description: '任务说明', numberedText: '本楼正文', previousText: '前楼正文' };
+    const result = await source(input);
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls[0], [['本楼正文', '前楼正文'], 30000, true, {
+        personaDescription: '人设', characterDescription: '角色设定', characterPersonality: '',
+        characterDepthPrompt: '', scenario: '场景', creatorNotes: '', trigger: 'normal' }]);
+    assert.equal(result.text, '常量资料\n示例资料\n深度资料\n前注释资料\n后注释资料\n出口资料');
+    assert.deepEqual(ctx.extensionPrompts, { '2_floating_prompt': note, other: { value: '其他扩展' } });
+    assert.deepEqual(input, { description: '任务说明', numberedText: '本楼正文', previousText: '前楼正文' });
+});
+
+test('gate:image-worldinfo:扫描异常或接口缺失不污染注释且不伪装为空', async () => {
+    const { createImageWorldInfoSource } = await import('../src/host/image-world-info.js');
+    const ctx = { extensionPrompts: {}, async getWorldInfoPrompt() {
+        this.extensionPrompts['2_floating_prompt'] = { value: '临时注释' };
+        throw new Error('不应暴露的宿主正文');
+    } };
+    const source = createImageWorldInfoSource({ SillyTavern: { getContext: () => ctx } });
+    const result = await source({ description: '本次任务' });
+    assert.equal(result.reason, 'WORLDINFO_RESOLVE_FAILED');
+    assert.equal(result.stopGeneration, true);
+    assert.equal(Object.hasOwn(result, 'text'), false);
+    assert.deepEqual(ctx.extensionPrompts, {});
+    delete ctx.getWorldInfoPrompt;
+    ctx.extensionPrompts['2_floating_prompt'] = { value: '保留注释' };
+    assert.equal((await source()).reason, 'WORLDINFO_UNAVAILABLE');
+    assert.deepEqual(ctx.extensionPrompts, { '2_floating_prompt': { value: '保留注释' } });
+});
+
+test('gate:image-worldinfo:扫描串行且排队取消不调用宿主', async () => {
+    const { createImageWorldInfoSource } = await import('../src/host/image-world-info.js');
+    let release, started, calls = 0;
+    const entered = new Promise(resolve => { started = resolve; });
+    const waiting = new Promise(resolve => { release = resolve; });
+    const note = { value: '原注释', depth: 2 };
+    const ctx = { extensionPrompts: { '2_floating_prompt': note }, async getWorldInfoPrompt() {
+        calls++;
+        this.extensionPrompts['2_floating_prompt'] = { value: '扫描中' };
+        started();
+        await waiting;
+        return { worldInfoString: '' };
+    } };
+    const source = createImageWorldInfoSource({ SillyTavern: { getContext: () => ctx } },
+        { readIncludeNames: () => false });
+    const first = source({ description: '本次任务' });
+    await entered;
+    const controller = new AbortController();
+    const second = source({ description: '排队任务', signal: controller.signal });
+    controller.abort();
+    release();
+    assert.equal((await first).ok, true);
+    const cancelled = await second;
+    assert.equal(cancelled.reason, 'request-stale');
+    assert.equal(cancelled.stopGeneration, true);
+    assert.equal(calls, 1);
+    assert.deepEqual(ctx.extensionPrompts['2_floating_prompt'], note);
+});
+
+
 
 
 test('gate:generated-images:cg-planner-binds-character-dna-safely', async () => {
@@ -5998,6 +6075,12 @@ test('gate:presets:prompt-activation-invalid-shapes-fail-closed', async () => {
         (d) => { d.taskMap.cg = 'module.item'; },
         (d) => { delete d.taskMap.consistency; },
         (d) => { d.modules[0].role = 'assistant'; },
+        (d) => { d.modules[0].contentByFormat = []; },
+        (d) => { d.modules[0].contentByFormat = { unknown: 'invalid' }; },
+        (d) => { d.modules[0].contentByFormat = { 'sprite-data': '' }; },
+        (d) => { d.modules[0].contentByFormat = { 'sprite-data': '{{未知宏}}' }; },
+        (d) => { d.modules[0].contentByFormat = { 'sprite-data': '{{任务资料}}' }; },
+        (d) => { d.prompts[1].contentByFormat = { 'sprite-data': 'invalid-slot' }; },
         (d) => { d.modules[0].dataFields = {}; },
         (d) => { d.modules[0].requiredFields = ['secret']; },
     ];
@@ -6358,5 +6441,162 @@ test('gate:scene:segmentplan:回退清洗保留系统角色前缀并删除普通
         const system = payload.sceneDirectives.find(d => d.character === '【系统】');
         assert.equal(system.segmentIndex, 1);
         assert.equal(payload.virtualRegexError, '');
+    }
+});
+
+test('gate:presets:image-format-routing-rejects-unmapped-task-format', async () => {
+    const { renderImagePromptPreset } = await import('../src/presets/prompt-preset-renderer.js');
+    const preset = await imagePromptPresetFixture();
+    for (const module of preset.data.modules) {
+        module.dataFields = ['description', 'outputs'];
+        module.contentByFormat = { [module.task === 'item' ? 'asset-plan' : 'dna-template']: '合成格式规则' };
+    }
+    const before = structuredClone(preset);
+    for (const [task, format, ok] of [
+        ['cg', 'dna-template', true], ['consistency', 'dna-template', true],
+        ['item', 'asset-plan', true], ['item', 'dna-template', false],
+        ['cg', 'asset-plan', false], ['consistency', 'sprite-data', false],
+    ]) {
+        const result = renderImagePromptPreset(preset.data, task, { description: '隔离资料', outputs: { format } });
+        assert.equal(result.ok, ok);
+        if (ok) assert.equal(result.moduleId, `module.${task}`);
+        else assert.equal(result.reason, 'unsupported-prompt-format');
+    }
+    assert.deepEqual(preset, before);
+});
+
+
+test('gate:presets:image-format-upgrade-restores-map-and-preserves-custom-map', async () => {
+    const { createDefaultImagePromptPreset } = await import('../src/generated-images/image-prompt-defaults.js');
+    const { promptDefaultState } = await import('../src/presets/prompt-default-operations.js');
+    for (const custom of [false, true]) {
+        const latest = createDefaultImagePromptPreset(), initial = structuredClone(latest);
+        delete initial.data.defaultState;
+        initial.data.defaultVersion = latest.data.defaultVersion - 1;
+        for (const module of initial.data.modules) delete module.contentByFormat;
+        const storage = createMemoryStorage(), registry = createPresetRegistry({ storage });
+        assert.equal(registry.ensureImagePromptDefault(promptDefaultState(initial)).ok, true);
+        const edited = registry.getCurrent('prompt-preset');
+        const cg = edited.data.modules.find(m => m.task === 'cg');
+        if (custom) cg.contentByFormat = { 'dna-template': '自定义格式正文' };
+        assert.equal(registry.savePromptPreset(edited, 1).ok, true);
+        const prior = registry.getCurrent('prompt-preset');
+        assert.equal(registry.upgradeImagePromptDefault(latest, 2).ok, true);
+        const upgraded = registry.getCurrent('prompt-preset');
+        const expected = custom ? cg.contentByFormat : latest.data.modules.find(m => m.task === 'cg').contentByFormat;
+        assert.deepEqual(upgraded.data.modules.find(m => m.task === 'cg').contentByFormat, expected);
+        assert.deepEqual(createPresetRegistry({ storage }).getCurrent('prompt-preset'), upgraded);
+        assert.equal(registry.restoreImagePromptBlock(latest.id, {
+            expectedRevision: 3, group: 'modules', identifier: cg.identifier, backupRevision: 2,
+        }).ok, true);
+        const restored = registry.getCurrent('prompt-preset');
+        assert.deepEqual(restored.data.modules.find(m => m.task === 'cg').contentByFormat,
+            prior.data.modules.find(m => m.task === 'cg').contentByFormat);
+        assert.equal(Object.hasOwn(restored.data.modules.find(m => m.task === 'cg'), 'contentByFormat'), custom);
+        assert.equal(restored.data.revision, custom ? upgraded.data.revision : upgraded.data.revision + 1);
+        assert.equal(registry.restoreImagePromptBlock(latest.id, {
+            expectedRevision: restored.data.revision, group: 'modules', identifier: cg.identifier,
+        }).ok, true);
+        assert.deepEqual(registry.getCurrent('prompt-preset').data.modules.find(m => m.task === 'cg').contentByFormat,
+            latest.data.modules.find(m => m.task === 'cg').contentByFormat);
+    }
+});
+
+
+test('gate:image-worldinfo:v20升级补参考块并保留配置与删除状态', async () => {
+    const { createDefaultImagePromptPreset } = await import('../src/generated-images/image-prompt-defaults.js');
+    const { promptDefaultState } = await import('../src/presets/prompt-default-operations.js');
+    const latest = createDefaultImagePromptPreset(), old = structuredClone(latest);
+    old.version = 20; old.data.defaultVersion = 20; delete old.data.defaultState;
+    const worldId = 'igs-image-world';
+    old.data.prompts = old.data.prompts.filter(b => b.identifier !== worldId);
+    old.data.prompt_order = old.data.prompt_order.filter(b => b.identifier !== worldId);
+    old.data.variables = old.data.variables.filter(v => v !== '世界书');
+    const memory = createMemoryStorage();
+    let rejectWrite = false;
+    const storage = { ...memory, setItem(key, value) {
+        if (rejectWrite) throw new Error('fake-quota');
+        memory.setItem(key, value);
+    } };
+    const registry = createPresetRegistry({ storage });
+    assert.equal(registry.ensureImagePromptDefault(promptDefaultState(old)).ok, true);
+    const edited = registry.getCurrent('prompt-preset');
+    edited.data.prompts[0].content = '自定义框架';
+    edited.data.prompts[0].role = 'assistant';
+    edited.data.prompts[0].enabled = false;
+    edited.data.prompt_order.reverse();
+    assert.equal(registry.savePromptPreset(edited, 1).ok, true);
+    const before = registry.snapshot(), disk = memory.dump();
+    rejectWrite = true;
+    assert.equal(registry.ensureImagePromptDefault(latest).ok, false);
+    assert.deepEqual(registry.snapshot(), before); assert.deepEqual(memory.dump(), disk);
+    rejectWrite = false;
+    assert.equal(registry.ensureImagePromptDefault(latest).changed, true);
+    const current = registry.getCurrent('prompt-preset');
+    assert.equal(current.data.prompts.filter(b => b.identifier === worldId).length, 1);
+    assert.deepEqual(current.data.prompts.filter(b => b.identifier !== worldId), edited.data.prompts);
+    assert.deepEqual(current.data.prompt_order.filter(b => b.identifier !== worldId), edited.data.prompt_order);
+    assert.deepEqual(createPresetRegistry({ storage }).getCurrent('prompt-preset'), current);
+    const backup = structuredClone(before.items['prompt-preset'][latest.id].data); delete backup.defaultState;
+    assert.deepEqual(current.data.defaultState.backups.at(-1).data, backup);
+    current.data.prompts = current.data.prompts.filter(b => b.identifier !== worldId);
+    current.data.prompt_order = current.data.prompt_order.filter(b => b.identifier !== worldId);
+    assert.equal(registry.savePromptPreset(current, current.data.revision).ok, true);
+    const next = structuredClone(latest); next.data.defaultVersion++;
+    assert.equal(registry.ensureImagePromptDefault(next).ok, true);
+    assert.equal(registry.getCurrent('prompt-preset').data.prompts.some(b => b.identifier === worldId), false);
+
+    // v21/v22 已有参考块：只迁移未调整的顺序，原配置随同一快照保存。
+    const ids = order => order.map(entry => entry.identifier);
+    for (const previousVersion of [21, 22])
+    for (const mode of ['baseline', 'custom-order', 'deleted', 'excluded', 'custom-block']) {
+        const previous = structuredClone(latest);
+        previous.version = previousVersion; previous.data.defaultVersion = previousVersion;
+        delete previous.data.defaultState;
+        const order = previous.data.prompt_order;
+        const worldIndex = order.findIndex(entry => entry.identifier === worldId);
+        const [worldEntry] = order.splice(worldIndex, 1);
+        order.splice(order.findIndex(entry => entry.identifier === 'igs-image-data') + 1, 0, worldEntry);
+        const store = createMemoryStorage();
+        let blockWrite = false;
+        const savedStorage = { ...store, setItem(key, value) {
+            if (blockWrite) throw new Error('fake-quota');
+            store.setItem(key, value);
+        } };
+        const savedRegistry = createPresetRegistry({ storage: savedStorage });
+        assert.equal(savedRegistry.ensureImagePromptDefault(promptDefaultState(previous)).ok, true);
+        const saved = savedRegistry.getCurrent('prompt-preset');
+        const reference = saved.data.prompts.find(block => block.identifier === worldId);
+        reference.content = '用户自定义参考 {{世界书}}';
+        reference.role = 'assistant'; reference.enabled = false;
+        saved.data.prompt_order.find(entry => entry.identifier === worldId).enabled = false;
+        if (mode === 'custom-order') saved.data.prompt_order.reverse();
+        if (mode === 'deleted') saved.data.prompts = saved.data.prompts.filter(block => block.identifier !== worldId);
+        if (mode === 'deleted' || mode === 'excluded')
+            saved.data.prompt_order = saved.data.prompt_order.filter(entry => entry.identifier !== worldId);
+        if (mode === 'custom-block') {
+            saved.data.prompts.push({ identifier: 'user-reference', role: 'user', kind: 'shared', content: '用户资料', enabled: true });
+            saved.data.prompt_order.push({ identifier: 'user-reference', enabled: true });
+        }
+        assert.equal(savedRegistry.savePromptPreset(saved, 1).ok, true);
+        const snapshot = savedRegistry.snapshot(), persisted = store.dump();
+        blockWrite = true;
+        assert.equal(savedRegistry.ensureImagePromptDefault(latest).ok, false);
+        assert.deepEqual(savedRegistry.snapshot(), snapshot);
+        assert.deepEqual(store.dump(), persisted);
+        blockWrite = false;
+        assert.equal(savedRegistry.ensureImagePromptDefault(latest).changed, true);
+        const upgraded = savedRegistry.getCurrent('prompt-preset');
+        const expectedOrder = mode === 'baseline' ? ids(latest.data.prompt_order)
+            .map(id => saved.data.prompt_order.find(entry => entry.identifier === id)) : saved.data.prompt_order;
+        assert.deepEqual(upgraded.data.prompt_order, expectedOrder, mode);
+        assert.deepEqual(upgraded.data.prompts, saved.data.prompts, mode);
+        assert.equal(upgraded.data.defaultVersion, latest.data.defaultVersion);
+        const backup = structuredClone(snapshot.items['prompt-preset'][latest.id].data); delete backup.defaultState;
+        assert.deepEqual(upgraded.data.defaultState.backups.at(-1).data, backup);
+        assert.deepEqual(createPresetRegistry({ storage: store }).getCurrent('prompt-preset'), upgraded);
+        const stable = savedRegistry.snapshot();
+        assert.equal(savedRegistry.ensureImagePromptDefault(latest).changed, false);
+        assert.deepEqual(savedRegistry.snapshot(), stable);
     }
 });
