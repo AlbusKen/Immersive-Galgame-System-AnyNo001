@@ -37,7 +37,7 @@ test('gate:assets:删除门禁保留全库衣柜、候选和CG来源', async () 
     const { protectedAssetImageIds } = await import('../src/generated-images/illustration/asset-image-references.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const { saveStoryOutfitCandidate, storyOutfitId } = await import('../src/scene/outfit-review-store.js');
     const storage = createMemoryStorage(), illustrationStore = createMemoryIllustrationStore();
     const assets = { characterOutfits: { Alice: { Coat: { moods: { 平和: 'igs-gen:global' } } } },
@@ -55,7 +55,8 @@ test('gate:assets:删除门禁保留全库衣柜、候选和CG来源', async () 
     const service = createAssetGenerationService({ messageHost: { getChatId: () => 'chat' }, store, llm: {}, nai: {},
         getSettings: () => ({ sceneAssets: {} }),
         readProtectedImageIds: () => protectedAssetImageIds({ readSceneAssets: () => assets, storage, illustrationStore }) });
-    assert.deepEqual(await service.deleteImages(ids), { ok: true, retainedIds: ids.slice(0, -1) });
+    assert.deepEqual(await service.deleteImages(ids), { ok: true,
+        retainedIds: ids.slice(0, -1), retained: ids.slice(0, -1) });
     for (const id of ids.slice(0, -1)) assert.ok(await store.getImage(id), id);
     assert.equal(await store.getImage('unused'), null);
 });
@@ -66,7 +67,7 @@ for (const fault of ['assets', 'story', 'legacy', 'cg-list', 'cg-record', 'cg-ra
         const { protectedAssetImageIds } = await import('../src/generated-images/illustration/asset-image-references.js');
         const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
         const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
-        const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+        const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
         const storage = createMemoryStorage(), cg = createMemoryIllustrationStore();
         await cg.putSlot('chat|3|0', { slot: 1 });
         if (fault === 'story') storage.setItem('igs:story-outfit-review:v1', '{bad');

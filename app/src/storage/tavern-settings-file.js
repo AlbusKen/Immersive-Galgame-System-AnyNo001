@@ -1,6 +1,8 @@
+import { mediaRequest } from '../media/tavern-media-http.js';
+import { withMediaLock } from '../media/media-lock.js';
 // 全局配置同步到酒馆本地 user/files/igs-settings.json（/api/files/upload），换设备、清浏览器缓存后配置还在。
 // 浏览器 localStorage 仍是运行时读写的地方，这里只做镜像：启动时文件比本机新就写回本机，本机改了就防抖上传。
-// 只同步全局配置；聊天内的状态、日志、待审队列、引导进度等仍留在本机。
+// 跟着同步的还有待确认情绪/服装词、物品账本、恋爱回忆去重——这些清缓存就丢、重建又烦。日志、引导进度仍留在本机。
 import { getSillyTavernContext } from '../host/tavern-helper-adapter.js';
 
 export const SETTINGS_FILE_NAME = 'igs-settings.json';
@@ -20,8 +22,14 @@ const GLOBAL_KEYS = new Set([
     'igs_record_diary_prefs',
     'igs-map-basemap-source',
     'igs-map-gen-palette',
+    'igs:mood-review:v1',
+    'igs:outfit-review:v1',
+    'igs:item-ledger:v1',
+    'igs-romance-memory-keys',
 ]);
-const GLOBAL_PREFIXES = ['igs-reader-settings-v9-'];
+// 自定义底图按「聊天:表:层」分键，图本体已挪进 user/images，键里只剩路径时才同步（见 collectGlobalSettings）。
+const MAP_CUSTOM_PREFIX = 'igs-map-custom:';
+const GLOBAL_PREFIXES = ['igs-reader-settings-v9-', MAP_CUSTOM_PREFIX];
 
 export function isGlobalSettingKey(key) {
     const k = String(key || '');
@@ -34,16 +42,21 @@ export function collectGlobalSettings(storage) {
         const key = storage.key(i);
         if (!isGlobalSettingKey(key)) continue;
         const value = storage.getItem(key);
-        if (value != null) out[key] = value;
+        if (value == null) continue;
+        // 地图记录与删除标记统一归 igs-map-records.json；不再用第二份配置镜像抢写。
+        if (key.startsWith(MAP_CUSTOM_PREFIX)) continue;
+        out[key] = value;
     }
     return out;
 }
 
 // 只写文件里有的键，不删本机多出来的键（另一台设备没用过的功能不该把这边的设置抹掉）。
-export function applyGlobalSettings(storage, settings) {
+export function applyGlobalSettings(storage, settings, deletedKeys = []) {
     let changed = 0;
+    const deleted = new Set(Array.isArray(deletedKeys) ? deletedKeys : []);
+    for (const key of deleted) if (isGlobalSettingKey(key) && storage.getItem(key) !== null) { storage.removeItem(key); changed += 1; }
     for (const [key, value] of Object.entries(settings || {})) {
-        if (!isGlobalSettingKey(key) || typeof value !== 'string' || storage.getItem(key) === value) continue;
+        if (deleted.has(key) || !isGlobalSettingKey(key) || typeof value !== 'string' || storage.getItem(key) === value) continue;
         storage.setItem(key, value);
         changed++;
     }
@@ -53,8 +66,8 @@ export function applyGlobalSettings(storage, settings) {
 function readMeta(storage) {
     try {
         const meta = JSON.parse(storage.getItem(SETTINGS_SYNC_META_KEY) || '{}');
-        return { syncedAt: Number(meta.syncedAt) || 0, changedAt: Number(meta.changedAt) || 0 };
-    } catch { return { syncedAt: 0, changedAt: 0 }; }
+        return { syncedAt: Number(meta.syncedAt) || 0, changedAt: Number(meta.changedAt) || 0, changedKeys: Array.isArray(meta.changedKeys) ? meta.changedKeys : [], deletedKeys: Array.isArray(meta.deletedKeys) ? meta.deletedKeys : [] };
+    } catch { return { syncedAt: 0, changedAt: 0, changedKeys: [], deletedKeys: [] }; }
 }
 
 function utf8Base64(text) {
@@ -72,7 +85,7 @@ export function resolveSyncAction(file, meta, hasLocal) {
     return 'none';
 }
 
-export function createTavernSettingsSync(globalObject, { storage, onRestored, debounceMs = 1500, now = () => Date.now() } = {}) {
+export function createTavernSettingsSync(globalObject, { storage, onRestored, onUploaded, debounceMs = 1500, now = () => Date.now() } = {}) {
     let timer = null;
     let stopped = false;
     let applying = false;
@@ -91,47 +104,70 @@ export function createTavernSettingsSync(globalObject, { storage, onRestored, de
     const rawRemove = proto.removeItem;
 
     async function fetchFile() {
-        try {
-            const res = await globalObject.fetch(`${SETTINGS_FILE_URL}?t=${now()}`, { cache: 'no-store' });
-            if (!res.ok) return null;
-            const file = await res.json();
-            return file && typeof file === 'object' && file.settings && typeof file.settings === 'object' ? file : null;
-        } catch { return null; }
+        const res = await mediaRequest(globalObject, `${SETTINGS_FILE_URL}?t=${now()}`, { cache: 'no-store' }, 8000);
+        if (res.status === 404) return null;
+        if (!res.ok) throw new Error('settings-file-read-failed');
+        const file = await res.json();
+        if (!file || typeof file !== 'object' || !file.settings || typeof file.settings !== 'object') throw new Error('settings-file-invalid');
+        return file;
     }
 
-    async function upload() {
+    async function uploadNow() {
         clearTimeout(timer);
         timer = null;
         const h = headers();
         if (stopped || !h) return false;
+        let file;
+        try { file = await fetchFile(); } catch { queueUpload(); return false; }
+        if (stopped) return false;
+        if (file) {
+            const pending = readMeta(storage), changedKeys = new Set(pending.changedKeys);
+            const remoteDeletes = (Array.isArray(file.deletedKeys) ? file.deletedKeys : []).filter(key => !changedKeys.has(key));
+            applying = true;
+            let changed;
+            try { changed = applyGlobalSettings(storage, Object.fromEntries(Object.entries(file.settings).filter(([key]) => !key.startsWith(MAP_CUSTOM_PREFIX) && !changedKeys.has(key))), remoteDeletes.filter(key => !key.startsWith(MAP_CUSTOM_PREFIX))); } finally { applying = false; }
+            writeMeta({ ...pending, deletedKeys: [...new Set([...remoteDeletes, ...pending.deletedKeys])] });
+            if (changed && typeof onRestored === 'function') onRestored({ changed });
+        }
         const settings = collectGlobalSettings(storage);
         const body = JSON.stringify(settings);
         const before = readMeta(storage);
         if (body === lastUploaded && !before.changedAt) return true;
         const savedAt = now();
-        const text = JSON.stringify({ version: 1, savedAt, settings });
+        // 复用上面已序列化的 body 拼出外层，不再对整份配置序列化第二遍（格式与 JSON.stringify 一致）。
+        const text = `{"version":2,"savedAt":${JSON.stringify(savedAt)},"settings":${body},"deletedKeys":${JSON.stringify(before.deletedKeys)}}`;
         try {
-            const res = await globalObject.fetch('/api/files/upload', {
+            const res = await mediaRequest(globalObject, '/api/files/upload', {
                 method: 'POST', headers: h, body: JSON.stringify({ name: SETTINGS_FILE_NAME, data: utf8Base64(text) }),
             });
-            if (!res || !res.ok) return false;
-        } catch { return false; }
+            if (!res || !res.ok) { queueUpload(); return false; }
+        } catch { queueUpload(); return false; }
         lastUploaded = body;
         // 上传途中本机又改了：保留 changedAt，等下一次防抖上传。
         const after = readMeta(storage);
-        writeMeta({ syncedAt: savedAt, changedAt: after.changedAt > before.changedAt ? after.changedAt : 0 });
+        writeMeta({ ...after, syncedAt: savedAt, changedAt: after.changedAt > before.changedAt ? after.changedAt : 0, changedKeys: after.changedAt > before.changedAt ? after.changedKeys : [] });
+        if (typeof onUploaded === 'function') onUploaded({ savedAt });
         return true;
+    }
+
+    function upload() {
+        if (!uploading) uploading = withMediaLock(globalObject, 'settings', uploadNow).finally(() => { uploading = null; });
+        return uploading;
     }
 
     function queueUpload() {
         if (stopped) return;
         clearTimeout(timer);
-        timer = setTimeout(() => { uploading = upload().finally(() => { uploading = null; }); }, debounceMs);
+        timer = setTimeout(() => { void upload(); }, debounceMs);
+        timer?.unref?.();
     }
 
-    function markChanged() {
+    function markChanged(key, removed = false) {
         if (applying || stopped) return;
-        writeMeta({ ...readMeta(storage), changedAt: now() });
+        const meta = readMeta(storage), changedKeys = new Set(meta.changedKeys), deletedKeys = new Set(meta.deletedKeys);
+        changedKeys.add(String(key));
+        if (removed) deletedKeys.add(String(key)); else deletedKeys.delete(String(key));
+        writeMeta({ ...meta, changedAt: Math.max(now(), meta.changedAt + 1), changedKeys: [...changedKeys], deletedKeys: [...deletedKeys] });
         queueUpload();
     }
 
@@ -139,13 +175,15 @@ export function createTavernSettingsSync(globalObject, { storage, onRestored, de
     function hook() {
         if (!proto || proto === Object.prototype || typeof rawSet !== 'function' || typeof rawRemove !== 'function') return null;
         const setItem = function setItem(key, value) {
+            const previous = this.getItem(key);
             const result = rawSet.call(this, key, value);
-            if (this === storage && isGlobalSettingKey(key)) markChanged();
+            if (this === storage && isGlobalSettingKey(key) && previous !== this.getItem(key)) markChanged(key);
             return result;
         };
         const removeItem = function removeItem(key) {
+            const previous = this.getItem(key);
             const result = rawRemove.call(this, key);
-            if (this === storage && isGlobalSettingKey(key)) markChanged();
+            if (this === storage && isGlobalSettingKey(key) && previous !== null) markChanged(key, true);
             return result;
         };
         proto.setItem = setItem;
@@ -164,7 +202,6 @@ export function createTavernSettingsSync(globalObject, { storage, onRestored, de
 
     async function start() {
         if (!headers() || typeof globalObject.fetch !== 'function') return { ok: false, reason: 'no-tavern' };
-        unhook = hook();
         if (globalObject.addEventListener) {
             for (const type of ['pagehide', 'visibilitychange']) {
                 const target = type === 'visibilitychange' && globalObject.document ? globalObject.document : globalObject;
@@ -172,15 +209,19 @@ export function createTavernSettingsSync(globalObject, { storage, onRestored, de
                 listeners.push(() => target.removeEventListener(type, onHide));
             }
         }
-        const file = await fetchFile();
+        // 先拉文件再挂写钩子：拉取期间启动流程写进来的默认配置不该被记成「本机未上传改动」，
+        // 否则 changedAt 会盖过云端文件时间，把该 restore 的首启判成 upload，用默认值覆盖掉云端 DNA 等配置。
+        let file;
+        try { file = await fetchFile(); } catch { if (!stopped) { unhook = hook(); queueUpload(); } return { ok: false, reason: 'settings-file-read-failed' }; }
         if (stopped) return { ok: false, reason: 'stopped' };
         const meta = readMeta(storage);
+        unhook = hook();
         const action = resolveSyncAction(file, meta, Object.keys(collectGlobalSettings(storage)).length > 0);
         if (action === 'restore') {
             applying = true;
             let changed = 0;
-            try { changed = applyGlobalSettings(storage, file.settings); } finally { applying = false; }
-            writeMeta({ syncedAt: Number(file.savedAt) || 0, changedAt: 0 });
+            try { changed = applyGlobalSettings(storage, Object.fromEntries(Object.entries(file.settings).filter(([key]) => !key.startsWith(MAP_CUSTOM_PREFIX))), (file.deletedKeys || []).filter(key => !key.startsWith(MAP_CUSTOM_PREFIX))); } finally { applying = false; }
+            writeMeta({ syncedAt: Number(file.savedAt) || 0, changedAt: 0, changedKeys: [], deletedKeys: file.deletedKeys || [] });
             lastUploaded = JSON.stringify(collectGlobalSettings(storage));
             if (changed && typeof onRestored === 'function') onRestored({ changed });
             return { ok: true, action, changed };

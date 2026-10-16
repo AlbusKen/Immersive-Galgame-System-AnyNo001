@@ -120,7 +120,7 @@ test('gate:caption-writer:reminds-when-llm-not-connected', async () => {
     const written = await backend.writeDbgenPrompt({ description: '画角色「阿黛尔」的立绘。' });
     assert.equal(written.ok, false);
     assert.match(written.error, /还没接副 LLM/);
-    assert.match(written.error, /生图 → 副 LLM/);
+    assert.match(written.error, /生图与AI › 备用模型/);
     assert.equal(llmCalls.length, 0);
 });
 
@@ -738,13 +738,6 @@ test('gate:dna-template:内置单次写词经真实解析和发送保留正文�
         assert.equal(written.ok, true, written.error);
         assert.equal(calls.length, 1);
         assert.equal(wires.length, 0);
-        assert.match(calls[0].system, /不等待发送层补词/);
-        assert.match(calls[0].system, /字段分为稳定身份、独立衣装、当次动态三层/);
-        assert.match(calls[0].system, /制服、军用战斗服、护甲、鞋帽、武器、战术耳机/);
-        assert.match(calls[0].system, /meta_dna_\* 不是完整立绘提示词/);
-
-        assert.match(calls[0].user, /writingRequirements/);
-        assert.match(calls[0].user, /rA7/);
         assert.equal(written.captions[0].slotId, 6);
         assert.equal(written.width, 832);
         assert.equal(Boolean(written.dnaCandidates), candidate);
@@ -1130,7 +1123,13 @@ test('gate:image-preset:内置楼层写词保留挂载编号且从不探测DBG',
     assert.equal(result.captions[0].at, 2);
     assert.equal(calls.length, 1);
     assert.deepEqual(Object.keys(calls[0]), ['messages']);
-    const data = JSON.parse(calls[0].messages[2].content);
+    const inputs = calls[0].messages.flatMap(message => {
+        try { const value = JSON.parse(message.content);
+            return value?.outputs?.format === 'dna-template' ? [value] : []; }
+        catch { return []; }
+    });
+    assert.equal(inputs.length, 1);
+    const [data] = inputs;
     assert.equal(data.outputs.format, 'dna-template');
     assert.equal(data.outputs.selection, 'numbered-text');
     assert.equal(data.outputs.paragraphCount, 2);

@@ -10,7 +10,7 @@ const revised = (old, value, floorKey) => ({ ...value, floorKey, key: `${floorKe
     revision: revisionOf(old) + 1, revisionToken: revisionToken() });
 
 // 检查与写入属于同一存储事务；token 防止删除后重建时 revision 碰巧相同。
-function slotPatch(old, expectedRevision, patch, options) {
+export function slotPatch(old, expectedRevision, patch, options = {}) {
     if (!old) return { ok: false, reason: 'not-found' };
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== revisionOf(old)
         || options.expectedToken !== old.revisionToken) return { ok: false, reason: 'stale-revision' };

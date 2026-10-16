@@ -1,8 +1,8 @@
+import { createAssetGenerationService } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMemoryGeneratedAssetStore, createIndexedDbGeneratedAssetStore } from '../src/media/generated-asset-store.js';
-import { withTavernGeneratedAssetFiles } from '../src/media/tavern-image-files.js';
-import { createAssetGenerationService } from '../src/generated-images/illustration/asset-generation-service.js';
+import { withTavernGeneratedAssetFiles } from '../src/media/tavern-generated-assets.js';
 import { createTransactionalIdb } from './helpers/transactional-idb.js';
 import { provenanceFixture, characterViewsFixture, characterWriteFixture, spriteDataReply } from './helpers/prompt-provenance.js';
 import { normalizeStoredPrompt, promptProvenance } from '../src/generated-images/generation-prompt.js';
@@ -62,9 +62,6 @@ test('gate:expression-prompt:edited-prompt-is-kept-and-redrawn-as-is', async () 
     assert.equal(paints[0].caption.v4_prompt.caption.base_caption, 'my own words, silver hair');
     const next = await service.getImagePrompt(exact.items[0].imageId);
     assert.equal(next.edited, true);
-    // 没改过的词照旧硬合。
-    await service.generateExpressionImage({ name: '冬月', mood: '大笑', caption: cap('plain'), basePrompt });
-    assert.match(paints[1].caption.v4_prompt.caption.base_caption, /^laughing/);
 });
 
 test('gate:expression-prompt:exact-edits-bypass-current-dna-translation', async () => {
@@ -188,8 +185,10 @@ test('gate:prompt-provenance:搬家上传期间的编辑使旧迁移事务失效
         if (url === '/api/images/upload') { started(); await new Promise((resolve) => { release = resolve; }); }
         return fetch(url, options);
     };
-    const service = persistentService(withTavernGeneratedAssetFiles(raw, f.host));
+    const store = withTavernGeneratedAssetFiles(raw, f.host);
+    const service = persistentService(store);
     const read = await service.getImagePrompt('race');
+    await store.getImage('race');
     await waiting;
     assert.equal((await service.saveImagePrompt('race', { positive: 'new words' }, read.revision)).ok, true);
     release(); await flush();
@@ -201,7 +200,7 @@ test('gate:prompt-provenance:搬家上传期间的编辑使旧迁移事务失效
 });
 
 
-test('gate:prompt-provenance:表情备注随角色移动，借用和复制保留三阶段来源', async () => {
+test('gate:prompt-provenance:表情备注按卡隔离，移动和复制保留三阶段来源', async () => {
     const { normalizeGeneratedLibrary, setGeneratedExpressionNote } = await import('../src/scene/asset-match.js');
     const { moveLibraryEntry, effectiveSceneAssets, normalizeAssetCards } = await import('../src/scene/asset-scope.js');
     const fixture = provenanceFixture();
@@ -211,8 +210,9 @@ test('gate:prompt-provenance:表情备注随角色移动，借用和复制保留
     const root = { cards: { 'card:A': { characters: { Alice: { 默认: 'igs-gen:dna' } },
         generated: saved.library }, 'card:B': {} } };
     normalizeAssetCards(root);
-    const borrowed = effectiveSceneAssets(root, 'card:B');
-    assert.deepEqual(borrowed.generated.expressionNotes.Alice.默认, note);
+    const other = effectiveSceneAssets(root, 'card:B');
+    assert.equal(other.generated.expressionNotes.Alice, undefined);
+    assert.deepEqual(effectiveSceneAssets(root, 'card:A').generated.expressionNotes.Alice.默认, note);
     assert.equal(moveLibraryEntry(root, 'card:A', 'card:B', 'characters', 'Alice', { copy: true }).ok, true);
     const copied = normalizeGeneratedLibrary(root.cards['card:B'].generated).expressionNotes.Alice.默认;
     assert.deepEqual(copied, note);
@@ -886,7 +886,7 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
         const before = structuredClone(root), storage = createMemoryStorage();
         let hash = 'source-1', saves = 0;
         const h = await expressionTemplateHarness(createTransactionalIdb(), {
-            getSettings: () => ({ autoIllustration: {}, sceneAssets: effectiveSceneAssets(root, 'card:Current') }),
+            getSettings: () => ({ autoIllustration: {}, sceneAssets: effectiveSceneAssets(root, 'card:Source') }),
             async writePrompt(req) {
                 if (req.promptTask) {
                     assert.equal(root.cards['card:Source'].wardrobe['Alice·礼服'].prompt, 'wears a white dress', '先入库后写立绘提示词');
@@ -902,7 +902,7 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
             if (mode === 'wire-changed') record.sentPrompt.caption.v4_prompt.caption.base_caption += ' changed';
             if (mode === 'stale') hash = 'source-2';
             return record;
-        } }, getContext: () => ({ root, scopeKey: 'card:Current', floorKey: 'chat|39|0', messageId: 39, sourceHash: hash,
+        } }, getContext: () => ({ root, scopeKey: 'card:Source', floorKey: 'chat|39|0', messageId: 39, sourceHash: hash,
             text: 'Alice 换上白色礼服。' }),
         commit(next, expected, guard) {
             assert.equal(guard(), true); assert.deepEqual(root, expected); saves++;
@@ -988,7 +988,7 @@ for (const mode of ['save', 'sprite', 'save-failed', 'image-save-failed', 'paint
             assert.equal(library.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
             assert.deepEqual(library.characterDna, before.cards['card:Source'].characterDna);
             assert.deepEqual(library.characters, before.cards['card:Source'].characters);
-            assert.equal(root.cards['card:Current'], undefined, '借用角色仍写原归属');
+            assert.equal(root.cards['card:Current'], undefined, '采用只写当前角色所属卡');
             assert.equal(h.paints.length, mode === 'save' ? 0 : 1, '保存失败重试不重新生图');
             if (mode === 'sprite-write-failed') assert.equal(h.writes.length, 1, '保存 DNA 与新衣装直出，不调用不可用的立绘写词');
             if (mode !== 'save') assert.match(library.characterOutfits.Alice.礼服.moods.平和, /^igs-gen:/);

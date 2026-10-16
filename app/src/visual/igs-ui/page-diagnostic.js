@@ -1,7 +1,8 @@
 // 「复制本页诊断」：只摘当前页的决策结果（标签、命中哪一路、为什么回退），
 // 不带台词正文、聊天内容、演出参数文本和图片本体，外链只留域名，方便用户直接贴出来求助。
-import { PROMPT_ENTRY_LABELS } from '../../scene/prompt-entries.js';
+import { PROMPT_ENTRY_LABELS, PROMPT_POSITION_LABELS } from '../../scene/prompt-entries.js';
 import { describePromptTrigger } from '../../scene/prompt-triggers.js';
+import { describeMediaUsage } from '../../storage/storage-usage.js';
 
 const SOURCE_LABELS = Object.freeze({
     user: '用户配置', 'user-outfit': '衣柜', library: '生成图库', temp: '临时图', placeholder: '占位图',
@@ -9,6 +10,7 @@ const SOURCE_LABELS = Object.freeze({
 });
 
 const label = (source) => SOURCE_LABELS[source] || String(source || '');
+const SPRITE_REASONS = { 'original-unavailable': '原装候选暂时不可读取，同角色兜底也未命中', 'original-empty': '原装无有效图片引用，同角色兜底也未命中', 'character-unregistered': '当前素材库未找到该角色或对应图片' };
 
 export function summarizeImageRef(value) {
     const url = typeof value === 'string' ? value : value && typeof value === 'object' ? String(value.url || value.src || '') : '';
@@ -49,12 +51,14 @@ function spriteLine(c) {
         'outfit-image-empty': '整套衣装未设人物图', 'outfit-image-missing': '人物图片已丢失',
         'outfit-image-read-error': '人物图片读取失败', 'outfit-image-decode-error': '人物图片加载或解码失败',
         'outfit-image-pending': '人物图片加载中',
+        ...SPRITE_REASONS,
     };
     const detail = [...new Set([m.reason, m.fallbackReason].filter(Boolean))]
         .map(reason => reasons[reason] || reason).join('；');
     const diagnostic = detail ? `，${detail}` : '';
     const want = `角色「${m.character}」表情「${m.mood || '无'}」服装「${m.outfit || '无'}」${request}${why}`;
     if (c.spriteImage) return `${want} → ${label(m.source)}，槽位「${m.slot || '默认'}」${m.quality ? `，匹配度 ${m.quality}` : ''}${diagnostic}`;
+    if (c.pendingSpriteRef) return `${want} → ${label(m.source)}，槽位「${m.slot || '默认'}」，原图读取中${diagnostic}`;
     if (c.sceneNsfw) return `${want} → NSFW 场景隐藏立绘`;
     return `${want} → 未命中（${label(m.source)}${m.quality ? `，匹配度 ${m.quality}` : ''}${diagnostic}）`;
 }
@@ -78,15 +82,15 @@ function liveLine(c, rs) {
     return '显示中';
 }
 
-// 最近一次注入的按需块：每块展开/收起、原因（命中词、黏性、上楼标签…）与字数。
+// 最近一次注入的按需块：每块展开/收起、原因（命中词、上楼标签…）、字数，以及写了自己位置的块的注入位置与深度。
 function promptLines(report) {
     const blocks = report && report.blocks ? Object.entries(report.blocks) : [];
     if (!blocks.length) return [];
     const total = blocks.reduce((sum, [, item]) => sum + (item.active ? item.chars || 0 : 0), 0);
-    return [`提示词按需块（共展开 ${total} 字）`, ...blocks.map(([key, item]) => `  ${PROMPT_ENTRY_LABELS[key] || key} ${item.reason === 'off' ? '' : item.active ? '展开' : '收起'} ${describePromptTrigger(item)}${item.active && item.chars ? ` · ${item.chars} 字` : ''}`.replace(/ {2,}/g, ' ').replace(/^ /, '  '))];
+    return [`提示词按需块（共展开 ${total} 字）`, ...blocks.map(([key, item]) => `  ${PROMPT_ENTRY_LABELS[key] || key} ${item.reason === 'off' ? '' : item.active ? '展开' : '收起'} ${describePromptTrigger(item)}${item.active && item.chars ? ` · ${item.chars} 字` : ''}${item.position ? ` · ${PROMPT_POSITION_LABELS[item.position] || item.position}${item.position === 'depth' ? ` @D${item.depth}` : ''}` : ''}`.replace(/ {2,}/g, ' ').replace(/^ /, '  '))];
 }
 
-export function buildPageDiagnostic(snapshot, { version = '', worldview = '', promptReport = null } = {}) {
+export function buildPageDiagnostic(snapshot, { version = '', worldview = '', promptReport = null, mediaStats = null } = {}) {
     if (!snapshot || !snapshot.content) return '';
     const c = snapshot.content;
     const rs = snapshot.readerSettings || {};
@@ -102,12 +106,14 @@ export function buildPageDiagnostic(snapshot, { version = '', worldview = '', pr
         `说话人 ${c.speaker || '-'} · 情绪 ${c.statusEmotion || '-'}`,
         `立绘 ${spriteLine(c)}`,
         `同台 ${cast.length ? cast.join('、') : '无'}`,
+        `User立绘：${c.userChar && c.userChar.key ? `${c.userChar.key}（${c.userChar.source === 'manual' ? '手动指定' : '按用户名'}）` : '无'}`,
         `背景 ${backgroundLine(c)}`,
-        `CG ${c.cgActive ? `显示中（槽位 ${c.illustrationSlot ?? '?'}）` : c.illustrationSlot != null ? `有标记（槽位 ${c.illustrationSlot}）但没有图` : '无'} · 图片 期望${c.imageExpectedCount ?? 0}/绑定${c.imageBoundCount ?? 0}/未绑${c.imageUnboundCount ?? 0}/可用${c.imageAvailableCount ?? 0}${c.imageLoading ? ' · 出图中' : ''}`,
+        `CG ${c.cgActive ? `显示中（槽位 ${c.illustrationSlot ?? '?'}）` : c.cgWaiting ? `有标记（槽位 ${c.illustrationSlot}）但图片未就绪，保留场景与立绘` : c.illustrationSlot != null ? `有标记（槽位 ${c.illustrationSlot}）但没有图` : '无'} · 图片 期望${c.imageExpectedCount ?? 0}/绑定${c.imageBoundCount ?? 0}/未绑${c.imageUnboundCount ?? 0}/可用${c.imageAvailableCount ?? 0}${c.imageLoading ? ' · 出图中' : ''}`,
         `演出 ${summarizeFx(c.fx).join('、') || '无'}`,
     ];
     if (notes.length) lines.push(`提示 ${notes.join('、')}`);
     lines.push(`直播 ${liveLine(c, rs)}`);
     lines.push(...promptLines(promptReport));
+    if (mediaStats) lines.push(`图片资源 ${describeMediaUsage(mediaStats)}`);
     return lines.join('\n');
 }

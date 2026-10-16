@@ -14,7 +14,7 @@ function entryFixture(options = {}) {
     const assets = options.assets || { characters: { Alice: { 默认: 'original.png' } }, characterDna: {}, scenes: {} };
     let sequence = 0;
     const mattes = [];
-    const open = () => createAssetGenerationService({ nai: h.backend, llm: h.llm,
+    const open = () => createAssetGenerationService({ nai: h.backend, llm: h.llm, mediaCache: h.mediaCache,
         store: createIndexedDbGeneratedAssetStore({ indexedDB }),
         messageHost: options.messageHost || { getChatId: () => 'builtin-entry' },
         getSettings: () => ({ ...h.bridge, sceneAssets: assets }),
@@ -274,7 +274,7 @@ test('gate:builtin-entry:物品 task 经实际客户端发送并从 IDB 回读',
     const floor = { chatId: 'builtin-entry', messageId: 5, swipeId: 0, isAi: true, isLatest: true,
         text: '[igs-fx:item|获得|黄铜钥匙|旧钥匙]\n她把黄铜钥匙放在桌上。' };
     const store = createIndexedDbGeneratedAssetStore({ indexedDB: f.indexedDB });
-    const service = createItemImageService({ nai: f.backend, llm: f.llm, store,
+    const service = createItemImageService({ nai: f.backend, llm: f.llm, store, mediaCache: f.mediaCache,
         messageHost: { getChatId: () => floor.chatId, readFloor: () => floor, on: () => () => {} },
         getSettings: () => f.bridge, readTables: () => [], matte: async url => url, newId: () => 'builtin-key' });
     const result = await service.processMessage(5);
@@ -369,7 +369,7 @@ test(`gate:builtin-entry:普通 CG 当次身份不建档，模板重画零写词
         async writeFloor(_id, next) { text = next; return { ok: true }; }, on: () => () => {},
         attachPromptStrip() {}, ensureMarkerRegexes: async () => ({ ok: true }), destroy() {} };
     const indexedDB = createTransactionalIdb(), store = createIndexedDbIllustrationStore({ indexedDB });
-    const service = createAutoIllustrationService({ nai: h.backend, llm: h.llm, store,
+    const service = createAutoIllustrationService({ nai: h.backend, llm: h.llm, store, mediaCache: h.mediaCache,
         messageHost: host, getSettings: () => h.bridge.autoIllustration, getSceneAssets: () => assets, report() {} });
     const result = await service.processMessage(5, { manual: true });
     if (['unknown-key', 'invalid-region'].includes(scenario)) {
@@ -660,7 +660,7 @@ for (const reply of ['', 'private refusal', 'id: ch2\ntags: private\nuc:',
         const { createItemImageService } = await import('../src/generated-images/illustration/item-image-service.js');
         const f = entryFixture({ reply: () => reply }); t.after(() => f.dispose());
         f.bridge.itemImages = { enabled: true };
-        const service = createItemImageService({ nai: f.backend, llm: f.llm,
+        const service = createItemImageService({ nai: f.backend, llm: f.llm, mediaCache: f.mediaCache,
             store: createIndexedDbGeneratedAssetStore({ indexedDB: f.indexedDB }),
             messageHost: { getChatId: () => 'builtin-entry' }, getSettings: () => f.bridge, readTables: () => [] });
         const result = await service.regenerate('Brass Key');
@@ -736,7 +736,7 @@ async function cgGrammarFixture(t, transform = text => text) {
         async writeFloor(_id, next) { text = next; return { ok: true }; }, on: () => () => {},
         attachPromptStrip() {}, ensureMarkerRegexes: async () => ({ ok: true }), destroy() {} };
     const store = createIndexedDbIllustrationStore({ indexedDB: createTransactionalIdb() });
-    const service = createAutoIllustrationService({ nai: h.backend, llm: h.llm, store,
+    const service = createAutoIllustrationService({ nai: h.backend, llm: h.llm, store, mediaCache: h.mediaCache,
         messageHost: host, getSettings: () => h.bridge.autoIllustration, getSceneAssets: () => assets,
         report: (level, message) => reports.push({ level, message }) });
     const result = await service.processMessage(7, { manual: true });

@@ -240,7 +240,7 @@ function renderOutfitPanel(charName, name, entry, baseMoods, sceneAssets, icons,
         + `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">说明</span><input class="igs-scene-url-input" data-scene-outfit-note-char="${esc(charName)}" data-scene-outfit-note="${esc(name)}" value="${esc(note)}" placeholder="什么情形穿这套"></div>`
         + `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">别名</span>${chipList(words, `scene-remove-outfit-word:${c}:${o}`, `scene-add-outfit-word:${c}:${o}`, '', '添加别名：正文或表格里出现这个词，就按这套服装显示')}</div>`
         + `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">适用场景</span>${chipList(scenes, `scene-remove-outfit-scene:${c}:${o}`, `scene-add-outfit-scene:${c}:${o}`, '不限', '添加适用场景（换到其他场景时，继承来的这套服装自动失效）')}</div>`
-        + `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">状态栏头像</span>${thumb(avatar, `${name} 头像`, ' igs-outfit-avatar', resolveUrl)}`
+        + `<div class="igs-outfit-meta-row"><span class="igs-outfit-meta-label">状态栏头像</span>${thumb(avatar, `${name}头像`, ' igs-outfit-avatar', resolveUrl)}`
         + `<input class="igs-scene-url-input" data-scene-outfit-avatar-char="${esc(charName)}" data-scene-outfit-avatar="${esc(name)}" value="${esc(avatar)}" placeholder="留空沿用角色头像">`
         + (avatar ? `<button type="button" class="igs-btn-mgr-icon" data-action="scene-clear-outfit-avatar:${c}:${o}" title="清除服装头像">${icons.trash}</button>` : '')
         + `</div></div>`;
@@ -280,7 +280,7 @@ function renderOutfitPanel(charName, name, entry, baseMoods, sceneAssets, icons,
             + `<span class="igs-outfit-acts"><button type="button" class="igs-btn-mgr-icon" data-action="scene-add-outfit-mood:${c}:${o}:${encSeg(mood)}" title="给这套补上「${esc(mood)}」">+</button></span></div>`;
     }).join('');
     const fillAll = missing.length > 1
-        ? `<div class="igs-outfit-fill-all"><button type="button" class="igs-review-link" data-action="scene-outfit-copy-slots:${c}:${o}">缺的 ${missing.length} 格全部补上</button></div>`
+        ? `<div class="igs-outfit-fill-all"><button type="button" class="igs-review-link" data-action="scene-outfit-copy-slots:${c}:${o}">补上缺的${missing.length}格</button></div>`
         : '';
     const rows = ownRows + fallbackRows || '<div class="igs-scene-empty">暂无情绪槽，可点击右上角「+」添加</div>';
     return `<div class="igs-outfit-panel" data-outfit-panel="${esc(name)}">${dna}${meta}<div class="igs-btn-mgr-list igs-outfit-slots">${rows}</div>${fillAll}</div>`;
@@ -360,7 +360,7 @@ export function renderWardrobe(wardrobe, { resolveUrl, scopeTag, scopeMenu, focu
             menuItem(`wardrobe-remove:${encoded}`, '删除', ' is-danger'),
         ], `「${name}」的操作`);
         const rowThumb = reference
-            ? thumb(reference, `${name} 参考图`, '', resolveUrl)
+            ? thumb(reference, `${name}参考图`, '', resolveUrl)
             : '<span class="igs-outfit-thumb igs-outfit-thumb-empty" aria-hidden="true"></span>';
         return `<div class="igs-sprite-slot igs-wardrobe-item${name === focus ? ' is-focus' : ''}" data-wardrobe-item="${esc(name)}"><div class="igs-btn-mgr-row igs-scene-mood-row">`
             + rowThumb
@@ -408,7 +408,7 @@ export function renderOutfitReviewList(items, characterOutfits, characters) {
         key: 'outfit',
         title: '服装词',
         count: list.length,
-        hint: 'AI 写出、尚未在该角色名下登记的服装词。归入已有服装后，之后即可识别。',
+        hint: 'AI写出、尚未在该角色名下登记的服装词。归入已有服装后，之后即可识别。',
         clearAction: 'outfit-review-clear',
         body: rows ? `<div class="igs-review-list">${rows}</div>` : '',
         empty: '没有待确认的服装词',
@@ -437,6 +437,7 @@ export const OUTFIT_SETTINGS_STYLE_TEXT = `
 .igs-char-title{display:flex;align-items:baseline;gap:8px;flex:1 1 120px;min-width:0;padding:4px 0;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
 .igs-char-title:focus-visible{outline:2px solid var(--igs-settings-line-strong);outline-offset:2px;border-radius:var(--igs-settings-radius-small)}
 .igs-char-name{flex-shrink:0;font-size:14px;font-weight:600;color:var(--igs-settings-ink)}
+.igs-char-user-tag{flex-shrink:0;padding:0 5px;border:1px solid var(--igs-settings-line-strong);border-radius:var(--igs-settings-radius-small);font-size:10px;line-height:15px;color:var(--igs-settings-ink-3)}
 .igs-char-aliases{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--igs-settings-ink-4)}
 .igs-char-info-row{display:flex;align-items:center;gap:8px;min-width:0}
 .igs-char-info-row.is-block{flex-direction:column;align-items:stretch;gap:6px;padding-top:6px;border-top:1px solid var(--igs-settings-line)}
@@ -611,4 +612,21 @@ button.igs-scope-seg:hover,button.igs-scope-seg:focus-visible{color:var(--igs-se
 @media (max-width:420px){.igs-gen-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .igs-review-select{width:auto;max-width:8em;height:28px;padding:0 6px;font-size:12px}
 .igs-scene-subtab-count{margin-left:4px;padding:0 5px;border-radius:8px;background:var(--igs-settings-accent);color:#fff;font-size:10px;line-height:16px}
+.igs-mig-entry{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 2px}
+.igs-mig-entry-note{font-size:12px;color:var(--igs-settings-ink-3)}
+.igs-mig-list{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.igs-mig-row{display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--igs-settings-line);border-radius:var(--igs-settings-radius-control)}
+.igs-mig-head{display:flex;align-items:baseline;gap:8px;min-width:0}
+.igs-mig-name{font-size:13px;font-weight:600;color:var(--igs-settings-ink)}
+.igs-mig-stat{margin-left:auto;font-size:12px;color:var(--igs-settings-ink-3);white-space:nowrap}
+.igs-mig-stat.is-warn{color:var(--igs-settings-accent)}
+.igs-mig-fields{display:flex;flex-direction:column;gap:6px}
+.igs-mig-label{display:flex;align-items:center;gap:8px;min-width:0}
+.igs-mig-label>span{flex:0 0 48px;font-size:12px;color:var(--igs-settings-ink-3)}
+.igs-mig-field{flex:1;min-width:0}
+.igs-mig-foot{display:flex;align-items:center;gap:8px}
+.igs-mig-hint{flex:1;min-width:0;font-size:12px;line-height:1.4;color:var(--igs-settings-ink-3)}
+.igs-mig-skip-head{margin-top:10px;font-size:12px;color:var(--igs-settings-ink-3)}
+.igs-mig-skip{padding:4px 0;font-size:12px;line-height:1.4;color:var(--igs-settings-ink-3)}
+@media (max-width:420px){.igs-mig-label{flex-direction:column;align-items:stretch;gap:2px}.igs-mig-label>span{flex:none}.igs-mig-stat{margin-left:0}}
 `.trim();

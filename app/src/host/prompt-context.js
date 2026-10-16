@@ -1,9 +1,8 @@
 // 为按需注入收集本轮上下文：最近几层 AI 正文、本轮用户输入、在场角色线索。只读宿主，不写。
-import { PAIR_TRIGGER_LOOKBACK, TRIGGER_HISTORY_TURNS } from '../scene/prompt-triggers.js';
+import { PAIR_TRIGGER_LOOKBACK } from '../scene/prompt-triggers.js';
 
 const PRESENT_LOOKBACK = 6;
-// 黏性与冷却按聊天记录往回推算：每轮按一问一答算，再多留一截给成对标签。
-const HISTORY_LOOKBACK = (TRIGGER_HISTORY_TURNS + PAIR_TRIGGER_LOOKBACK) * 2;
+const HISTORY_LOOKBACK = PAIR_TRIGGER_LOOKBACK;
 
 function messageText(message) {
     return String(message && (message.mes != null ? message.mes : message.text) || '');

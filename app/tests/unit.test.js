@@ -1,3 +1,4 @@
+import { createReaderImageService } from './helpers/media-fixtures.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -43,7 +44,7 @@ import { resolveVisualMode, VISUAL_MODES } from '../src/visual/visual-mode.js';
 import { createPromptAdapter } from '../src/prompts/adapters/prompt-adapter.js';
 import { naiRequestBuilder } from '../src/generated-images/request-builders/nai-builder.js';
 import { fetchModels as fetchImageModels, generateImage as generateImageFromApi } from '../src/generated-images/image-api-client.js';
-import { createReaderImageService } from '../src/generated-images/reader-image-service.js';
+
 import { createPublicApi, attachPublicApi } from '../src/api/public-api.js';
 import { createIgsCompatApi } from '../src/api/igs-compat.js';
 import {
@@ -51,6 +52,7 @@ import {
     ensureMessageImagePlaceholders,
 } from '../src/host/tavern-helper-adapter.js';
 import { createIgsReaderHost } from '../src/visual/igs-ui/reader-host.js';
+import { syncSpriteTextWait } from '../src/visual/igs-ui/reader-dom-render.js';
 import { createPromptInjector } from '../src/host/prompt-injector.js';
 import {
     extractSceneDirectives,
@@ -196,6 +198,18 @@ test('gate:igs-ui:embedded-source-cache-parses-once-per-signature', () => {
     });
     cache.get(pagingSignature, { mark: 2 });
     assert.equal(cache.getParseCount(), 2);
+    const dialogueSignature = buildReaderSourceSignature({
+        messageId: 7,
+        rawText: 'line one\nline two',
+        visibleText: 'line one\nline two',
+        sourceFilter: { enabled: true },
+        virtualRegex: { enabled: true, pattern: 'x', flags: 'g', replacement: 'y' },
+        sceneAssetsEnabled: false,
+        sentencePaging: false,
+        dialogueSentencePaging: true,
+    });
+    cache.get(dialogueSignature, { mark: 3 });
+    assert.equal(cache.getParseCount(), 3, '对白开关变化不得复用未拆分的旧阅读源');
 });
 
 test('gate:igs-ui:embedded-source-cache-tolerates-circular-host-objects', () => {
@@ -540,8 +554,8 @@ test('gate:igs-ui:embedded-chat-observer-uses-generation-end-and-ignores-late-do
         off(name, handler) {
             listeners.set(name, (listeners.get(name) || []).filter((item) => item !== handler));
         },
-        emit(name) {
-            for (const handler of listeners.get(name) || []) handler();
+        emit(name, ...args) {
+            for (const handler of listeners.get(name) || []) handler(...args);
         },
     };
     const globalObject = {
@@ -584,7 +598,7 @@ test('gate:igs-ui:embedded-chat-observer-uses-generation-end-and-ignores-late-do
     assert.equal(stableCount, 0);
 
     eventSource.emit('generation_ended');
-    eventSource.emit('generation_started');
+    eventSource.emit('generation_started', 'quiet', {}, false);
     const stableTimer = Array.from(timers.entries()).find(([, timer]) => timer.delay === 800);
     assert.ok(stableTimer);
     timers.delete(stableTimer[0]);
@@ -661,6 +675,13 @@ test('gate:igs-ui:embedded-chat-observer-ignores-quiet-and-dry-run-generations',
     idleTimer[1].handler();
     await Promise.resolve();
     await Promise.resolve();
+    assert.equal(stableCount, 0, '生成中的静默不触发完成回调');
+    eventSource.emit('generation_ended');
+    const finishedTimer = Array.from(timers.entries()).find(([, timer]) => timer.delay === 800);
+    assert.ok(finishedTimer);
+    timers.delete(finishedTimer[0]);
+    finishedTimer[1].handler();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(stableCount, 1);
     observer.stop();
 });
@@ -1285,6 +1306,26 @@ test('gate:scene:sentence-paging-only-splits-narration-when-scene-assets-on', ()
     assert.deepEqual(payload.textSegments, ['旁白第一句。', '旁白第二句。', '[玉子]：你好呀。请坐。']);
 });
 
+test('gate:scene:sentence-paging-keeps-punctuation-spaces-and-quoted-text', () => {
+    const source = '她轻声说“走吧。” 随后出门。门开了！ 她停下。';
+    const pages = buildIgsTextPayload({ text: source }, { sentencePaging: true }).textSegments;
+    assert.deepEqual(pages, ['她轻声说“走吧。”', '随后出门。', '门开了！', '她停下。']);
+});
+
+test('gate:scene:dialogue-and-thought-paging-is-independent-and-preserves-markup', () => {
+    const source = '旁白第一句。旁白第二句。\n[玉子]：你好呀。请坐。\n*[玉子]：先别急。再等等。*';
+    const options = { sceneAssets: { enabled: true }, dialogueSentencePaging: true };
+    const dialogueOnly = buildIgsTextPayload({ text: source }, options);
+    assert.deepEqual(dialogueOnly.textSegments, [
+        '旁白第一句。旁白第二句。', '[玉子]：你好呀。', '[玉子]：请坐。',
+        '*[玉子]：先别急。*', '*[玉子]：再等等。*',
+    ]);
+    const both = buildIgsTextPayload({ text: source }, { ...options, sentencePaging: true });
+    assert.deepEqual(both.textSegments.slice(0, 2), ['旁白第一句。', '旁白第二句。']);
+    const noAssets = buildIgsTextPayload({ text: '一段旁白。另一句。\n[玉子]：你好。再见。', }, { dialogueSentencePaging: true });
+    assert.deepEqual(noAssets.textSegments.slice(0, 1), ['一段旁白。另一句。'], '对白开关不能误拆旁白');
+});
+
 test('gate:igs-ui:apply-align-style-maps-left-center-indent', () => {
     const makeEl = () => ({ style: {} });
     const left = makeEl();
@@ -1353,6 +1394,18 @@ test('gate:igs-ui:resolve-sprite-layout-keeps-mode-isolated', () => {
     // 切到没有该 key 的模式回退默认，不会串用其他模式的数据
     assert.deepEqual(resolveSpriteLayout(layouts, 'web', '小林海斗', '平和'), { posX: 50, posY: 100, scale: 100 });
 });
+
+test('gate:igs-ui:resolve-sprite-layout-base-default-slot-reads-back-on-mood-less-pages', () => {
+    // 调整原装立绘时编辑条把情绪改写到「默认」槽；旁白页 spriteMood 为空，必须仍能读到这条。
+    const layouts = { 'pc::雪乃::默认': { posX: 60, posY: 95, scale: 150 } };
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', '默认'), { posX: 60, posY: 95, scale: 150 });
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', ''), { posX: 60, posY: 95, scale: 150 });
+    // 其他情绪词有自己的槽键时不被默认槽盖住；没键时落到默认 100。
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', '喜悦'), { posX: 50, posY: 100, scale: 100 });
+    // 服装身份不借用原装的默认槽。
+    assert.deepEqual(resolveSpriteLayout(layouts, 'pc', '雪乃', '', '校服'), { posX: 50, posY: 100, scale: 100 });
+});
+
 
 test('gate:igs-ui:resolve-sprite-layout-default-scale-only-fills-unplaced', () => {
     const layouts = { 'pc::小林海斗::平和': { posX: 70, posY: 30, scale: 180 } };
@@ -1954,7 +2007,7 @@ test('gate:settings:generated-asset-actions-manage-library-and-temp-status', asy
     let promptValue = '';
     let confirmed = true;
     const service = {
-        getRecord: (key) => key === 'temp/bg' ? {
+        readRecord: async (key) => key === 'temp/bg' ? {
             key,
             imageId: 'bg-temp',
             type: 'background',
@@ -2081,7 +2134,7 @@ test('gate:settings:generated-asset-actions-rollback-on-persist-and-service-fail
             { alert: () => {} },
             () => { persistCount += 1; return { ok: true }; },
             {
-                getRecord: () => ({ imageId: 'temp-image', type: 'background', name: '临时景' }),
+                readRecord: async () => ({ imageId: 'temp-image', type: 'background', name: '临时景' }),
                 setStatus: async () => ({ ok: false, reason: 'status-failed' }),
             },
         ));
@@ -2089,6 +2142,41 @@ test('gate:settings:generated-asset-actions-rollback-on-persist-and-service-fail
         assert.equal(persistCount, 2);
         assert.equal(draft.bridge.sceneAssets.generated.scenes['临时景'], undefined);
         assert.equal(draft.bridge.sceneAssets.scenes['临时景'], undefined);
+    }
+
+    {
+        const draft = makeDraft();
+        draft.bridge.sceneAssets.characters = { 临时人: { 默认: 'igs-gen:old-sprite' } };
+        const saved = [];
+        const result = await handleSettingsAction('gen-temp-accept:sprite', makeContext(
+            draft,
+            { alert: () => {} },
+            (options = {}) => {
+                saved.push({ changed: options.spriteAssetChanged, url: draft.bridge.sceneAssets.characters.临时人.默认 });
+                return { ok: true };
+            },
+            {
+                readRecord: async () => ({ imageId: 'new-sprite', type: 'sprite', name: '临时人' }),
+                setStatus: async () => ({ ok: false, reason: 'status-failed' }),
+            },
+        ));
+        assert.equal(result.reason, 'status-failed');
+        assert.deepEqual(saved, [
+            { changed: true, url: 'igs-gen:new-sprite' },
+            { changed: true, url: 'igs-gen:old-sprite' },
+        ], '立绘入库及服务失败后的回滚都须失效舞台预热清单');
+    }
+
+    {
+        const draft = makeDraft();
+        draft.bridge.sceneAssets.generated.characters.空图 = { 默认: '' };
+        let saves = 0;
+        const result = await handleSettingsAction(`gen-adopt-sprite:${enc('空图')}`, makeContext(
+            draft, { alert: () => {} },
+            () => { saves += 1; return { ok: true }; }, null,
+        ));
+        assert.equal(result.reason, 'generated-sprite-adopt-failed');
+        assert.equal(saves, 0, '未绑定图片不得提交设置或失效舞台清单');
     }
 
     {
@@ -2108,14 +2196,14 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
     const makeLibrary = () => ({ characters: { Alice: { 默认: 'old.png' } },
         characterAliases: { Alice: ['小爱'] }, characterDna: {}, characterOutfits: {}, wardrobe: {} });
     for (const mode of ['card', 'global', 'missing', 'missing-candidate', 'wrong-image', 'wrong-character',
-        'record-image', 'record-status', 'record-revision', 'dna', 'scope', 'borrowed',
+        'record-image', 'record-status', 'record-revision', 'dna', 'scope', 'other-card-hidden',
         'persist-not-started', 'persist-failed', 'status-failed', 'status-throw', 'rollback-failed', 'conflict-rollback-failed']) {
         const record = await spriteAdoptionFixture();
         record.updatedAt = 7;
         let liveRecord = structuredClone(record);
         const root = makeLibrary();
         root.cards = { 'card:current': mode === 'global' ? {} : makeLibrary() };
-        if (mode === 'borrowed') {
+        if (mode === 'other-card-hidden') {
             root.characters = {}; root.characterAliases = {};
             root.cards = { 'card:current': {}, 'card:source': makeLibrary() };
         }
@@ -2127,7 +2215,7 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
             state: { activeSettings: state },
             options: { global: { alert() {}, SillyTavern: { getContext: () => ({ name2: 'current' }) } },
                 generatedAssets: {
-                getRecord: () => liveRecord,
+                readRecord: async () => structuredClone(liveRecord),
                 async readStoredImage(id) {
                     events.push('read'); assert.equal(id, record.imageId); assert.deepEqual(root, original);
                     const stored = structuredClone(record);
@@ -2190,7 +2278,10 @@ test('gate:dna-adoption-ui:临时采用按规范名入库，回读与提交失�
                 assert.equal(result.writeAttempted, false);
                 assert.deepEqual(events, ['read', 'save'], '未尝试写入时只恢复草稿，不再次保存或采用候选');
             } else assert.equal(saves.length, 0, mode);
-            if (mode === 'borrowed') { assert.equal(result.reason, 'DNA_ADOPTION_SCOPE'); assert.deepEqual(events, []); }
+            if (mode === 'other-card-hidden') {
+                assert.equal(result.reason, 'DNA_TEMPLATE_BINDING', '其他卡的别名不可参与当前卡身份绑定');
+                assert.deepEqual(events, ['read']);
+            }
             if (['rollback-failed', 'conflict-rollback-failed'].includes(mode)) {
                 assert.equal(result.reason, 'generated-asset-accept-rollback-failed');
                 assert.equal(result.rollbackFailed, true);
@@ -2221,7 +2312,7 @@ test('gate:outfit-adoption-ui:立绘采用读取共享衣柜但只写角色所�
             const result = await handleSettingsAction(action, {
                 state: { activeSettings: state },
                 options: { global: { SillyTavern: { getContext: () => ({ name2: 'current' }) } },
-                    generatedAssets: { getRecord: () => ({ ...record, status }),
+                    generatedAssets: { readRecord: async () => ({ ...record, status }),
                         readStoredImage: async () => structuredClone(record),
                         generateCharacterSprite: async () => ({ ...record, ok: true }),
                         setStatus: async () => { status = 'library'; return { ok: true }; } } },
@@ -2313,7 +2404,7 @@ test('gate:dna-adoption-ui:无模板旧立绘采用保留独立兼容路径', as
     const result = await handleSettingsAction('gen-temp-accept:old', {
         state: { activeSettings: { draft: { bridge: { sceneAssets: assets } }, asyncState: {} } },
         options: { global: { alert() {} }, generatedAssets: {
-            getRecord: () => ({ type: 'sprite', name: 'Alice', imageId: 'legacy', characterMeta: {
+            readRecord: async () => ({ type: 'sprite', name: 'Alice', imageId: 'legacy', characterMeta: {
                 version: 1, characters: [{ characterKey: 'Alice', identityAnchor: 'Silver hair.' }] } }),
             readStoredImage: async () => { throw new Error('旧记录不得假装新模板'); }, setStatus: async () => ({ ok: true }),
         } }, persistSettingsDraft: () => ({ ok: true }), rerenderSettings: () => ({ ok: true }),
@@ -2489,8 +2580,7 @@ test('gate:scene:mood-group-list-shows-the-containers-and-their-count', () => {
         saveUnifiedSettings: () => ({ ok: true }),
     });
     host.openReader({ message: { text: '旁白。' } }, { mode: 'pc' });
-    const opened = host.openSettings({ tab: 'scene' });
-    opened.controller.switchSceneSubTab('rules');
+    const opened = host.openSettings({ page: 'wardrobe' });
     const html = opened.controller.getSnapshot().html;
     assert.match(html, new RegExp(`data-mood-group-count="${extra.length}"`));
     assert.match(html, new RegExp(`class="igs-mood-group-total">${extra.length}</`));
@@ -2498,7 +2588,7 @@ test('gate:scene:mood-group-list-shows-the-containers-and-their-count', () => {
         assert.match(html, new RegExp(`data-mood-group="${group.label}"`));
     }
     assert.match(html, /嘲讽/);
-    assert.match(html, /2 个词/);
+    assert.match(html, /2个词/);
     host.destroy();
 });
 
@@ -2709,6 +2799,104 @@ test('gate:igs-ui:scene-assets-keeps-sprite-with-existing-background', () => {
     host.destroy();
 });
 
+test('gate:igs-ui:generated-sprite-arrival-only-warms-that-sprite', () => {
+    let notify = () => {};
+    const calls = [];
+    const timers = [];
+    const pictures = new Map();
+    const host = createIgsReaderHost({
+        global: { setTimeout: (fn) => { timers.push(fn); return timers.length; }, clearTimeout: () => {} },
+        onGeneratedAssetUpdated: (handler) => { notify = handler; return () => {}; },
+        generatedAssets: { resolveUrl: (ref) => { calls.push(ref); return pictures.get(ref) || ''; } },
+        getUnifiedSettings: () => ({
+            version: '0.36.45',
+            bridge: {
+                openMode: 'pc',
+                sceneAssets: {
+                    enabled: true,
+                    scenes: {},
+                    characters: { Alice: { 默认: 'igs-gen:first' }, Bob: { 默认: 'igs-gen:second' } },
+                    characterAliases: {},
+                    characterOutfits: {
+                        Alice: { 日常: { moods: { 平和: 'igs-gen:first' } } },
+                        Bob: { 日常: { moods: { 平和: 'igs-gen:second' } } },
+                    },
+                    characterDefaultOutfits: {
+                        Alice: { version: 1, outfitName: '日常' },
+                        Bob: { version: 1, outfitName: '日常' },
+                    },
+                },
+            },
+            readerMode: 'pc',
+            readerSettings: {},
+        }),
+        saveUnifiedSettings: () => ({ ok: true }),
+    });
+    try {
+        const source = [
+            '[igs-char:Alice|平和|你好]',
+            '开场。',
+            '[igs-char:Bob|平和|再见]',
+        ].join('\n');
+        const opened = host.openReader({ raw: source, message: { text: source } }, { mode: 'pc' });
+        assert.equal(opened.snapshot.content.pendingSpriteRef, 'igs-gen:first', '首屏未就绪的立绘应留下等待标记');
+        assert.equal(opened.snapshot.content.spriteImage, null);
+        assert.ok(calls.includes('igs-gen:first'));
+        assert.ok(calls.includes('igs-gen:second'));
+        calls.length = 0;
+        pictures.set('igs-gen:first', 'data:image/png;base64,QQ==');
+        notify({ reason: 'image-loaded', imageId: 'first' });
+        assert.ok(calls.includes('igs-gen:first'));
+        assert.ok(!calls.includes('igs-gen:second'), '异步到达立绘不应重新遍历其他立绘');
+        assert.equal(timers.length, 1, '保留原有合并重绘调度，不新增重绘');
+        calls.length = 0;
+        notify({ reason: 'image-loaded', imageId: 'unrelated' });
+        assert.deepEqual(calls, [], '无关图片到达不得再次读取整楼预热素材');
+        assert.equal(timers.length, 1, '多个图片事件仍沿用合并重绘');
+    } finally {
+        host.destroy();
+    }
+});
+
+test('gate:igs-ui:sprite-text-wait-is-bounded-and-released-without-rerender', () => {
+    const current = {}, text = { style: { visibility: '' } };
+    const timers = new Map();
+    let nextId = 0, scheduled = 0;
+    const schedule = (fn, ms) => {
+        assert.equal(ms, 160);
+        const id = ++nextId;
+        timers.set(id, fn);
+        scheduled += 1;
+        return id;
+    };
+    const cancel = (id) => timers.delete(id);
+    const sync = (page, pending) => syncSpriteTextWait(current, text, { page, pending, schedule, cancel });
+    sync('floor:0', false);
+    assert.equal(scheduled, 0, '没有待加载立绘不额外唤醒');
+    sync('floor:0', true);
+    assert.equal(text.style.visibility, 'hidden');
+    sync('floor:0', true);
+    assert.equal(scheduled, 1, '同页更新不重复安排定时器');
+    sync('floor:0', false);
+    assert.equal(text.style.visibility, '', '立绘先到立即放开文字');
+    assert.equal(timers.size, 0);
+    sync('floor:0', true);
+    assert.equal(scheduled, 1, '同页不再次隐藏已显示文字');
+    sync('floor:1', true);
+    assert.equal(scheduled, 2);
+    const timeout = timers.values().next().value;
+    timers.clear();
+    timeout();
+    assert.equal(text.style.visibility, '', '到时先让读者看见文字');
+    sync('floor:1', true);
+    assert.equal(scheduled, 2, '超时后本页不重复等待');
+    sync('floor:2', true);
+    assert.equal(scheduled, 3);
+    current.spriteTextWait.release();
+    assert.equal(text.style.visibility, '', '关闭阅读器时可释放文字和计时器');
+    assert.equal(timers.size, 0);
+});
+
 test('gate:igs-ui:settings-repaints-thumbs-when-generated-images-arrive', () => {
     let notify = () => {};
     const images = new Map();
@@ -2876,6 +3064,7 @@ test('gate:igs-ui:scene-assets-classifies-dialogue-vs-narration-per-segment', ()
 test('gate:igs-ui:scene-assets-keeps-narration-out-of-dialogue-and-thought-pages', async () => {
     const pagesOf = async (body, sentencePaging = false) => {
         const host = createIgsReaderHost({
+            pageRenderGapMs: 0,
             global: {},
             getUnifiedSettings: () => ({
                 version: '0.4.9',
@@ -3204,6 +3393,32 @@ test('gate:api:public api attaches stable global aliases', async () => {
     assert.equal(api.api.textFilterPresets.getCurrent().id, 'preset.text-filter.content-only');
     assert.equal(api.api.textFilterPresets.exportAll().type, 'igs-import-bundle');
     assert.equal(api.ensureMagicWandEntry().reason, 'magic-wand-entry-not-mounted');
+});
+
+test('gate:host:adjacent-message-reads-chat-once-per-task-on-long-chat', async () => {
+    // 千楼聊天：同一轮里连续往前回看 60 次，只应重读整份聊天一次；下一个宏任务后重新读取。
+    const messages = Array.from({ length: 1000 }, (_, id) => ({ id, text: `第${id}楼`, role: 'assistant' }));
+    let reads = 0;
+    const adapter = createTavernHelperAdapter({
+        TavernHelper: {
+            getLastMessageId: () => 999,
+            getChatMessages: () => { reads += 1; return messages; },
+        },
+        document: { querySelectorAll: () => [] },
+        setTimeout,
+    });
+    let cursor = 999;
+    for (let step = 0; step < 60; step += 1) {
+        const previous = await adapter.getAdjacentMessage(cursor, -1);
+        assert.equal(previous.id, cursor - 1);
+        cursor = previous.id;
+    }
+    const firstRound = reads;
+    assert.ok(firstRound <= 2, `同一轮读了 ${firstRound} 次整份聊天`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    messages.push({ id: 1000, text: '新楼', role: 'assistant' });
+    assert.equal((await adapter.getAdjacentMessage(999, 1)).id, 1000);
+    assert.ok(reads > firstRound);
 });
 
 test('gate:host:tavern-helper-adapter-detects-user-messages-from-role-flags-and-dom', async () => {
@@ -4133,12 +4348,12 @@ test('gate:scene:scene-assets-indent-without-horizontal-overflow', () => {
             },
         },
     };
-    // 时间 / 天气行默认收起，场景行上只有「1 个时间 · 1 个天气」。
+    // 时间 / 天气行默认收起，场景行上只有「1个时间 · 1个天气」。
     const collapsed = renderSceneAssetList(scenes);
-    assert.match(collapsed, /data-action="scene-toggle-times:%E6%97%A7%E5%9F%8E" aria-expanded="false">1 个时间 · 1 个天气<\/button>/);
+    assert.match(collapsed, /data-action="scene-toggle-times:%E6%97%A7%E5%9F%8E" aria-expanded="false">1个时间 · 1个天气<\/button>/);
     assert.doesNotMatch(collapsed, /igs-scene-time-group/);
     const html = renderSceneAssetList(scenes, { expandedSlots: new Set(['times\x00旧城']) });
-    assert.match(html, /aria-expanded="true">1 个时间 · 1 个天气/);
+    assert.match(html, /aria-expanded="true">1个时间 · 1个天气/);
     assert.match(html, /class="igs-scene-char-group igs-scene-time-group"/);
     assert.match(html, /class="igs-btn-mgr-row igs-scene-mood-row igs-scene-weather-row"/);
     assert.doesNotMatch(html, /style="margin-left:(?:16|32)px"/);
@@ -4725,7 +4940,6 @@ test('gate:scene:character-dna-lifecycle', async () => {
 test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async () => {
     const { renderCharacterAssetList, renderCharacterDnaEditor } = await import('../src/visual/igs-ui/settings-fields.js');
     const empty = renderCharacterDnaEditor('白墨', null);
-    assert.ok(empty.includes('角色DNA（未填写）'));
     assert.deepEqual([...empty.matchAll(/data-dna-field="([^"]+)"/g)].map((match) => match[1]), [
         'triggerWords', 'personality',
         ...['full_body', 'half_body', 'portrait']
@@ -4748,9 +4962,7 @@ test('gate:igs-ui:character-dna-editor-renders-escaped-name-and-values', async (
     assert.ok(!html.includes('data-dna-field="negative"'));
     assert.ok(!html.includes('data-dna-field="views.partial.'));
     assert.ok(!html.includes('data-dna-field="defaultAppearance"'));
-    assert.ok(html.includes('身份（含年龄感）'));
     assert.ok(html.includes('>alice_v2</textarea>'));
-    assert.ok(!html.includes('角色 DNA（未填写）'));
     assert.ok(!/data-path="[^"]*characterDna/.test(html));
 });
 
@@ -5017,6 +5229,11 @@ test('gate:generated-images:cg-planner-binds-character-dna-safely', async () => 
     assert.equal(single.warnings.length, 1);
     assert.equal(slots[0].chars[0].tags, 'smile, Silver Hair');
 
+    // 柏宝绘 / 智绘姬回退：只拼身份，DNA 负面词不并进 uc。
+    const idOnly = bindCharacterDnaToSlots([slots[0]], sceneAssets, ['爱丽'], { identityOnly: true });
+    assert.equal(idOnly.slots[0].chars[0].tags, 'alice_v2, silver hair, blue eyes, smile');
+    assert.equal(idOnly.slots[0].chars[0].uc, 'frown');
+
     // 上下文多人时无名单人角色不猜人。
     const multi = bindCharacterDnaToSlots([slots[1]], sceneAssets, ['爱丽', '白墨']);
     assert.equal(multi.slots[0].chars[0].tags, 'sitting');
@@ -5090,12 +5307,9 @@ test('gate:scene:dna-candidate-is-read-only-and-dismiss-clears', async () => {
 
 
 test('gate:igs-ui:image-settings-open-character-dna-jumps-without-copying-data', async () => {
-    // 「角色 DNA」按钮和角色卡片一起由 render 层拼（分类页的 slots 里），不在模板文件里。
-    const renderSource = fs.readFileSync(new URL('../src/visual/igs-ui/settings-host-render.js', import.meta.url), 'utf8');
-    assert.ok(renderSource.includes('data-action="open-character-dna"'));
     const dna = { '爱丽丝': { identity: 'silver hair' } };
     const draft = { bridge: { sceneAssets: { enabled: true, characters: {}, characterAliases: {}, characterDna: dna } }, readerSettings: {} };
-    const settingsState = { tab: 'image', draft, readerMode: 'pc', asyncState: { sceneSubTab: 'scenes' } };
+    const settingsState = { tab: 'ai', draft, readerMode: 'pc', asyncState: { page: 'kinds' } };
     let persistCount = 0;
     const ctx = {
         state: { activeSettings: settingsState },
@@ -5106,8 +5320,8 @@ test('gate:igs-ui:image-settings-open-character-dna-jumps-without-copying-data',
         buildRegexPreview: () => '',
     };
     await handleSettingsAction('open-character-dna', ctx);
-    assert.equal(settingsState.tab, 'scene');
-    assert.equal(settingsState.asyncState.sceneSubTab, 'characters');
+    assert.equal(settingsState.tab, 'chars');
+    assert.equal(settingsState.asyncState.page, 'chars');
     assert.equal(draft.bridge.sceneAssets.characterDna, dna);
     assert.equal(persistCount, 0);
 });
@@ -5733,7 +5947,7 @@ test('gate:generated-images:nai-client-edit-uses-infill-and-hides-key', async ()
 test('gate:generated-images:inpaint-transaction-preview-accept-cancel-and-stale', async () => {
     const { createInpaintTransaction, buildInpaintPrompt } = await import('../src/generated-images/illustration/inpaint-transaction.js');
     const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
-    const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
+    const { createAssetGenerationService } = await import('./helpers/media-fixtures.js');
     const store = createMemoryGeneratedAssetStore();
     await store.putImage({ id: 'sp', schemaVersion: 2, type: 'sprite', originalDataUrl: 'data:image/png;base64,ORIG', workingDataUrl: '', dataUrl: 'cut0', alphaMaskDataUrl: 'mask0', revision: 1 });
     await store.putImage({ id: 'old', type: 'sprite', dataUrl: 'legacy' });

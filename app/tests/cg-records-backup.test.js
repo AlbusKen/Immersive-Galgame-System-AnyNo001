@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { withTavernIllustrationFiles, CG_RECORDS_FILE } from '../src/media/tavern-image-files.js';
+import { withTavernIllustrationFiles, CG_RECORDS_FILE } from '../src/media/tavern-illustrations.js';
 import { createMemoryIllustrationStore } from '../src/media/illustration-store.js';
+import { mediaFileGcFor } from '../src/media/media-file-gc.js';
 
 // 假酒馆：user/files 下的 JSON 与 user/images/igs-cg 的文件名列表，记录上传。
 function fakeTavern({ backup = null, names = [] } = {}) {
@@ -112,14 +113,15 @@ test('gate:cg-accept:files-baseline-backup-and-restored-metadata', async () => {
     assert.equal(saved.consistencyBaselineDataUrl, before.dataUrl);
     assert.deepEqual(saved.consistencyBaselineMeta.characterMeta, before.characterMeta);
     assert.equal(f.deleted.includes(before.dataUrl), false);
-    await wait(30);
+    await wrapped.flush();
     const restored = createMemoryIllustrationStore();
-    await withTavernIllustrationFiles(restored, f.globalObject).listSlotKeys();
+    await withTavernIllustrationFiles(restored, { ...f.globalObject }).listSlotKeys();
     const copy = await restored.getSlotRecord(before.key);
     assert.deepEqual(copy.characterMeta, before.characterMeta);
     assert.deepEqual(copy.consistencyBaselineMeta, saved.consistencyBaselineMeta);
     assert.equal(copy.consistencyBaselineDataUrl, before.dataUrl);
     await wrapped.deleteSlot('chat|5|0', 7);
+    await mediaFileGcFor(f.globalObject).drain();
     assert.ok(f.deleted.includes(before.dataUrl));
     assert.ok(f.deleted.includes(saved.dataUrl));
 });
@@ -145,10 +147,17 @@ test('gate:cg-accept:conflict-storage-failure-and-concurrent-accept-only-drop-ne
             assert.equal(results.find((r) => !r.ok).reason, 'stale-revision');
         }
         assert.equal(f.deleted.includes(before.dataUrl), false, mode);
-        assert.equal(f.uploaded.length, 1);
+        assert.equal(new Set(f.uploaded).size, 1, '相同内容使用同一文件路径');
+        await mediaFileGcFor(f.globalObject).drain();
         if (mode !== 'concurrent') {
+            assert.equal(f.uploaded.length, 1);
             assert.deepEqual(await raw.getSlotRecord(before.key), before);
             assert.deepEqual(f.deleted, f.uploaded);
+        } else {
+            const saved = await raw.getSlotRecord(before.key);
+            assert.equal(saved.dataUrl, f.uploaded[0]);
+            assert.equal(f.deleted.includes(saved.dataUrl), false, '拒收的并发写入不得回收已采用文件');
+            assert.equal(f.files.has(saved.dataUrl), true);
         }
     }
 });
@@ -340,6 +349,7 @@ for (const phase of ['upload', 'preflight', 'transaction', 'accepted']) test(`ga
     else assert.equal((await save()).ok, phase === 'accepted');
     assert.equal(checks, 1);
     assert.equal(commits, ['upload', 'preflight'].includes(phase) ? 0 : 1);
+    await mediaFileGcFor(f.globalObject).drain();
     assert.equal(f.deleted.includes(before.dataUrl), false);
     const saved = await createIndexedDbIllustrationStore({ indexedDB }).getSlotRecord(before.key);
     if (phase === 'accepted') {
@@ -353,21 +363,27 @@ for (const phase of ['upload', 'preflight', 'transaction', 'accepted']) test(`ga
 
 
 for (const fault of ['network', 'schema', 'record', 'pending']) test(`gate:cg-backup:引用未读全拒绝清理-${fault}`, async () => {
-    const f = fakeTavern({ backup: fault === 'schema' ? { slots: {} }
+    const f = fakeTavern({ backup: fault === 'schema' ? { slots: [] }
         : { version: 1, slots: { 'chat|1|0|1': null } } });
+    const fetch = f.globalObject.fetch;
     let finish;
     if (fault === 'network') f.globalObject.fetch = async () => { throw new Error('fixture-network'); };
     if (fault === 'pending') f.globalObject.fetch = () => new Promise(resolve => { finish = resolve; });
     const raw = createMemoryIllustrationStore();
     const wrapped = withTavernIllustrationFiles(raw, f.globalObject);
-    await assert.rejects(wrapped.listSlotKeys({ requireComplete: true }), /image-reference-unavailable/);
+    if (fault === 'pending') {
+        let settled = false;
+        const reading = wrapped.listSlotKeys({ requireComplete: true }).finally(() => { settled = true; });
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(settled, false, '在途恢复不能被当作完整空库');
+        finish({ ok: false, status: 404 });
+        assert.deepEqual(await reading, []);
+    } else await assert.rejects(wrapped.listSlotKeys({ requireComplete: true }), /image-reference-unavailable/);
     assert.deepEqual(await raw.listSlotKeys(), []);
     assert.deepEqual(f.state.uploads, []);
-    if (finish) {
-        finish({ ok: false, status: 404 });
-        await wait(20);
-        assert.deepEqual(await wrapped.listSlotKeys({ requireComplete: true }), []);
-    }
+    f.state.backup = { slots: {} };
+    f.globalObject.fetch = fetch;
+    assert.deepEqual(await wrapped.listSlotKeys({ requireComplete: true }), [], '合法空旧备份可完整恢复');
 });
 
 test('gate:cg-consistency:衣装来源严格拒收并剔除私有租约', async () => {

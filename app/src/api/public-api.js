@@ -41,6 +41,7 @@ export function createPublicApi(app) {
         name: 'Immersive Galgame System',
         version: app.version,
         api: groupedApi,
+        media: app.media,
 
         refresh: app.refresh,
         renderScene(textScene) {
@@ -60,6 +61,7 @@ export function createPublicApi(app) {
                 : { attached: false, reason: 'magic-wand-entry-not-mounted' };
         },
         destroy: app.destroy,
+        shutdown: app.shutdown,
         ...igsCompatApi,
     };
 }

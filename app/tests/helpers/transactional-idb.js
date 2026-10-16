@@ -30,9 +30,8 @@ export function createTransactionalIdb() {
                         record.pending[0]?.();
                     });
                 }
-                function request(op, fn) {
+                function request(op, fn, req = {}) {
                     if (ended) throw new Error('TransactionInactiveError');
-                    const req = {};
                     queue.push(() => {
                         const fault = op === 'put' ? faults.shift() : undefined;
                         if (fault) { req.error = fault; req.onerror?.(); finish(fault); return; }
@@ -46,7 +45,25 @@ export function createTransactionalIdb() {
                     put: (value) => { const copy = clone(value); return request('put', () => { data.set(copy[source.keyPath], copy); return copy[source.keyPath]; }); },
                     delete: (key) => request('delete', () => data.delete(key)),
                     getAllKeys: () => request('keys', () => [...data.keys()]),
-                    index: (index) => ({ getAll: (key) => request('index', () => [...data.values()].filter((v) => v[source.indexes.get(index)] === key).map(clone)) }),
+                    index: (index) => ({
+                        getAll: (key) => request('index', () => [...data.values()].filter((v) => v[source.indexes.get(index)] === key).map(clone)),
+                        openCursor(key, direction = 'next') {
+                            let rows, position = 0;
+                            const req = {};
+                            const next = () => {
+                                const field = source.indexes.get(index);
+                                if (!rows) {
+                                    rows = [...data].filter(([, value]) => value[field] === key)
+                                        .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+                                    if (direction === 'prev') rows.reverse();
+                                }
+                                const entry = rows[position++];
+                                return entry ? { key: entry[1][field], primaryKey: entry[0], value: clone(entry[1]),
+                                    continue() { request('cursor', next, req); } } : null;
+                            };
+                            return request('cursor', next, req);
+                        },
+                    }),
                 });
 
                 function pump() {

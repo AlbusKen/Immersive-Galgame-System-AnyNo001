@@ -88,10 +88,13 @@ export function normalizeAutoIllustrationSettings(value) {
         interludeProbability: clampInt(src.interludeProbability, 0, 100, 30),
         interludeMaxCount: clampInt(src.interludeMaxCount, 1, 16, 1),
         backfillOldFloors: bool(src.backfillOldFloors),
+        retry: { enabled: !(src.retry && src.retry.enabled === false), times: clampInt(src.retry && src.retry.times, 0, 5, 2) },
         assets: {
             spriteEnabled: bool(assets.spriteEnabled),
             backgroundEnabled: bool(assets.backgroundEnabled),
             strictMatch: bool(assets.strictMatch),
+            // 默认开：非白天先画白天底图，再复用底图种子换时间词出差分。
+            dayFirst: !(assets.dayFirst === false || assets.dayFirst === 'false' || assets.dayFirst === 0 || assets.dayFirst === '0'),
             maxPerFloor: clampInt(assets.maxPerFloor, 1, 16, 2),
             spriteSize: str(assets.spriteSize, '832x1216') || '832x1216',
             backgroundSize: str(assets.backgroundSize, '1216x832') || '1216x832',

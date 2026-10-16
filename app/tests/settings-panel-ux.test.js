@@ -245,6 +245,7 @@ test('gate:expression-set:fills-groups-that-have-no-image', async () => {
     };
     const asks = [];
     const seen = [];
+    const persistedChanges = [];
     const draft = {
         bridge: {
             sceneAssets: {
@@ -270,7 +271,7 @@ test('gate:expression-set:fills-groups-that-have-no-image', async () => {
                 },
             },
         },
-        persistSettingsDraft: () => ({ ok: true }),
+        persistSettingsDraft: (options = {}) => { persistedChanges.push(options.spriteAssetChanged === true); return { ok: true }; },
         rerenderSettings: () => ({ ok: true }),
         dialogs: { confirm: async (message) => { asks.push(message); return true; } },
     };
@@ -278,22 +279,25 @@ test('gate:expression-set:fills-groups-that-have-no-image', async () => {
     const missingTier8 = moodTierLabels(8).filter((mood) => mood !== '喜悦' && mood !== '愤怒');
     const character = await handleSettingsAction('char-expression-set:%E5%86%AC%E6%9C%88', ctx);
     assert.equal(character.ok, true);
-    assert.match(asks[0], new RegExp(`这一档还有 ${missingTier8.length} 张尚未生成：${missingTier8.join('、')}`));
-    assert.match(asks[0], /已有的 2 张保持不变/);
+    assert.match(asks[0], new RegExp(`这一档还有${missingTier8.length}张尚未生成：${missingTier8.join('、')}`));
+    assert.match(asks[0], /已有的2张保持不变/);
     assert.deepEqual(seen[0], missingTier8);
     assert.equal(draft.bridge.sceneAssets.characters['冬月']['喜悦'], 'igs-gen:old-joy');
     assert.equal(draft.bridge.sceneAssets.characters['冬月']['愤怒'], 'https://kept.example/a.png');
     assert.equal(draft.bridge.sceneAssets.characters['冬月']['悲伤'], 'igs-gen:new-悲伤');
     assert.equal(draft.bridge.sceneAssets.characters['冬月']['默认'], 'igs-gen:def');
+    assert.deepEqual(persistedChanges, [true], '画好差分才失效舞台立绘清单');
     const again = await handleSettingsAction('char-expression-set:%E5%86%AC%E6%9C%88', ctx);
     assert.equal(again.ok, true);
     assert.equal(seen.length, 1);
+    assert.deepEqual(persistedChanges, [true], '没有待画差分不重复保存或刷新');
     const outfit = await handleSettingsAction('outfit-expression-set:%E5%86%AC%E6%9C%88:%E6%97%A5%E5%B8%B8', ctx);
     assert.equal(outfit.ok, true);
     const missingOutfit = moodTierLabels(8).filter((mood) => mood !== '喜悦');
-    assert.match(asks[1], new RegExp(`这一档还有 ${missingOutfit.length} 张尚未生成：${missingOutfit.join('、')}`));
+    assert.match(asks[1], new RegExp(`这一档还有${missingOutfit.length}张尚未生成：${missingOutfit.join('、')}`));
     assert.equal(draft.bridge.sceneAssets.characterOutfits['冬月']['日常'].moods['喜悦'], 'igs-gen:old-outfit');
     assert.equal(draft.bridge.sceneAssets.characterOutfits['冬月']['日常'].moods['愤怒'], 'igs-gen:new-愤怒');
+    assert.deepEqual(persistedChanges, [true, true], '服装差分同样失效当前立绘清单');
 });
 
 // 新衣服（睡衣这类）还没有自己的图：档位里多一项「1 张」，只画这套的「平和」，所有表情共用；整套差分之后照它画；不改角色记住的档位。
@@ -341,7 +345,7 @@ test('gate:expression-set:new-outfit-can-paint-one-default-first', async () => {
     assert.deepEqual(choose[0].values, ['1', '8', '12', '16', '20', 'pick']);
     assert.equal(choose[0].current, '1', '新衣服默认选「1 张」');
     assert.deepEqual(seen[0], ['平和']);
-    assert.match(asks[0], /给「冬月」的服装「泳装」画 1 张「平和」/);
+    assert.match(asks[0], /给「冬月」的服装「泳装」画1张「平和」/);
     const outfit = draft.bridge.sceneAssets.characterOutfits['冬月']['泳装'];
     assert.equal(outfit.moods['平和'], 'igs-gen:new-平和');
     assert.deepEqual(Object.keys(outfit.moods), ['平和']);
@@ -403,7 +407,7 @@ test('gate:expression-set:repaints-failed-slots-without-rewriting-prompts', asyn
     };
     const allReady = await handleSettingsAction('char-expression-set:%E5%86%AC%E6%9C%88', ctx);
     assert.equal(allReady.ok, true);
-    assert.match(asks[0], /只补画这 8 张，不重写提示词/);
+    assert.match(asks[0], /只补画这8张，不重写提示词/);
     assert.deepEqual(written, []);
     assert.deepEqual(painted[0], moods);
     assert.equal(draft.bridge.sceneAssets.characters['冬月']['愤怒'], 'igs-gen:paint-愤怒');
@@ -1056,8 +1060,8 @@ test('gate:expression-set:custom-groups-only-when-asked', async () => {
         return { asks, seen };
     };
     const skipped = await run(false);
-    assert.match(skipped.asks[0], /另有 2 个自建情绪组尚无图片：旧组乙、旧组丙/);
-    assert.match(skipped.asks[1], /生成「冬月」的 20 张表情差分/);
+    assert.match(skipped.asks[0], /另有2个自建情绪组尚无图片：旧组乙、旧组丙/);
+    assert.match(skipped.asks[1], /生成「冬月」的20张表情差分/);
     assert.equal(skipped.seen[0].length, 20);
     const taken = await run(true);
     assert.equal(taken.seen[0].length, 22);
@@ -1107,7 +1111,7 @@ test('gate:status-avatar:generates-a-chibi-avatar-without-inferring-a-default-ou
     };
     const made = await handleSettingsAction('status-avatar-generate:%E5%86%AC%E6%9C%88', ctx);
     assert.equal(made.ok, true);
-    assert.match(asks[0], /生成「冬月」的 Q 版头像/);
+    assert.match(asks[0], /生成「冬月」的Q版头像/);
     assert.equal(seen[0].dna.identity, 'black hair');
     assert.equal(draft.bridge.sceneAssets.statusAvatars['冬月'], 'data:image/png;base64,QUJD');
     await handleSettingsAction('status-avatar-generate:%E5%86%AC%E6%9C%88', ctx);
@@ -1711,7 +1715,7 @@ test('gate:artist-library-ui:入口导入应用保存刷新回读走真实存储
         assert.match(c.getSnapshot().html, /data-artist-library-panel/);
         assert.doesNotMatch(c.getSnapshot().html, /data-image-prompt-panel/);
         assert.equal(c.goToSetting('image-prompt-presets').ok, true);
-        assert.equal(c.getSnapshot().imageSubTab, 'llm');
+        assert.equal(c.getSnapshot().page, 'llm');
         assert.match(c.getSnapshot().html, /data-image-prompt-panel/);
         c.goToSetting('artist-library');
         c.setValue('bridge.autoIllustration.nai.artistPrefix', 'old-artist');
@@ -1816,7 +1820,7 @@ test('gate:artist-library-ui:库内增改删与分类选用保存重开', async 
         assert.match(c.getSnapshot().html, /data-action="artist-library:target:sprite"/);
         assert.doesNotMatch(c.getSnapshot().html, /data-path="bridge\.autoIllustration\.nai\.artistByKind\.kinds\./);
         await c.invoke('artist-library:target:sprite');
-        assert.equal(c.getSnapshot().imageSubTab, 'source');
+        assert.equal(c.getSnapshot().page, 'source');
         assert.match(c.getSnapshot().html, /value="sprite" selected/);
         assert.doesNotMatch(c.getSnapshot().html, /data-path="bridge\.autoIllustration\.nai\.(?:negativePrompt|artistPrefix|artistNegativePrefix)"/);
         assert.equal((await c.invoke('artist-library:apply')).ok, true);
@@ -1947,4 +1951,30 @@ test('gate:image-prompt-ui:分格式规则保存回读与非法草稿隔离', as
     assert.equal(recovered.restore('modules', 'igs-task-cg').ok, true);
     assert.deepEqual(recovered.state.preset.data.modules.find(m => m.task === 'cg').contentByFormat,
         recovered.state.preset.data.defaultState.baseline.modules.find(m => m.task === 'cg').contentByFormat);
+});
+
+test('gate:settings-dialog:character-dropdown-confirms-and-keeps-selection', async () => {
+    const panel = makePanel();
+    const dialogs = createSettingsDialogs({ getContainer: () => panel.container });
+    const choices = [{ value: '冬月', label: '冬月' }, { value: '雪乃', label: '雪乃' }];
+    const answer = dialogs.choose('选择生成立绘的角色', choices, '冬月', { dropdown: true, cancelLabel: '暂不生成' });
+    let bar = panel.overlay.querySelector('.igs-settings-dialog');
+    let select = bar.querySelector('select');
+    assert.ok(select);
+    assert.ok(!bar.querySelector('.igs-settings-dialog-choice'));
+    assert.equal(select.children[0].selected, true);
+    assert.ok(panel.doc.activeElement === select);
+    select.value = '雪乃';
+    select.dispatch('change');
+    assert.equal(dialogs.isOpen(), true, '切换角色后仍需确认');
+    rebuildPanel(panel, () => {});
+    dialogs.remount();
+    bar = panel.overlay.querySelector('.igs-settings-dialog');
+    select = bar.querySelector('select');
+    assert.equal(select.children[1].selected, true);
+    bar.querySelector('[data-settings-dialog="ok"]').dispatch('click');
+    assert.equal(await answer, '雪乃');
+    const cancelled = dialogs.choose('选择角色', choices, '冬月', { dropdown: true });
+    panel.overlay.querySelector('[data-settings-dialog="cancel"]').dispatch('click');
+    assert.equal(await cancelled, null);
 });

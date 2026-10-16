@@ -1,10 +1,12 @@
+import { createMediaRuntime } from '../media/media-runtime.js';
 import { createPublicApi, attachPublicApi, detachPublicApi } from '../api/public-api.js';
 import { createTavernHelperAdapter, getSillyTavernContext } from '../host/tavern-helper-adapter.js';
 import { sceneAssetsForContext, resolveAssetScope } from '../scene/asset-scope.js';
 import { captureOutfitScope, prepareCgOutfitCandidates } from '../scene/outfit-identity.js';
 import { loadStoryOutfitCandidates, saveStoryOutfitCandidates } from '../scene/outfit-review-store.js';
-import { withTavernGeneratedAssetFiles, withTavernIllustrationFiles } from '../media/tavern-image-files.js';
 import { readReferenceImageUrl } from '../media/reference-image-reader.js';
+import { withTavernGeneratedAssetFiles } from '../media/tavern-generated-assets.js';
+import { withTavernIllustrationFiles } from '../media/tavern-illustrations.js';
 import { localImageCacheFor } from '../media/tavern-image-cache.js';
 import { createPresetRegistry } from '../presets/preset-registry.js';
 import { createInputChannel } from '../host/input-channel.js';
@@ -33,6 +35,7 @@ import { mentionedFeedPlatforms } from '../scene/feed-platforms.js';
 import { resolveTextFxPromptRule } from '../visual/igs-ui/text-fx.js';
 import { resolveBilingualPromptRule } from '../visual/igs-ui/bilingual-text.js';
 import { resolveDailyFxPromptRule } from '../visual/igs-ui/fx-daily-prompt.js';
+import { normalizeFxPromptsSettings } from '../visual/igs-ui/fx-settings.js';
 import { beginMetaDigestSend, clearMetaDigest, finishMetaDigestSend, onMetaDigestChange, resolveMetaDigestRule } from '../visual/igs-ui/meta-digest.js';
 import { resolveLiveDigestRule } from '../visual/igs-ui/danmaku-interact.js';
 import { applyFxWorldview, resolveCarryPhonePrompt, resolveWorldviewPromptRule } from '../scene/fx-era.js';
@@ -65,11 +68,11 @@ import { createCanvasImageCodec } from '../media/canvas-image-codec.js';
 import { isGeneratedAssetUrl, generatedAssetIdOf } from '../scene/asset-match.js';
 import { createAlphaMatte } from '../media/alpha-matte.js';
 import { firstMoodWord, resolvePromptRuleContent, scenePromptRuleEnabled } from '../scene/prompt-rule-content.js';
-import { buildTagGrammar, DEPTH0_REMINDER, normalizePromptPlacement } from '../visual/igs-ui/tag-grammar.js';
+import { buildTagGrammar, DEPTH0_REMINDER, GRAMMAR_HEADER, normalizePromptPlacement } from '../visual/igs-ui/tag-grammar.js';
 import { resolvePromptTriggers, setLastPromptReport } from '../scene/prompt-triggers.js';
 import { collectPromptContext } from '../host/prompt-context.js';
 
-const IGS_VERSION = '0.36.8';
+const IGS_VERSION = '0.36.87';
 const SCENE_ASSETS_INJECTION_INITIAL_DELAY_MS = 3000;
 const SCENE_ASSETS_INJECTION_RETRY_MS = 1500;
 const SCENE_ASSETS_INJECTION_MAX_ATTEMPTS = 5;
@@ -99,6 +102,8 @@ export function bootstrapIGS(options = {}) {
         return sceneAssetsForContext(sceneAssets, getSillyTavernContext(globalObject));
     }
     const events = options.events || createEventBus();
+    const mediaCache = localImageCacheFor(globalObject);
+    let destroying = null;
     // getUnifiedSettingsSnapshot 的复用缓存（见该函数）；启动途中就会被调用，所以放在最前面声明。
     let unifiedCache = null;
     const hostAdapter = options.hostAdapter || createTavernHelperAdapter(globalObject);
@@ -117,6 +122,7 @@ export function bootstrapIGS(options = {}) {
         } };
     };
     const readerImageService = options.readerImageService || createReaderImageService({
+        mediaCache,
         global: globalObject,
         hostAdapter,
         imageGenerator: options.imageGenerator || ((request, opts) =>
@@ -155,6 +161,7 @@ export function bootstrapIGS(options = {}) {
         global: globalObject,
         llm: secondaryLlm,
         taskRuntime: imageTaskRuntime,
+        onRetry: (event) => { const notice = app.igsUi && app.igsUi.showImageNotice; if (typeof notice === 'function') notice.call(app.igsUi, 'info', event.text); },
         report: (level, message) => {
             if (imageJobLog && typeof imageJobLog.add === 'function') imageJobLog.add(level, message);
         },
@@ -171,6 +178,7 @@ export function bootstrapIGS(options = {}) {
         llm: secondaryLlm,
         nai: imageBackend,
         store: illustrationStore,
+        mediaCache,
         getSettings: () => readImageBridge().autoIllustration,
         getReaderMode: readerModeNow,
         getViewport: () => readCgViewport(globalObject, readerModeNow()),
@@ -222,6 +230,7 @@ export function bootstrapIGS(options = {}) {
     // 物品图与素材补全共用 igs-generated-assets 存储实例。
     const generatedAssetStore = options.generatedAssetStore || withTavernGeneratedAssetFiles(createIndexedDbGeneratedAssetStore(globalObject), globalObject);
     const assetGenerationService = options.assetGenerationService || createAssetGenerationService({
+        global: globalObject,
         messageHost: illustrationMessageHost,
         llm: secondaryLlm,
         nai: imageBackend,
@@ -230,6 +239,7 @@ export function bootstrapIGS(options = {}) {
             readSceneAssets: () => readImageBridge().sceneAssets || {},
             storage: storageLike, illustrationStore,
         }),
+        mediaCache,
         matte: options.alphaMatte || createAlphaMatte(globalObject),
         getSettings: () => {
             const bridge = readImageBridge();
@@ -243,7 +253,10 @@ export function bootstrapIGS(options = {}) {
         thumbStore: options.assetThumbStore !== undefined ? options.assetThumbStore : createIndexedDbAssetThumbStore(globalObject),
         makeThumb: createAssetThumbnailer(globalObject),
     });
+    generatedAssetStore.setReferenceResolver?.(() => readImageBridge().sceneAssets);
+    const media = createMediaRuntime(globalObject, { generatedAssetStore });
     const itemCg = createItemAndCgServices({
+        mediaCache: media.cache,
         globalObject,
         messageHost: illustrationMessageHost,
         llm: secondaryLlm,
@@ -273,6 +286,7 @@ export function bootstrapIGS(options = {}) {
     const app = {
         version: IGS_VERSION,
         global: globalObject,
+        media,
         events,
         illustrations: illustrationService,
         generatedAssets: assetGenerationService,
@@ -287,25 +301,32 @@ export function bootstrapIGS(options = {}) {
         generateImage,
         collectMessageImages,
         getState,
+        getConfig,
         getPresetRegistry,
         getLegacyIgsSettings,
         getUnifiedSettingsSnapshot,
         saveUnifiedSettings,
         destroy,
+        shutdown,
         igsUi: null,
         magicWandEntry: null,
         extensionPanel: null,
     };
+    const offMediaClear = media.cache.onClear(() => {
+        events.emit('igs:media-cache-cleared');
+    });
     let publicApi = null;
     let sceneAssetsInjectionTimer = null;
     app.igsUi = options.igsUi || createIgsReaderHost({
         global: globalObject,
+        media,
         version: app.version,
         presetRegistry,
         random: options.random,
         getIllustrationSource: (messageId) => illustrationMessageHost.readFloor(messageId),
         getIllustrationUrl: (query) => illustrationService.getIllustrationUrl(query),
         illustrations: illustrationService,
+        isIllustrationEnabled: () => { const cfg = readImageBridge().autoIllustration || {}; return Boolean(cfg.nsfwEnabled || cfg.interludeEnabled); },
         onIllustrationUpdated: (handler) => events.on(ILLUSTRATION_UPDATED_EVENT, handler),
         onIllustrationProgress: (handler) => events.on(ILLUSTRATION_PROGRESS_EVENT, handler),
         onImageActivity: (handler) => events.on(IMAGE_ACTIVITY_EVENT, handler),
@@ -314,6 +335,7 @@ export function bootstrapIGS(options = {}) {
         imageEditBackend: imageBackend,
         alphaMatte: options.alphaMatte || createAlphaMatte(globalObject),
         onGeneratedAssetUpdated: (handler) => events.on(GENERATED_ASSET_UPDATED_EVENT, handler),
+        onSettingsUpdated: (handler) => events.on('igs:legacy-settings-updated', handler),
         itemImages: itemCg.itemImages,
         cgGallery: itemCg.cgGallery,
         onItemImageUpdated: itemCg.onItemImageUpdated,
@@ -341,6 +363,8 @@ export function bootstrapIGS(options = {}) {
                 : { ok: false, reason: 'public-api-not-ready' };
         },
         getAdjacentMessage: hasAdjacentMessageCapability() ? resolveAdjacentMessage : null,
+        isUserFloor: (messageId) => Boolean(hostAdapter && typeof hostAdapter.isUserFloor === 'function'
+            && hostAdapter.isUserFloor(messageId)),
         jumpToMessage: jumpToMessage,
         listTurns: hasAdjacentMessageCapability() ? listReaderTurns : null,
         openViewerFromMessage(messageId, mode, openOptions = {}) {
@@ -395,6 +419,7 @@ export function bootstrapIGS(options = {}) {
     app.magicWandEntry = options.magicWandEntry || createMagicWandEntry({
         ...(options.magicWandEntryOptions || {}),
         global: globalObject,
+        media,
         version: app.version,
         label: '沉浸式Galgame系统',
         open: (mode) => publicApi.openLatestAvailable(mode),
@@ -438,8 +463,10 @@ export function bootstrapIGS(options = {}) {
     if (!options.storage && storageLike && options.tavernSettingsSync !== false) {
         state.settingsSync = createTavernSettingsSync(globalObject, {
             storage: storageLike,
+            onUploaded: () => { if (!state.destroyed) void media.referencesChanged().catch(() => {}); },
             onRestored: () => {
                 if (state.destroyed) return;
+                void media.referencesChanged().catch(() => {});
                 state.legacyIgs = readLegacyIgsSettings(storageLike);
                 state.config = mergeInitialConfig(options.config, state.legacyIgs);
                 state.settingsRevision = (state.settingsRevision || 0) + 1;
@@ -486,7 +513,7 @@ export function bootstrapIGS(options = {}) {
         return true;
     }
     function applyImageCacheLimit(bridge) {
-        const cache = localImageCacheFor(globalObject);
+        const cache = mediaCache;
         if (cache && typeof cache.setMaxCount === 'function') {
             void cache.setMaxCount(bridge && bridge.imageCache && bridge.imageCache.maxCount);
         }
@@ -569,6 +596,11 @@ export function bootstrapIGS(options = {}) {
             providers: getImageProviders(),
             unifiedSettings: context.unifiedSettings || getUnifiedSettingsSnapshot({ mode: context.mode }),
         });
+    }
+
+    // 只读引用（共享只读，不要原地改）：只要配置时用它，免得 getState() 深拷整份阅读器快照和预设库。
+    function getConfig() {
+        return state.config;
     }
 
     function getState() {
@@ -746,52 +778,57 @@ export function bootstrapIGS(options = {}) {
             entries,
         });
         // 记下每块展开与否、原因和字数，诊断与设置页拿来对着调关键词。
-        setLastPromptReport({ at: Date.now(), blocks: Object.fromEntries(Object.entries(triggers.report).filter(([key]) => key in grammar.sizes || triggers.report[key].reason === 'off').map(([key, item]) => [key, { ...item, chars: grammar.sizes[key] || 0 }])) });
+        setLastPromptReport({ at: Date.now(), blocks: Object.fromEntries(Object.entries(triggers.report).filter(([key]) => key in grammar.sizes || triggers.report[key].reason === 'off').map(([key, item]) => [key, { ...item, chars: grammar.sizes[key] || 0, ...(grammar.placements && grammar.placements[key] ? grammar.placements[key] : {}) }])) });
         if (!grammar.system) {
             promptInjector.clear();
             return { ok: true, reason: 'scene-assets-disabled' };
         }
         const depth0Content = [placement === 'system' ? DEPTH0_REMINDER : '', grammar.depth0].filter(Boolean).join('\n\n');
-        return promptInjector.inject(grammar.system, { placement, depth0Content });
+        return promptInjector.inject(grammar.system, { placement, depth0Content, segments: grammar.segments });
     }
 
     // 关闭按需注入时的旧行为：各块完整拼接；未自定义的场景规则用改版前的长版原文。
     function injectLegacyPromptRules(sceneAssets, readerSettings, { ancient, eraRule, placement, metaDigestRule, outfitContext }) {
         const rules = [];
+        // 场景规则自带 [igs标签语法] 头部（含通用机制）；没有它时，若后面有演出规则就补一次兜底，
+        // 因为各演出块已把通用机制抽到头部、自身不再复述。
+        let hasHeader = false;
         if (sceneAssets && sceneAssets.enabled && scenePromptRuleEnabled(sceneAssets) && sceneAssets.promptRule) {
             const promptRule = sceneAssets.promptRule === DEFAULT_SCENE_PROMPT_RULE
                 ? `${LEGACY_DEFAULT_SCENE_PROMPT_RULE_V3}\n{{previous_outfit_dna}}`
                 : sceneAssets.promptRule;
             rules.push(resolvePromptRuleContent({ ...sceneAssets, promptRule }, outfitContext));
+            hasHeader = true;
         }
-        const chatShow = readerSettings && readerSettings.chatShow;
+        const rs = readerSettings || {};
+        const fxStart = rules.length;
+        const chatShow = rs.chatShow;
         // 随身手机：聊天与来电等手机演出按现代写法。
-        const phoneAncient = ancient && !(readerSettings && readerSettings.feedFx && readerSettings.feedFx.carryPhone === true);
-        if (normalizeChatShowSettings(chatShow).enabled) rules.push(resolveChatShowPromptRule(chatShow, { ancient: phoneAncient }));
-        const fxRule = resolveFxPromptRule(readerSettings && readerSettings.fxTags, { ancient: phoneAncient });
-        if (fxRule) rules.push(fxRule);
-        const dlcFxRule = resolveDlcFxPromptRule(readerSettings && readerSettings.dlcFx);
-        if (dlcFxRule) rules.push(dlcFxRule);
-        const itemFxRule = resolveItemFxPromptRule(Boolean(readerSettings && readerSettings.itemFx && readerSettings.itemFx.enabled));
-        if (itemFxRule) rules.push(itemFxRule);
-        const textFxRule = resolveTextFxPromptRule(Boolean(readerSettings && readerSettings.textFx && readerSettings.textFx.enabled));
-        if (textFxRule) rules.push(textFxRule);
-        const bilingualRule = resolveBilingualPromptRule(readerSettings && readerSettings.bilingual);
-        if (bilingualRule) rules.push(bilingualRule);
-        const dailyFxRule = resolveDailyFxPromptRule(readerSettings && readerSettings.dailyFx);
-        if (dailyFxRule) rules.push(dailyFxRule);
-        const battleFxRule = resolveBattleFxPromptRule(Boolean(readerSettings && readerSettings.battleFx && readerSettings.battleFx.enabled));
-        if (battleFxRule) rules.push(battleFxRule);
-        const romanceFxRule = resolveRomanceFxPromptRule(readerSettings && readerSettings.romanceFx);
-        if (romanceFxRule) rules.push(romanceFxRule);
-        const bgmRule = resolveBgmPromptRule(readerSettings && readerSettings.bgm);
-        if (bgmRule) rules.push(bgmRule);
-        const stageCastFxRule = resolveStageCastFxPromptRule(readerSettings && readerSettings.stageCast);
-        if (stageCastFxRule) rules.push(stageCastFxRule);
-        const danmakuRule = resolveDanmakuPromptRule(readerSettings);
+        const phoneAncient = ancient && !(rs.feedFx && rs.feedFx.carryPhone === true);
+        // 演出提示词入口：inject 关掉就不发任何演出标签用法；某块覆盖文本非空时用用户自己写的（功能本身关着则不发）。
+        const fxPrompts = normalizeFxPromptsSettings(rs.fxPrompts);
+        const pushFx = (key, builtin) => {
+            if (!fxPrompts.inject || !builtin) return;
+            rules.push(fxPrompts[key].trim() || builtin);
+        };
+        if (normalizeChatShowSettings(chatShow).enabled) pushFx('chat', resolveChatShowPromptRule(chatShow, { ancient: phoneAncient }));
+        pushFx('fx', resolveFxPromptRule(rs.fxTags, { ancient: phoneAncient }));
+        pushFx('dlc', resolveDlcFxPromptRule(rs.dlcFx));
+        pushFx('item', resolveItemFxPromptRule(Boolean(rs.itemFx && rs.itemFx.enabled)));
+        pushFx('text', resolveTextFxPromptRule(Boolean(rs.textFx && rs.textFx.enabled)));
+        pushFx('bilingual', resolveBilingualPromptRule(rs.bilingual));
+        pushFx('daily', resolveDailyFxPromptRule(rs.dailyFx));
+        pushFx('battle', resolveBattleFxPromptRule(Boolean(rs.battleFx && rs.battleFx.enabled)));
+        pushFx('romance', resolveRomanceFxPromptRule(rs.romanceFx));
+        pushFx('bgm', resolveBgmPromptRule(rs.bgm));
+        pushFx('cast', resolveStageCastFxPromptRule(rs.stageCast));
+        const danmakuRule = resolveDanmakuPromptRule(readerSettings, fxPrompts.inject
+            ? { live: fxPrompts.live, audience: fxPrompts.audience }
+            : { live: false, audience: false });
         if (danmakuRule) rules.push(danmakuRule);
-        const feedRule = resolveFeedPromptRule(readerSettings);
-        if (feedRule) rules.push(feedRule);
+        pushFx('feed', resolveFeedPromptRule(readerSettings));
+        // 没有场景头部、但确实注入了演出规则时，在演出规则前补一次通用机制说明。
+        if (!hasHeader && rules.length > fxStart) rules.splice(fxStart, 0, GRAMMAR_HEADER);
         const split = placement === 'system';
         if (metaDigestRule && !split) rules.push(metaDigestRule);
         if (rules.length && eraRule) rules.push(eraRule);
@@ -933,31 +970,44 @@ export function bootstrapIGS(options = {}) {
         if (state.destroyed) return { ok: true, reason: 'already-destroyed' };
         state.destroyed = true;
         state.status = 'destroyed';
-        clearSceneAssetsInjectionTimer();
-        detachChatChangedReinjection();
-        if (state.settingsSync) state.settingsSync.stop();
-        if (state.notesFile) state.notesFile.flush();
-        if (typeof state.metaDigestCleanup === 'function') state.metaDigestCleanup();
+        let finish;
+        destroying = new Promise(resolve => { finish = resolve; });
+        const tasks = [];
+        const close = callback => {
+            try { tasks.push(Promise.resolve(callback())); }
+            catch (error) { tasks.push(Promise.reject(error)); }
+        };
+        close(clearSceneAssetsInjectionTimer);
+        close(detachChatChangedReinjection);
+        close(() => state.settingsSync?.stop());
+        close(() => state.notesFile?.flush());
+        close(() => state.metaDigestCleanup?.());
         state.metaDigestCleanup = null;
-        promptInjector.clear();
-        imageTaskRuntime.dispose();
-        illustrationService.stop();
-        assetGenerationService.stop();
-        itemCg.itemImages.stop();
-        itemCg.itemLedger.stop();
-        if (app.igsUi && typeof app.igsUi.destroy === 'function') {
-            app.igsUi.destroy();
-        }
-        if (app.magicWandEntry && typeof app.magicWandEntry.destroy === 'function') {
-            app.magicWandEntry.destroy();
-        }
-        if (app.extensionPanel && typeof app.extensionPanel.destroy === 'function') {
-            app.extensionPanel.destroy();
-        }
-        detachPublicApi(globalObject, publicApi);
-        events.emit('igs:destroy', publicApi);
-        events.clear();
+        close(() => promptInjector.clear());
+        close(() => imageTaskRuntime.dispose());
+        close(() => illustrationService.stop());
+        close(() => assetGenerationService.stop());
+        close(() => itemCg.itemImages.stop());
+        close(() => itemCg.itemLedger.stop());
+        close(offMediaClear);
+        close(() => readerImageService.destroy?.());
+        close(() => app.igsUi?.destroy?.());
+        close(() => app.magicWandEntry?.destroy?.());
+        close(() => app.extensionPanel?.destroy?.());
+        close(() => media.destroy());
+        close(() => detachPublicApi(globalObject, publicApi));
+        close(() => events.emit('igs:destroy', publicApi));
+        close(() => events.clear());
+        Promise.allSettled(tasks).then(results => {
+            const failed = results.find(result => result.status === 'rejected');
+            finish(failed ? { ok: false, reason: 'shutdown-failed', error: failed.reason?.message || String(failed.reason) } : { ok: true });
+        });
         return { ok: true };
+    }
+
+    function shutdown() {
+        if (!state.destroyed) destroy();
+        return destroying;
     }
 
     function ensureAlive() {

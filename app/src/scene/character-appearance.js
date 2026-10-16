@@ -66,15 +66,19 @@ export function pickOutfitSprite(entry, mood, assets = {}, availability, referen
     for (const [slot, url] of Object.entries(all)) {
         const state = imageState(url, availability);
         states[slot] = state;
-        if (state.status === 'available' || state.status === 'unverified') slots[slot] = url;
+        if (state.status === 'available' || state.status === 'unverified'
+            || (!reference && state.status === 'loading')) slots[slot] = url;
     }
     const verifiedSlots = Object.assign(Object.create(null), Object.fromEntries(Object.entries(slots)
         .filter(([slot]) => states[slot].status === 'available')));
-    const selectable = Object.keys(verifiedSlots).length ? verifiedSlots : slots;
+    // 阅读器等待当前表情，不因其他表情已缓存而换图；参考图仍优先使用已核验像素。
+    const selectable = reference && Object.keys(verifiedSlots).length ? verifiedSlots : slots;
     const match = lookupAssetValue(selectable, reference ? '平和' : mood,
         assets.moodGroups, !reference && assets.moodFuzzyMatch === true, false);
     const baseSlot = ['平和', '默认', '裸体'].find(slot => own(selectable, slot));
     const slot = match.url ? match.slot : baseSlot || Object.keys(selectable)[0];
+    if (slot && states[slot].status === 'loading')
+        return fail('outfit-image-pending', { pendingUrl: slots[slot] });
     if (slot) return { ok: true, url: slots[slot], slot,
         quality: match.url ? match.quality : 'group',
         verified: states[slot].status === 'available',
@@ -100,13 +104,15 @@ export function resolveCharacterAppearance({ characterKey: character, requestedO
         : fail(explicit ? 'outfit-unregistered' : 'default-requested');
     if (!picked.ok) {
         if (['outfit-image-read-error', 'outfit-image-decode-error', 'outfit-image-pending'].includes(picked.reason))
-            return fail(picked.reason, { characterKey, requestedOutfit: requested });
+            return fail(picked.reason, { characterKey, requestedOutfit: requested,
+                ...(picked.pendingUrl && { pendingUrl: picked.pendingUrl }) });
         fallbackReason = explicit ? picked.reason : '';
         const selected = readDefaultOutfit(sceneAssets, characterKey);
         if (!selected.ok) return { ...selected, requestedOutfit: requested, fallbackReason };
         effectiveOutfit = selected.outfitName;
         picked = pickOutfitSprite(selected.entry, mood, sceneAssets, imageAvailability);
-        if (!picked.ok) return fail(picked.reason, { characterKey, requestedOutfit: requested, effectiveOutfit, fallbackReason });
+        if (!picked.ok) return fail(picked.reason, { characterKey, requestedOutfit: requested, effectiveOutfit, fallbackReason,
+            ...(picked.pendingUrl && { pendingUrl: picked.pendingUrl }) });
     }
     const entry = outfits[effectiveOutfit];
     const outfitDescription = isBuiltinNudeOutfit(entry?.wardrobe)

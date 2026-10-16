@@ -8,6 +8,7 @@ import { createNaiOfficialClient } from '../../src/generated-images/nai-official
 import { createNaiRequestQueue } from '../../src/generated-images/nai-request-queue.js';
 import { characterWriteFixture, spriteDataReply } from './prompt-provenance.js';
 import { pngFixture } from './png-fixture.js';
+import { fixtureMedia } from './media-fixtures.js';
 
 // 实际预设、解析、客户端和队列；只隔离写词 transport 与图像网络端口。
 export function builtinImageHarness(options = {}) {
@@ -16,6 +17,7 @@ export function builtinImageHarness(options = {}) {
         assets: { spriteSize: '832x1216' } } };
     const registry = createPresetRegistry({ storage: createMemoryStorage() });
     const runtime = createBuiltinImageTaskRuntime({ readBridge: () => bridge, registry });
+    const mediaCache = fixtureMedia(options);
     const writes = [], wires = [], gates = [], events = [];
     let waitWriting = false, waitImages = false, active = 0, maxActive = 0;
     const pause = () => new Promise(resolve => gates.push(resolve));
@@ -53,11 +55,11 @@ export function builtinImageHarness(options = {}) {
 
     const global = { get NaiDbGen() { assert.fail('内置链路不得探测 DBG'); } };
     const backend = createImageBackend({ nai: client, global, llm, taskRuntime: runtime, getBridge: () => bridge });
-    return { bridge, registry, runtime, llm, backend, writes, wires, gates, events,
+    return { bridge, registry, runtime, mediaCache, llm, backend, writes, wires, gates, events,
         waitWriting(value = true) { waitWriting = value; }, waitImages(value = true) { waitImages = value; },
         release() { gates.splice(0).forEach(resolve => resolve()); },
         get active() { return active; }, get maxActive() { return maxActive; },
-        dispose() { gates.splice(0).forEach(resolve => resolve()); runtime.dispose(); } };
+        dispose() { gates.splice(0).forEach(resolve => resolve()); runtime.dispose(); void mediaCache.destroy(); } };
 }
 
 function templateReply(input, options) {

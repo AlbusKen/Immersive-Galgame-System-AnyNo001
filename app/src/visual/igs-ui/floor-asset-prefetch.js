@@ -31,13 +31,20 @@ export function collectFloorAssetUrls({
     inheritedScene = null,
     assetMatchCtx = null,
     imageSlots = [],
+    onSpriteUrl = null,
     systemRole = null,
     readClues = null,
+    prepared = null,
 } = {}) {
     const urls = [];
     const seen = new Set();
     for (const slot of Array.isArray(imageSlots) ? imageSlots : []) {
         pushUrl(urls, seen, slot && slot.url);
+    }
+    if (prepared) {
+        for (const url of prepared.assets?.urls || []) pushUrl(urls, seen, url);
+        for (const hit of prepared.eventCgs || []) pushUrl(urls, seen, hit?.url);
+        return urls;
     }
     if (!sceneAssets || !sceneAssets.enabled) return urls;
     const ctx = assetMatchCtx || { sceneAssets };
@@ -68,9 +75,15 @@ export function collectFloorAssetUrls({
         const name = String(directive.character || '').trim();
         if (!name || isNonSpriteSpeaker(name) || isSystemRole(name, systemRole)) continue;
         const outfit = outfitFor(name, Number(directive.offset));
-        pushUrl(urls, seen, resolveReaderSpriteAsset(name, directive.mood || '', ctx, outfit).url);
+        const spriteUrl = resolveReaderSpriteAsset(name, directive.mood || '', ctx, outfit).url;
+        if (spriteUrl && onSpriteUrl) onSpriteUrl(spriteUrl);
+        pushUrl(urls, seen, spriteUrl);
         const place = sceneBefore(directives, Number(directive.offset), inheritedScene);
-        if (place.nsfw) pushUrl(urls, seen, resolveNudeSpriteAsset(name, directive.mood || '', ctx).url);
+        if (place.nsfw) {
+            const nudeUrl = resolveNudeSpriteAsset(name, directive.mood || '', ctx).url;
+            if (nudeUrl && onSpriteUrl) onSpriteUrl(nudeUrl);
+            pushUrl(urls, seen, nudeUrl);
+        }
     }
     return urls;
 }

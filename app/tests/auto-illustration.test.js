@@ -1,6 +1,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fakeLlmHost } from './helpers/fake-llm-host.js';
 import {
     extractSceneDirectives,
     stripIllustrationMarkers,
@@ -8,11 +9,10 @@ import {
     resolveHeldSourceOffset,
     locateNarrativeOffset,
     resolveHeldSourceOffsets,
+    prepareIllustrationPages,
     resolveIllustrationForPage,
 } from '../src/scene/scene-directives.js';
 import { buildIgsTextPayload } from '../src/scene/message-source.js';
-import { bindCharacterDnaToCaption } from '../src/generated-images/illustration/auto-illustration-service.js';
-
 test('gate:illustration:marker-does-not-shift-scene-directives', () => {
     const plain = '[igs-scene:卧室|夜晚|晴]\n[igs-char:小雪|开心|你好]\n一\n二';
     const withMarker = plain.replace('一\n', '一\n[igs-img:1]\n');
@@ -215,7 +215,7 @@ test('gate:illustration:anchor-uses-the-same-match-as-dbgen', async () => {
     assert.equal(paragraphNoForAnchor(raw, numbered.paragraphs, '完全对不上的另一段话'), 0);
 });
 
-test('gate:illustration:anchors-in-one-paragraph-stay-on-their-own-sentences', async () => {
+test('gate:illustration:anchors-in-one-paragraph-keep-the-paragraph-intact-and-order-points', async () => {
     const { insertMarkersAtAnchors } = await import('../src/generated-images/illustration/marker-placer.js');
     const raw = '前文。黒いエナメルの長い耳が、彼女の頭上でピンと立っている。中文。親指の腹で、張り詰めた乳頭をそっと転がす。后文。';
     const result = insertMarkersAtAnchors(raw, [
@@ -226,23 +226,23 @@ test('gate:illustration:anchors-in-one-paragraph-stay-on-their-own-sentences', a
     const thumb = result.indexOf('転がす。');
     assert.ok(ear >= 0 && thumb > ear);
     assert.ok(result.indexOf('[igs-img:4]') > ear);
-    assert.ok(result.indexOf('[igs-img:4]') < thumb);
+    assert.ok(result.indexOf('[igs-img:4]') > result.indexOf('后文。'));
     assert.ok(result.indexOf('[igs-img:3]') > thumb);
-    assert.equal(result.includes('[igs-img:4]\n[igs-img:3]'), false);
+    assert.equal(result, `${raw}\n[igs-img:4]\n[igs-img:3]`);
 });
 
-test('gate:illustration:insert-marker-before-paragraph', async () => {
+test('gate:illustration:insert-marker-after-complete-paragraph', async () => {
     const { numberParagraphs, insertMarkers } = await import('../src/generated-images/illustration/marker-placer.js');
     const raw = '[igs-scene:A|夜|晴]\n一\n二\n三';
     const result = insertMarkers(raw, numberParagraphs(raw).paragraphs, [{ slot: 1, at: 2 }, { slot: 2, at: 3 }]);
-    assert.ok(result.includes('一\n[igs-img:1]\n二\n[igs-img:2]\n三'));
+    assert.ok(result.includes('一\n二\n[igs-img:1]\n三\n[igs-img:2]'));
 });
 
-test('gate:illustration:insert-marker-after-leading-scene-tag', async () => {
+test('gate:illustration:insert-marker-on-own-line-after-leading-scene-and-body', async () => {
     const { numberParagraphs, insertMarkers } = await import('../src/generated-images/illustration/marker-placer.js');
     const raw = '[igs-scene:A|夜|晴]正文';
     const result = insertMarkers(raw, numberParagraphs(raw).paragraphs, [{ slot: 1, at: 1 }]);
-    assert.equal(result, '[igs-scene:A|夜|晴][igs-img:1]正文');
+    assert.equal(result, '[igs-scene:A|夜|晴]正文\n[igs-img:1]');
     assert.equal(resolveIllustrationAtSourceOffset(result, result.indexOf('正文')).slot, 1);
 });
 
@@ -281,6 +281,90 @@ test('gate:illustration:planner-prompt-count-wording', async () => {
     assert.ok(buildPlannerUserPrompt({ want: 3, exact: false }).includes('1 到 3 张'));
 });
 
+test('gate:illustration:cg-planner-includes-today-outfit-as-reference', async () => {
+    const { summarizeFloorOutfits } = await import('../src/generated-images/illustration/floor-outfit-reference.js');
+    const { buildPlannerUserPrompt } = await import('../src/generated-images/illustration/planner-prompt.js');
+    const { bindCharacterDnaToSlots } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const sceneAssets = {
+        characters: { 爱丽丝: {} },
+        characterAliases: { 爱丽丝: ['爱丽'] },
+        characterOutfits: {
+            爱丽丝: {
+                校服: { words: [], moods: {}, wardrobe: '夏日校服' },
+                睡衣: { words: [], moods: {} },
+            },
+        },
+        wardrobe: {
+            夏日校服: { prompt: 'white shirt, blue pleated skirt' },
+            睡衣: { prompt: 'nightgown' },
+        },
+    };
+    const worn = summarizeFloorOutfits(['爱丽'], sceneAssets, {
+        floorText: '[igs-scene:教室|白天|晴]\n[igs-char:爱丽|微笑|校服|早啊]\n她走进教室。',
+        previousTexts: ['[igs-char:爱丽|平静|睡衣|昨晚]'],
+    });
+    assert.equal(worn.length, 1);
+    assert.equal(worn[0].name, '爱丽丝');
+    assert.equal(worn[0].segments.length, 1);
+    assert.equal(worn[0].segments[0].outfit, '校服');
+    assert.equal(worn[0].segments[0].prompt, 'white shirt, blue pleated skirt');
+
+    const prompt = buildPlannerUserPrompt({
+        numberedText: '1. 早啊', scenes: [], characters: ['爱丽'], want: 1, exact: false,
+        characterDna: [{ name: '爱丽丝', identity: 'silver hair', defaultAppearance: 'school uniform' }],
+        outfits: worn,
+    });
+    assert.ok(prompt.includes('【今天的穿着】'));
+    assert.ok(prompt.includes('不是必须画成这样'));
+    assert.ok(prompt.includes('今天穿着「校服」'));
+    assert.ok(prompt.includes('提示词：white shirt, blue pleated skirt'));
+    assert.ok(prompt.includes('写了【今天的穿着】的角色按那一套'));
+    assert.ok(prompt.includes('正文写了变化都按正文'));
+
+    const inherited = summarizeFloorOutfits(['爱丽'], sceneAssets, {
+        floorText: '[igs-char:爱丽|微笑|早啊]',
+        previousTexts: ['[igs-char:爱丽|平静|睡衣|昨晚]'],
+    });
+    assert.equal(inherited[0].segments[0].outfit, '睡衣');
+    assert.equal(inherited[0].segments[0].prompt, 'nightgown');
+
+    const changed = summarizeFloorOutfits(['爱丽'], sceneAssets, {
+        floorText: '[igs-char:爱丽|微笑|校服|早]\n她走着。\n[igs-char:爱丽|害羞|睡衣|换好了]',
+        previousTexts: [],
+    });
+    assert.deepEqual(changed[0].segments.map((segment) => segment.outfit), ['校服', '睡衣']);
+    assert.ok(changed[0].segments[1].from > 1);
+    const changedPrompt = buildPlannerUserPrompt({ numberedText: '1. 早', want: 1, exact: false, outfits: changed });
+    assert.ok(changedPrompt.includes('从第'));
+    assert.ok(changedPrompt.includes('换成「睡衣」'));
+    assert.ok(changedPrompt.includes('nightgown'));
+
+    const bound = bindCharacterDnaToSlots(
+        [{ slot: 1, chars: [{ name: '爱丽', tags: 'smile', uc: '' }] }],
+        { ...sceneAssets, characterDna: { 爱丽丝: { identity: 'silver hair', defaultAppearance: 'school uniform' } } },
+        ['爱丽'],
+    );
+    assert.equal(bound.slots[0].chars[0].tags.includes('white shirt'), false);
+    assert.equal(bound.slots[0].chars[0].tags.includes('school uniform'), false);
+
+    const beachOnly = {
+        ...sceneAssets,
+        characterOutfits: { 爱丽丝: { 泳衣: { words: [], moods: {}, scenes: ['海边'] } } },
+        wardrobe: { 泳衣: { prompt: 'swimsuit' } },
+    };
+    const dropped = summarizeFloorOutfits(['爱丽'], beachOnly, {
+        floorText: '[igs-scene:教室|白天|晴]\n[igs-char:爱丽|微笑|早啊]',
+        previousTexts: ['[igs-char:爱丽|开心|泳衣|海边见]'],
+    });
+    assert.equal(dropped.length, 0);
+    const kept = summarizeFloorOutfits(['爱丽'], beachOnly, {
+        floorText: '[igs-scene:教室|白天|晴]\n[igs-char:爱丽|微笑|泳衣|就穿这个]',
+        previousTexts: [],
+    });
+    assert.equal(kept[0].segments[0].outfit, '泳衣');
+    assert.equal(kept[0].segments[0].prompt, 'swimsuit');
+});
+
 test('gate:illustration:memory-store-roundtrip', async () => {
     const { floorKeyOf, slotKeyOf, createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const store = createMemoryIllustrationStore();
@@ -300,35 +384,42 @@ test('gate:illustration:memory-store-roundtrip', async () => {
     assert.equal((await store.getSlots(key))[0].scene, 'hall');
 });
 
-test('gate:illustration:secondary-llm-openai-url-and-body', async () => {
+test('gate:illustration:secondary-llm-native-url-and-body', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     let url;
     let body;
-    const llm = createSecondaryLlm({}, { fetch: async (target, init) => {
+    const llm = createSecondaryLlm(fakeLlmHost(), { fetch: async (target, init) => {
         url = target;
         body = JSON.parse(init.body);
         return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), { status: 200 });
     } });
     assert.equal(await llm.request({ system: 'sys', user: 'usr' }, { source: 'openai', endpoint: 'https://x.com/v1', model: 'm' }), 'ok');
-    assert.equal(url, 'https://x.com/v1/chat/completions');
+    assert.equal(url, '/api/backends/chat-completions/generate');
+    assert.equal(body.custom_url, 'https://x.com/v1');
     assert.equal(body.messages[0].role, 'system');
-    assert.deepEqual(Object.keys(body).sort(), ['messages', 'model', 'stream']);
+    assert.deepEqual(body, { chat_completion_source: 'custom', custom_url: 'https://x.com/v1',
+        custom_include_headers: JSON.stringify({ Authorization: '' }), model: 'm', stream: false,
+        use_sysprompt: true, messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'usr' }] });
 });
 
 test('gate:illustration:secondary-llm-dbg-custom-private-config-and-no-resend', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     const calls = [];
-    let direct = 0, rejected = false;
+    let rejected = false;
     const Service = {
-        createRequestData(payload) { return { ...payload, model: 'host-default', stream: true }; },
-        async sendRequest(data, extract, signal) {
-            calls.push({ data: structuredClone(data), extract, signal });
-            if (rejected) throw new Error('HTTP 422 secret upstream body');
-            return { content: '<think>private reasoning</think>scene: A room.' };
-        },
+        sendRequest() { assert.fail('不得调用宿主主连接服务'); },
     };
-    const host = { SillyTavern: { getContext: () => ({ ChatCompletionService: Service }) } };
-    const llm = createSecondaryLlm(host, { fetch: async () => { direct++; assert.fail('不得切回直连'); } });
+    const host = { SillyTavern: { getContext: () => ({ ChatCompletionService: Service,
+        getRequestHeaders: () => ({ 'X-CSRF-Token': 'fixture-csrf' }) }) } };
+    const llm = createSecondaryLlm(host, { fetch: async (url, init) => {
+        assert.equal(url, '/api/backends/chat-completions/generate');
+        assert.equal(init.credentials, 'same-origin');
+        assert.equal(init.headers['X-CSRF-Token'], 'fixture-csrf');
+        calls.push({ data: JSON.parse(init.body), signal: init.signal });
+        return new Response(JSON.stringify(rejected ? { error: 'secret upstream body' }
+            : { choices: [{ message: { content: '<think>private reasoning</think>scene: A room.' } }] }),
+        { status: rejected ? 422 : 200 });
+    } });
     const request = { messages: [{ role: 'system', content: '框架' }, { role: 'system', content: '任务' },
         { role: 'assistant', content: '示例' }, { role: 'user', content: '输出' }] };
     const before = structuredClone(request);
@@ -337,8 +428,7 @@ test('gate:illustration:secondary-llm-dbg-custom-private-config-and-no-resend', 
         const call = calls.at(-1);
         assert.deepEqual(call.data, { stream: false, messages: request.messages, model: 'private-model',
             chat_completion_source: 'custom', custom_url: 'https://fake.test/v1', use_sysprompt: true,
-            custom_include_headers: 'Authorization: "Bearer fixture-key"' });
-        assert.equal(call.extract, true);
+            custom_include_headers: JSON.stringify({ Authorization: 'Bearer fixture-key' }) });
         assert.ok(call.signal instanceof AbortSignal);
     }
     assert.deepEqual(request, before);
@@ -351,13 +441,12 @@ test('gate:illustration:secondary-llm-dbg-custom-private-config-and-no-resend', 
         return true;
     });
     assert.equal(calls.length, 4);
-    assert.equal(direct, 0);
 });
 
 test('gate:illustration:secondary-llm-direct-422-safe-diagnostic-and-thinking', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     let calls = 0;
-    const llm = createSecondaryLlm({}, { fetch: async () => {
+    const llm = createSecondaryLlm(fakeLlmHost(), { fetch: async () => {
         calls++;
         return new Response(JSON.stringify({ detail: [{ loc: ['body', 'messages', 0, 'content'],
             msg: 'secret prompt', input: 'fixture-key' }] }), { status: 422 });
@@ -371,7 +460,7 @@ test('gate:illustration:secondary-llm-direct-422-safe-diagnostic-and-thinking', 
     });
     assert.equal(calls, 1);
     for (const [content, expected] of [['<think>private</think>ok', 'ok'], ['<think>unfinished', '']]) {
-        const successful = createSecondaryLlm({}, { fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content } }] })) });
+        const successful = createSecondaryLlm(fakeLlmHost(), { fetch: async () => new Response(JSON.stringify({ choices: [{ message: { content } }] })) });
         assert.equal(await successful.request({ system: 's', user: 'u' }, { source: 'openai', endpoint: 'https://fake.test', model: 'm' }), expected);
     }
 });
@@ -379,21 +468,22 @@ test('gate:illustration:secondary-llm-direct-422-safe-diagnostic-and-thinking', 
 test('gate:illustration:secondary-llm-custom-model-list-and-cancellation', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     let sent, modelCalls = 0, abortSeen = false;
-    const Service = { async sendRequest(_, __, signal) {
-        return new Promise((resolve, reject) => signal.addEventListener('abort', () => {
+    const llm = createSecondaryLlm(fakeLlmHost(), { fetch: async (url, init) => {
+        sent = { url, init };
+        if (url.endsWith('/status')) {
+            modelCalls++;
+            return new Response(JSON.stringify({ data: [{ id: 'm' }] }));
+        }
+        assert.equal(url, '/api/backends/chat-completions/generate');
+        return new Promise((resolve, reject) => init.signal.addEventListener('abort', () => {
             abortSeen = true; reject(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
         }, { once: true }));
-    } };
-    const llm = createSecondaryLlm({ SillyTavern: { getContext: () => ({ ChatCompletionService: Service,
-        getRequestHeaders: () => ({ 'X-CSRF-Token': 'fixture-csrf' }) }) } }, { fetch: async (url, init) => {
-        modelCalls++; sent = { url, init };
-        return new Response(JSON.stringify({ data: [{ id: 'm' }] }));
     } });
     assert.deepEqual((await llm.fetchModels({ endpoint: 'https://fake.test/v1', apiKey: 'fixture-key' })).models, ['m']);
     assert.equal(sent.url, '/api/backends/chat-completions/status');
-    assert.equal(sent.init.headers['X-CSRF-Token'], 'fixture-csrf');
+    assert.equal(sent.init.headers['X-CSRF-Token'], 'fake-csrf');
     assert.deepEqual(JSON.parse(sent.init.body), { chat_completion_source: 'custom', custom_url: 'https://fake.test/v1',
-        custom_include_headers: 'Authorization: "Bearer fixture-key"' });
+        custom_include_headers: JSON.stringify({ Authorization: 'Bearer fixture-key' }) });
     const controller = new AbortController();
     const job = llm.request({ system: 's', user: 'u' }, { source: 'openai', endpoint: 'https://fake.test', model: 'm', signal: controller.signal });
     controller.abort();
@@ -405,17 +495,17 @@ test('gate:illustration:secondary-llm-custom-model-list-and-cancellation', async
 test('gate:illustration:secondary-llm-fetch-models', async () => {
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     const calls = [];
-    const llm = createSecondaryLlm({}, { fetch: async (url, init) => {
-        calls.push({ url, method: init.method, auth: init.headers.Authorization });
+    const llm = createSecondaryLlm(fakeLlmHost(), { fetch: async (url, init) => {
+        calls.push({ url, method: init.method, auth: JSON.parse(JSON.parse(init.body).custom_include_headers).Authorization });
         return new Response(JSON.stringify({ data: [{ id: 'model-a' }, { id: 'model-b' }, { id: 'model-a' }] }), { status: 200 });
     } });
     const result = await llm.fetchModels({ endpoint: 'https://example.com/v1', apiKey: 'fake-key' });
     assert.deepEqual(result.models, ['model-a', 'model-b']);
-    assert.deepEqual(calls, [{ url: 'https://example.com/v1/models', method: 'GET', auth: 'Bearer fake-key' }]);
-    const empty = createSecondaryLlm({}, { fetch: async () => new Response(JSON.stringify({ data: [] }), { status: 200 }) });
+    assert.deepEqual(calls, [{ url: '/api/backends/chat-completions/status', method: 'POST', auth: 'Bearer fake-key' }]);
+    const empty = createSecondaryLlm(fakeLlmHost(), { fetch: async () => new Response(JSON.stringify({ data: [] }), { status: 200 }) });
     await assert.rejects(empty.fetchModels({ endpoint: 'https://example.com/v1' }), /未返回可用模型/);
     let count = 0;
-    const missing = createSecondaryLlm({}, { fetch: async () => { count += 1; throw new Error('unexpected'); } });
+    const missing = createSecondaryLlm(fakeLlmHost(), { fetch: async () => { count += 1; throw new Error('unexpected'); } });
     await assert.rejects(missing.fetchModels({}), /填写副 LLM 地址/);
     assert.equal(count, 0);
 });
@@ -453,7 +543,7 @@ test('gate:illustration:secondary-llm-ordered-messages-wire', async () => {
     ];
     const request = { messages: structuredClone(messages) };
     const wires = [];
-    const openai = createSecondaryLlm({}, { fetch: async (_, init) => {
+    const openai = createSecondaryLlm(fakeLlmHost(), { fetch: async (_, init) => {
         wires.push(JSON.parse(init.body).messages);
         return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }));
     } });
@@ -654,7 +744,7 @@ function makeFakes({ text, isLatest = true, llmReply = REPLY, naiResult, setting
 const LONG_LINE = '她靠在窗边，看着外面的雨一点点停下来，城市的灯光一盏接一盏地亮起。';
 
 test('gate:illustration:skips-auto-when-body-under-50-chars', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const reports = [];
     const fakes = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
@@ -692,7 +782,7 @@ test('gate:illustration:body-length-follows-reader-source-filter', async () => {
 });
 
 test('gate:illustration:service-disabled-makes-no-calls', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const store = createMemoryIllustrationStore();
     const fake = makeFakes({ text: NSFW_TEXT });
@@ -703,7 +793,7 @@ test('gate:illustration:service-disabled-makes-no-calls', async () => {
 });
 
 test('gate:illustration:service-skips-non-latest-floor', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, isLatest: false, settings: { nsfwEnabled: true } });
     assert.equal((await createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore() }).processMessage(5)).reason, 'not-eligible');
@@ -711,13 +801,14 @@ test('gate:illustration:service-skips-non-latest-floor', async () => {
 });
 
 test('gate:illustration:service-nsfw-generates-and-writes-marker', async () => {
-    const { createAutoIllustrationService, ILLUSTRATION_UPDATED_EVENT } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
+    const { ILLUSTRATION_UPDATED_EVENT } = await import('../src/generated-images/illustration/auto-illustration-service.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const store = createMemoryIllustrationStore();
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 } });
     const service = createAutoIllustrationService({ ...fake, store });
     assert.equal((await service.processMessage(5)).reason, 'done');
-    assert.ok(fake.calls.writes[0].includes('\n[igs-img:1]\n二段。'));
+    assert.ok(fake.calls.writes[0].includes('\n二段。\n[igs-img:1]'));
     assert.equal(fake.calls.nai, 1);
     assert.equal((await store.getSlots('c1|5|0'))[0].status, 'done');
     assert.ok(fake.calls.events.some(({ type }) => type === ILLUSTRATION_UPDATED_EVENT));
@@ -783,7 +874,7 @@ test('gate:illustration:cg-size-swaps-on-mobile', async () => {
 });
 
 test('gate:illustration:dbgen-cg-calls-only-the-plugin-prompt-and-generate-apis', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const calls = { llm: 0, generate: 0, floor: [], paint: [] };
     let current = NSFW_TEXT;
@@ -821,7 +912,7 @@ test('gate:illustration:dbgen-cg-calls-only-the-plugin-prompt-and-generate-apis'
 
     assert.equal(calls.floor[0].skipRecall, undefined);
     assert.equal(calls.paint.length, 1);
-    assert.equal(calls.paint[0].caption, caption);
+    assert.deepEqual(calls.paint[0].caption, { ...caption, slot: 1 });
     assert.equal(calls.paint[0].size, '1216x832');
     assert.ok(current.includes('[igs-img:1]'));
     assert.ok(current.indexOf('二段。') < current.indexOf('[igs-img:1]'));
@@ -830,7 +921,7 @@ test('gate:illustration:dbgen-cg-calls-only-the-plugin-prompt-and-generate-apis'
 });
 
 test('gate:illustration:service-nsfw-off-never-rolls-interlude', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { interludeEnabled: true, interludeProbability: 100 } });
     await createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore(), random: () => 0 }).processMessage(5);
@@ -838,7 +929,7 @@ test('gate:illustration:service-nsfw-off-never-rolls-interlude', async () => {
 });
 
 test('gate:illustration:service-interlude-probability-gate', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     for (const [probability, selected] of [[30, false], [60, true]]) {
         const store = createMemoryIllustrationStore();
@@ -850,7 +941,7 @@ test('gate:illustration:service-interlude-probability-gate', async () => {
 });
 
 test('gate:illustration:service-none-decision-reuses-and-refreshes-inputs', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const config = { interludeEnabled: true, interludeProbability: 30 };
     const fake = makeFakes({ text: SFW_TEXT, settings: config });
@@ -879,7 +970,7 @@ test('gate:illustration:service-none-decision-reuses-and-refreshes-inputs', asyn
 
 for (const fail of [false, true]) {
     test(`gate:illustration:service-inflight-latest-${fail ? 'failure' : 'success'}`, async () => {
-        const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+        const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
         const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
         const fake = makeFakes({ text: fail ? NSFW_TEXT : SFW_TEXT, settings: { nsfwEnabled: true } });
         const store = createMemoryIllustrationStore();
@@ -917,7 +1008,7 @@ for (const fail of [false, true]) {
 
 
 test('gate:illustration:service-decided-floor-not-replanned', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const store = createMemoryIllustrationStore();
@@ -929,7 +1020,7 @@ test('gate:illustration:service-decided-floor-not-replanned', async () => {
 });
 
 test('gate:illustration:service-concurrent-calls-share-lock', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const service = createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore() });
@@ -938,7 +1029,7 @@ test('gate:illustration:service-concurrent-calls-share-lock', async () => {
 });
 
 test('gate:illustration:service-llm-failure-no-write', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true }, llmReply: new Error('x') });
     const store = createMemoryIllustrationStore();
@@ -950,7 +1041,7 @@ test('gate:illustration:service-llm-failure-no-write', async () => {
 });
 
 test('gate:illustration:service-stale-text-aborts', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     fake.llm.request = async () => { fake.messageHost.setText('被用户改了'); return REPLY; };
@@ -961,7 +1052,7 @@ test('gate:illustration:service-stale-text-aborts', async () => {
 });
 
 test('gate:illustration:service-tail-append-during-planning-still-writes', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const tail = '\n\n<parallel>与此同时，另一边……</parallel>';
@@ -988,7 +1079,7 @@ test('gate:illustration:appended-tail-only-accepts-pure-append', async () => {
 });
 
 test('gate:illustration:service-stale-when-new-floor-arrives-during-planning', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const originalReadFloor = fake.messageHost.readFloor;
@@ -1004,7 +1095,7 @@ test('gate:illustration:service-stale-when-new-floor-arrives-during-planning', a
 });
 
 test('gate:illustration:service-stale-during-regex-setup-skips-write-and-nai', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createIllustrationMessageHost } = await import('../src/host/illustration-message-host.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const ctx = { chatId: 'c1', chat: Array.from({ length: 5 }, () => ({ is_user: true, mes: 'user' })) };
@@ -1029,7 +1120,7 @@ test('gate:illustration:service-stale-during-regex-setup-skips-write-and-nai', a
 });
 
 test('gate:illustration:service-nai-failure-marks-slot-failed', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true }, naiResult: { ok: false, error: 'x' } });
     const store = createMemoryIllustrationStore();
@@ -1041,7 +1132,7 @@ test('gate:illustration:service-nai-failure-marks-slot-failed', async () => {
 });
 
 test('gate:illustration:get-url-hydrates-from-store', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT });
     const store = createMemoryIllustrationStore();
@@ -1082,7 +1173,7 @@ test('gate:illustration:settings-value-types', async () => {
 });
 
 test('gate:illustration:failed-floor-retries-and-reports-real-error', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createSecondaryLlm } = await import('../src/host/secondary-llm.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const chat = [{ is_user: true, mes: 'hi' }, { mes: '[igs-scene:卧室|夜晚|晴|nsfw]\n她走进房间。', swipe_id: 0 }];
@@ -1099,7 +1190,7 @@ test('gate:illustration:failed-floor-retries-and-reports-real-error', async () =
     const reports = [];
     const naiCalls = [];
     const svc = createAutoIllustrationService({
-        messageHost: host, llm: createSecondaryLlm({}, { fetch }), store: createMemoryIllustrationStore(),
+        messageHost: host, llm: createSecondaryLlm(fakeLlmHost(), { fetch }), store: createMemoryIllustrationStore(),
         nai: { generate: async (slot) => { naiCalls.push(slot); return { ok: true, dataUrl: 'data:image/png;base64,x' }; } },
         getSettings: () => ({ nsfwEnabled: true, llm: { source: 'openai', endpoint: 'https://llm.example/v1', model: 'm', prompts: { illustration: 'CUSTOM' } } }),
         report: (level, message) => reports.push({ level, message }),
@@ -1107,7 +1198,7 @@ test('gate:illustration:failed-floor-retries-and-reports-real-error', async () =
     });
     const first = await svc.processMessage(1);
     assert.equal(first.reason, 'plan-failed');
-    assert.match(first.error, /CORS/);
+    assert.match(first.error, /发送状态未知，未自动补发/);
     assert.ok(reports.some((r) => r.level === 'error' && /未发送生图请求/.test(r.message)));
     online = true;
     const second = await svc.processMessage(1);
@@ -1191,7 +1282,7 @@ test('gate:illustration:nai-client-uses-custom-endpoint-or-official', async () =
 });
 
 test('gate:illustration:service-retries-database-img-marker-without-replanning', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({
         text: NSFW_TEXT.replace('[igs-scene:卧室|夜晚|晴|NSFW]\n', '[igs-scene:卧室|夜晚|晴|NSFW]\n<IMG>1</IMG>\n'),
@@ -1211,7 +1302,7 @@ test('gate:illustration:service-retries-database-img-marker-without-replanning',
 
 
 test('gate:illustration:failed-slot-retries-without-replanning', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 }, naiResult: { ok: false, error: 'NAI 服务端错误（HTTP 500）' } });
     const store = createMemoryIllustrationStore();
@@ -1228,7 +1319,7 @@ test('gate:illustration:failed-slot-retries-without-replanning', async () => {
 });
 
 test('gate:illustration:manual-interlude-ignores-probability', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: SFW_TEXT, settings: { interludeEnabled: true, interludeProbability: 0 } });
     const store = createMemoryIllustrationStore();
@@ -1239,7 +1330,7 @@ test('gate:illustration:manual-interlude-ignores-probability', async () => {
 });
 
 test('gate:illustration:slot-count-mismatch-still-generates', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 2 } });
     const result = await createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore() }).processMessage(5);
@@ -1282,19 +1373,55 @@ test('gate:illustration:nsfw-cg-keeps-floor-wide-behaviour', () => {
     assert.deepEqual(cgSlots(src.replace(/^.*\n/, ''), segments, { inheritedNsfw: true }), [1, 1, 1, 1, 1, 1, 1]);
 });
 
-test('数据库生图 CG：单人且上下文唯一角色时 DNA 并进 char caption，多人不注入', () => {
-    const assets = { characters: { 小雪: {} }, characterAliases: {}, characterDna: { 小雪: { triggerWords: 'xiaoxue', identity: '1girl, white hair', negative: 'short hair' } } };
-    const caption = (n) => ({
-        v4_prompt: { caption: { base_caption: 'room', char_captions: Array.from({ length: n }, () => ({ char_caption: 'smile', centers: [{ x: 0.5, y: 0.5 }] })) } },
+// NSFW 场景翻过本场景的图后不提前挂下一场景的 SFW 图；进 SFW 场景后保持 NSFW 图，直到新 CG 的锚句页接管。
+test('gate:illustration:nsfw-lookahead-stops-at-sfw-scene-cg', () => {
+    const segments = ['甲。', '乙。', '丙。', '丁。', '戊。', '己。'];
+    const src = '[igs-scene:街道|傍晚|晴|NSFW]\n甲。\n[igs-img:1]\n乙。\n[igs-scene:客厅|傍晚|晴]\n丙。\n丁。\n[igs-img:2]\n戊。\n己。';
+    assert.deepEqual(cgSlots(src, segments), [1, 1, 1, 2, 2, 2]);
+    const offsets = resolveHeldSourceOffsets(src, segments);
+    assert.deepEqual(prepareIllustrationPages({ source: src, offsets, segments, holdPages: 2 }).map(hit => hit ? hit.slot : 0), [1, 1, 1, 2, 2, 2]);
+});
+
+test('gate:illustration:dbgen-cg-does-not-splice-character-dna', async () => {
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
+    const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
+    const text = '[igs-scene:卧室|夜晚|晴|NSFW]\n[igs-char:小雪|开心|一段。]\n二段。\n三段。';
+    let current = text;
+    const caption = {
+        v4_prompt: { caption: { base_caption: 'room', char_captions: [{ char_caption: 'smile', centers: [{ x: 0.5, y: 0.5 }] }] } },
         v4_negative_prompt: { caption: { base_caption: 'bad', char_captions: [] } },
+    };
+    const paint = [];
+    const service = createAutoIllustrationService({
+        messageHost: {
+            getChatId: () => 'c1',
+            readFloor: () => ({ chatId: 'c1', messageId: 5, swipeId: 0, isAi: true, isLatest: true, text: current }),
+            readPreviousAiTexts: () => [],
+            writeFloor: async (_id, next) => { current = next; return { ok: true }; },
+            on: () => () => {}, attachPromptStrip: () => {},
+            ensureMarkerRegexes: async () => ({ ok: true }), destroy: () => {},
+        },
+        llm: { request: async () => '' },
+        nai: {
+            describe: () => ({ via: 'dbgen', ownPrompts: true, ready: { ok: true } }),
+            generate: async () => ({ ok: true }),
+            writeDbgenFloorPrompts: async () => ({ ok: true, captions: [{ slotId: 1, caption, anchorSentence: '二段。' }] }),
+            generateDbgenCaption: async (req) => { paint.push(req); return { ok: true, dataUrl: 'data:image/png;base64,Q0c=' }; },
+        },
+        events: { emit() {} },
+        store: createMemoryIllustrationStore(),
+        getSettings: () => ({ nsfwEnabled: true, nsfwCount: 1 }),
+        getSceneAssets: () => ({
+            characters: { 小雪: {} },
+            characterAliases: {},
+            characterDna: { 小雪: { triggerWords: 'xiaoxue', identity: '1girl, white hair', negative: 'short hair' } },
+        }),
+        minBodyChars: 0,
     });
-    const single = bindCharacterDnaToCaption(caption(1), assets, ['小雪'], 1);
-    assert.equal(single.caption.v4_prompt.caption.char_captions[0].char_caption, 'xiaoxue, 1girl, white hair, smile');
-    assert.equal(single.caption.v4_negative_prompt.caption.char_captions[0].char_caption, 'short hair');
-    assert.deepEqual(single.caption.v4_negative_prompt.caption.char_captions[0].centers, [{ x: 0.5, y: 0.5 }]);
-    const pair = bindCharacterDnaToCaption(caption(2), assets, ['小雪'], 2);
-    assert.equal(pair.caption.v4_prompt.caption.char_captions[0].char_caption, 'smile');
-    assert.equal(pair.warnings.length, 1);
+    assert.equal((await service.processMessage(5)).reason, 'done');
+    assert.equal(paint.length, 1);
+    assert.equal(paint[0].caption.v4_prompt.caption.char_captions[0].char_caption, 'smile');
+    assert.equal(paint[0].caption.v4_negative_prompt.caption.char_captions.length, 0);
 });
 
 // 平行事件插件在 AI 楼后面另插一条（隐藏的系统消息或旁白楼）：这楼仍算最新楼，立绘、场景、CG 照常生成；用户发言后才不算。
@@ -1309,7 +1436,7 @@ test('gate:illustration:message-host-latest-ignores-plugin-floors-after-ai', asy
 
 // 规划期间正文开头 / 中间被插了内容：标记按前后文搬到新正文，照常出图；对不上的那张丢掉。
 test('gate:illustration:service-mid-edit-during-planning-transplants-markers', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true } });
     const head = '<parallel>与此同时，另一边……</parallel>\n';
@@ -1319,7 +1446,7 @@ test('gate:illustration:service-mid-edit-during-planning-transplants-markers', a
     assert.equal(result.ok, true);
     assert.equal(fake.calls.writes.length, 1);
     assert.ok(fake.calls.writes[0].startsWith(head), '插件插的内容原样保留');
-    assert.ok(fake.calls.writes[0].includes('\n[igs-img:1]\n二段。'));
+    assert.ok(fake.calls.writes[0].includes('\n二段。\n[igs-img:1]'));
     assert.equal(fake.calls.nai, 1);
 });
 
@@ -1332,7 +1459,7 @@ test('gate:illustration:transplant-markers-follows-context', async () => {
 });
 
 test('gate:illustration:backfill-old-floor-only-when-enabled-and-not-yet-decided', async () => {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const off = makeFakes({ text: NSFW_TEXT, isLatest: false, settings: { nsfwEnabled: true } });
     assert.equal((await createAutoIllustrationService({ ...off, store: createMemoryIllustrationStore() }).processMessage(5, { backfill: true })).reason, 'disabled', '开关默认关');
@@ -1445,7 +1572,7 @@ test('gate:cg-bindings:parser-default-center-is-not-explicit-position', async ()
 });
 
 async function runBoundCgFixture(entries, count = 2) {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const f = cgBindingFixture(count);
     const fake = makeFakes({ text: NSFW_TEXT + '\n' + f.names.map((name) => `[igs-char:${name}|smile|Hello]`).join('\n'), settings: { nsfwEnabled: true, nsfwCount: 2 } });
@@ -1753,7 +1880,8 @@ test('gate:cg-reference:窄带精确权重薄线与错位轮廓', async () => {
 
 
 async function consistencyFixture(count = 2, storeOverride) {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService, fixtureMedia } = await import('./helpers/media-fixtures.js');
+    const mediaCache = fixtureMedia();
     const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
     const store = storeOverride || createMemoryIllustrationStore();
     const floor = { chatId: 'fixture-cg', messageId: 5, swipeId: 0, isAi: true, text: '测试正文。\n[igs-img:7]' };
@@ -1767,7 +1895,11 @@ async function consistencyFixture(count = 2, storeOverride) {
     let encoded = 0;
     const codec = { available: true,
         async decodeImage(src) { assert.ok(pixels.has(src), src); return pixels.get(src); },
-        async encodePixels(value) { const id = `pixels-${++encoded}`; pixels.set(id, value); return id; },
+        async encodePixels(value) {
+            const id = 'data:image/png;base64,' + Buffer.from(`pixels-${++encoded}`).toString('base64');
+            pixels.set(id, value);
+            return id;
+        },
     };
     const names = ['A', 'B', 'C'].slice(0, count);
     const characters = names.map((characterKey, captionIndex) => ({ characterKey, captionIndex,
@@ -1841,14 +1973,14 @@ async function consistencyFixture(count = 2, storeOverride) {
         },
     };
     const igsSettings = {};
-    const service = createAutoIllustrationService({ store, nai: backend, imageCodec: codec,
+    const service = createAutoIllustrationService({ store, nai: backend, imageCodec: codec, mediaCache,
         getSettings: () => igsSettings, getSceneAssets: () => assets,
         report: (level, message) => { reports.push({ level, message }); jobLog.add(level, message); },
         resolveCgReference: async (name, snapshot) => { references.push(name); return snapshot.characters[name]?.默认 || ''; },
         messageHost: { readFloor: () => floor, getChatId: () => floor.chatId, destroy() {} },
         events: { emit: (name, detail) => events.push({ name, detail }) },
     });
-    return { store, floor, key, pixels, codec, names, assets, before, calls, writes, references, events, backend, service, reports, jobLog, logStorage, igsSettings,
+    return { store, mediaCache, floor, key, pixels, codec, names, assets, before, calls, writes, references, events, backend, service, reports, jobLog, logStorage, igsSettings,
         query: { chatId: floor.chatId, messageId: 5, swipeId: 0, slot: 7 } };
 }
 
@@ -2273,7 +2405,7 @@ for (const fault of ['none', 'foreign', 'empty-description']) test(`gate:cg-cata
 });
 
 async function cgTemplateRun(mode, reply, assets, count = 2, options = {}) {
-    const { createAutoIllustrationService } = await import('../src/generated-images/illustration/auto-illustration-service.js');
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
     const { createImageBackend } = await import('../src/generated-images/image-backend.js');
     const { createNaiOfficialClient } = await import('../src/generated-images/nai-official-client.js');
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
@@ -3031,14 +3163,25 @@ for (const mode of ['missing', 'async', 'false', 'throw']) test(`gate:cg-consist
 
 
 for (const phase of ['upload', 'transaction', 'accepted']) test(`gate:cg-consistency:实际接受链路文件上传 ${phase} 配置租约`, async () => {
-    const { withTavernIllustrationFiles } = await import('../src/media/tavern-image-files.js');
+    const { withTavernIllustrationFiles } = await import('../src/media/tavern-illustrations.js');
     const uploaded = [], deleted = [];
+    const backups = new Map();
     let f;
     const globalObject = {
         setTimeout, clearTimeout,
         btoa: (value) => Buffer.from(value, 'binary').toString('base64'),
         SillyTavern: { getContext: () => ({ getRequestHeaders: () => ({}) }) },
         async fetch(url, options = {}) {
+            if (String(url).startsWith('/user/files/')) {
+                const name = String(url).split('/').at(-1).split('?')[0];
+                return backups.has(name) ? { ok: true, json: async () => structuredClone(backups.get(name)) }
+                    : { ok: false, status: 404 };
+            }
+            if (url === '/api/files/upload') {
+                const body = JSON.parse(options.body);
+                backups.set(body.name, JSON.parse(Buffer.from(body.data, 'base64').toString('utf8')));
+                return { ok: true };
+            }
             if (url === '/api/images/upload') {
                 const body = JSON.parse(options.body), path = `user/images/igs-cg/${body.filename}.png`;
                 uploaded.push(path);
@@ -3063,6 +3206,7 @@ for (const phase of ['upload', 'transaction', 'accepted']) test(`gate:cg-consist
         }
         const result = await f.service.accept(candidate.candidateId);
         assert.equal(result.ok, phase === 'accepted', JSON.stringify(result));
+        await (await import('../src/media/media-file-gc.js')).mediaFileGcFor(globalObject).drain();
         assert.equal(uploaded.length, 1);
         const saved = await f.rawStore.getSlotRecord(f.before.key);
         if (phase === 'accepted') {
@@ -3088,7 +3232,7 @@ for (const count of [2, 3]) test(`gate:dna-chain:${count}人采用到CG重画一
     const { createAssetGenerationService } = await import('../src/generated-images/illustration/asset-generation-service.js');
     const { createIndexedDbGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
     const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
-    const { withTavernIllustrationFiles, CG_RECORDS_FILE } = await import('../src/media/tavern-image-files.js');
+    const { withTavernIllustrationFiles, CG_RECORDS_FILE } = await import('../src/media/tavern-illustrations.js');
     const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
     const { prepareSpriteIdentityAdoption } = await import('../src/scene/character-identity.js');
     const { characterWriteFixture } = await import('./helpers/prompt-provenance.js');
@@ -3169,7 +3313,7 @@ for (const count of [2, 3]) test(`gate:dna-chain:${count}人采用到CG重画一
             return output;
         };
         const assetIdb = createTransactionalIdb();
-        const openSprites = () => createAssetGenerationService({ nai: f.adapter,
+        const openSprites = () => createAssetGenerationService({ nai: f.adapter, mediaCache: f.mediaCache,
             store: createIndexedDbGeneratedAssetStore({ indexedDB: assetIdb }),
             messageHost: { getChatId: () => 'c1' }, llm: {},
             getSettings: () => ({ autoIllustration: {}, sceneAssets: f.assets }), report() {},
@@ -3190,7 +3334,8 @@ for (const count of [2, 3]) test(`gate:dna-chain:${count}人采用到CG重画一
         const adopted = structuredClone(f.assets);
         assert.equal(f.writes.length, count, '每张立绘同次写词产生三景别');
         assert.equal(f.wires.length, count);
-        cg = await cgTemplateRun('dbgen', '', f.assets, 1, { store: f.store, backend: f.adapter });
+        cg = await cgTemplateRun('dbgen', '', f.assets, 1, { store: f.store, backend: f.adapter,
+            deps: { mediaCache: f.mediaCache } });
         assert.equal(cg.result.ok, true, JSON.stringify(cg.result));
         assert.equal(f.writes.length, count + 1, '普通 CG 只用一次写词');
         const key = 'c1|5|0|1';
@@ -3230,7 +3375,7 @@ for (const count of [2, 3]) test(`gate:dna-chain:${count}人采用到CG重画一
             assert.deepEqual(copy[field], saved[field], field);
         assert.equal((await restored.getSlots(target.key)).find((r) => r.slot === 1).dataUrl, candidate.dataUrl);
         const { createCgLibrary } = await import('../src/media/cg-library.js');
-        const library = createCgLibrary({ illustrationStore: restored });
+        const library = createCgLibrary({ illustrationStore: restored, mediaCache: f.mediaCache });
         assert.deepEqual(await library.readFull({ key, kind: 'cg' }),
             { ok: true, dataUrl: candidate.dataUrl }, '图库从恢复后的权威记录读取采用图片');
         assert.deepEqual(f.assets, currentAssets, '一致性及恢复不写 DNA');
@@ -3291,7 +3436,9 @@ test('gate:cg-consistency:实际接受同槽替换进入图库刷新并可删除
         assert.equal(name, 'igs:illustration-updated'); listeners.add(handler);
         return () => listeners.delete(handler);
     }, emit(name, payload) { notified.push({ name, payload }); for (const fn of listeners) fn(payload); } };
-    const indexStore = createMemoryCgIndexStore();
+    const { fixtureMedia } = await import('./helpers/media-fixtures.js');
+    const mediaCache = fixtureMedia();
+    const indexStore = createMemoryCgIndexStore({ mediaCache });
     const f = await consistencyAdapterFixture(2, store => withCgIndexSync(store, indexStore), {
         onAccepted(target) { events.emit('igs:illustration-updated', { chatId: target.floor.chatId,
             messageId: target.floor.messageId, swipeId: target.floor.swipeId, slot: target.slot }); },
@@ -3316,7 +3463,7 @@ test('gate:cg-consistency:实际接受同槽替换进入图库刷新并可删除
                     toDataURL: () => thumbOf(image.source) };
             } },
         };
-        const { cgGallery } = createItemAndCgServices({ globalObject, events,
+        const { cgGallery } = createItemAndCgServices({ globalObject, events, mediaCache,
             illustrationStore: f.store, cgIndexStore: indexStore, itemImageService: {},
             cgGalleryStore: createMemoryCgGalleryStore(), photoAlbumStore: createMemoryPhotoAlbumStore(),
             clearIllustration: async query => {
@@ -3557,13 +3704,13 @@ for (const duplicate of [false, true]) test(`gate:cg-consistency:单轮清单双
 for (const mode of ['nai', 'dbgen']) {
     for (const fault of ['none', 'save', 'scope', 'owner', 'wire', 'missing', 'revision', 'wardrobe']) {
         test(`gate:cg-outfit:${mode}:${fault}:权威回读与衣装确认门禁`, async () => {
-const { captureOutfitScope, prepareCgOutfitCandidates, prepareStoryOutfitAdoption, savedCharacterOutfits } = await import('../src/scene/outfit-identity.js');
+            const { captureOutfitScope, prepareCgOutfitCandidates, prepareStoryOutfitAdoption, savedCharacterOutfits } = await import('../src/scene/outfit-identity.js');
             const { loadStoryOutfitCandidates, saveStoryOutfitCandidates } = await import('../src/scene/outfit-review-store.js');
             const { createMemoryStorage } = await import('../src/index.js');
             const { effectiveSceneAssets } = await import('../src/scene/asset-scope.js');
             const { createIndexedDbIllustrationStore } = await import('../src/media/illustration-store.js');
             const { createTransactionalIdb } = await import('./helpers/transactional-idb.js');
-            let root = { cards: { 'card:Source': cgTemplateAssets() } }, scope = 'card:Active';
+            let root = { ...cgTemplateAssets(), cards: {} }, scope = 'card:Active';
             const assets = effectiveSceneAssets(root, scope), before = structuredClone(root);
             const raw = createIndexedDbIllustrationStore({ indexedDB: createTransactionalIdb() });
             const reports = [], adopted = [];
@@ -3579,8 +3726,8 @@ const { captureOutfitScope, prepareCgOutfitCandidates, prepareStoryOutfitAdoptio
                 if (fault === 'scope') scope = 'card:Other';
                 if (fault === 'owner') root.cards['card:Active'] = { characters: { Alice: {} } };
                 if (fault === 'wardrobe') {
-                    root.cards['card:Source'].characterOutfits = { Alice: { Coat: { wardrobe: 'changed' } } };
-                    root.cards['card:Source'].wardrobe = { changed: { prompt: 'wears a red coat' } };
+                    root.characterOutfits = { Alice: { Coat: { wardrobe: 'changed' } } };
+                    root.wardrobe = { changed: { prompt: 'wears a red coat' } };
                 }
                 return record;
             } };
@@ -3612,7 +3759,7 @@ const { captureOutfitScope, prepareCgOutfitCandidates, prepareStoryOutfitAdoptio
                 assert.equal(record.status, 'done');
                 assert.ok(record.dataUrl);
                 assert.equal(reads, 1, '采用前权威回读');
-                assert.deepEqual(root.cards['card:Source'].characterDna, before.cards['card:Source'].characterDna);
+                assert.deepEqual(root.characterDna, before.characterDna);
                 if (fault === 'none') {
                     assert.equal(saves, 1);
                     assert.equal(adopted.length, 1);
@@ -3627,8 +3774,8 @@ const { captureOutfitScope, prepareCgOutfitCandidates, prepareStoryOutfitAdoptio
                     }
                     Object.assign(assets, effectiveSceneAssets(root, scope));
                     for (const name of ['Alice', 'Bob']) assert.deepEqual(savedCharacterOutfits(
-                        root.cards['card:Source'], name), [{ name: 'Coat', description: 'wears a blue coat' }]);
-                    assert.equal(root.cards['card:Active'], undefined, '借用角色写回冻结来源卡');
+                        root, name), [{ name: 'Coat', description: 'wears a blue coat' }]);
+                    assert.equal(root.cards['card:Active'], undefined, '全局角色写回冻结的全局归属');
                     assert.equal(reports.some(args => args[0] === 'warn'), false);
                     const saved = structuredClone(root);
                     assert.equal((await run.service.rerollSlot({ chatId: 'c1', messageId: 5, swipeId: 0, slot })).ok, true);
@@ -3638,10 +3785,10 @@ const { captureOutfitScope, prepareCgOutfitCandidates, prepareStoryOutfitAdoptio
                 } else {
                     assert.ok(reports.some(args => args[0] === 'warn' && args[1].includes('衣装候选未暂存')));
                     assert.equal(loadStoryOutfitCandidates(storage).items.length, 0, '暂存失败不留下部分候选');
-                    assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Bob').length, 0,
+                    assert.equal(savedCharacterOutfits(root, 'Bob').length, 0,
                         '多人物任一冲突不留下部分登记');
-                    if (fault === 'wardrobe') assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Alice')[0].description, 'wears a red coat');
-                    else assert.equal(savedCharacterOutfits(root.cards['card:Source'], 'Alice').length, 0);
+                    if (fault === 'wardrobe') assert.equal(savedCharacterOutfits(root, 'Alice')[0].description, 'wears a red coat');
+                    else assert.equal(savedCharacterOutfits(root, 'Alice').length, 0);
                     if (fault === 'save') assert.deepEqual(root, before, '保存失败不替换内存或衣柜');
                 }
             } finally { run.dispose(); }

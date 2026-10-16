@@ -55,6 +55,17 @@ test('gate:page-diagnostic:reports-cg-and-chat-page-reasons', () => {
     assert.equal(buildPageDiagnostic(null), '');
 });
 
+test('gate:page-diagnostic:distinguishes-pending-cg-and-matched-sprite-from-active-cg-and-miss', () => {
+    const text = buildPageDiagnostic(snapshot({
+        cgActive: false, cgWaiting: true, illustrationSlot: 19,
+        pendingSpriteRef: 'igs-gen:private-id',
+        spriteMatch: { character: '林小雨', mood: '害羞', source: 'user', slot: '平和' },
+    }));
+    assert.match(text, /CG 有标记（槽位 19）但图片未就绪，保留场景与立绘/);
+    assert.match(text, /立绘 .*用户配置，槽位「平和」，原图读取中/);
+    assert.doesNotMatch(text, /CG 显示中|挂着 CG|→ 未命中|private-id/);
+});
+
 test('gate:page-diagnostic:image-refs-never-carry-image-bodies-or-query-strings', () => {
     assert.equal(summarizeImageRef('data:image/png;base64,' + 'A'.repeat(4096)), '内嵌图(3KB)');
     assert.equal(summarizeImageRef('/user/images/igs-cg/abc.png'), 'user/images/igs-cg/abc.png');
@@ -80,4 +91,10 @@ test('gate:page-diagnostic:settings-button-copies-active-reader-page', async () 
     assert.match(shown.at(-1)[2], /立绘 角色「林小雨」/);
     await handleSettingsAction('copy-page-diagnostic', ctx(null));
     assert.match(shown.at(-1)[1], /先打开阅读器/);
+});
+
+test('gate:page-diagnostic:reports-user-sprite-source', () => {
+    assert.match(buildPageDiagnostic(snapshot(), {}), /User立绘：无/);
+    assert.match(buildPageDiagnostic(snapshot({ userChar: { key: '我', source: 'manual' } }), {}), /User立绘：我（手动指定）/);
+    assert.match(buildPageDiagnostic(snapshot({ userChar: { key: '阿明', source: 'name' } }), {}), /User立绘：阿明（按用户名）/);
 });

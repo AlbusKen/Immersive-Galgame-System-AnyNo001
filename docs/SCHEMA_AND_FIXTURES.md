@@ -1,6 +1,6 @@
 # Schema、Fixtures 与模拟测试
 
-本项目用机器可读 schema、fixtures 和模拟测试降低 AI 修改风险。真实酒馆实机不作为当前验收要求。
+本项目保留运行时数据 schema 与真实行为回归所需的 fixtures。模拟结果与真实酒馆验收分开记录。
 
 ## Schema 落点
 
@@ -26,23 +26,28 @@
 
 fixtures 文件应短小、可读、可复用。需要大资源时只放 manifest 和占位 URL，不放真实图片包。
 
-## 模拟测试矩阵
+## 行为回归与证据
 
-| 编号 | 测试域 | 目标 |
+保留范围统一见 `../app/tests/README.md`，不再维护逐域必跑矩阵或重复的门禁命令表。只选能验证当前行为风险的已有用例，不为覆盖率、数量或矩阵完整性补项。
+
+例如，在 `app/` 验证阅读器准备缓存：
+
+```text
+node --test tests/reader-floor-preparation.test.js
+```
+
+报告实际命令、退出结果和未覆盖的环境。未执行、失败或只有 fixtures 证据时，不声称真实酒馆、手机或 provider 已验收。
+
+## 图片数据边界（v0.36.39）
+
+| 数据 | Schema / 归属 | 回归重点 |
 | --- | --- | --- |
-| `S0` | loader | loader 地址拼接、缓存版本、远程 bundle fallback |
-| `S1` | host | fake TavernHelper 消息读取、输入框写入、发送触发 |
-| `S2` | scene | 正文解析、时空栏、说话人、情绪、空文本回退 |
-| `S3` | resource match | 背景规则、立绘、头像和资源包命中 |
-| `S4` | visual | 桌面/移动布局、图层顺序、视觉模式切换 |
-| `S5` | choices | 选项浮窗、点击后写入输入框、取消和重复点击 |
-| `S6` | generated-images | provider 队列、轮询、失败重试、结果归一化 |
-| `S7` | shujuku | fake shujuku 增删改、刷新世界书、失败返回处理 |
-| `S8` | storage | IndexedDB/localStorage 迁移、Blob URL 生命周期 |
-| `S9` | registry | Mod / Preset / Pack 导入、权限声明、冲突检测 |
-| `S10` | api | `window.IGS` 公开 API 权限、错误返回和兼容别名 |
+| 内容缓存 | `igs-image-cache` v3，files 内容 / meta 别名 | 同内容去重、原子 quota abort、条目与字节预算、活跃租约、多页面失效、清理中断、四路下载、销毁 |
+| 图片业务记录 | 素材 schema v2；CG / 照片原有 schema | 原图不可变、metadata 不读像素、revision 冲突、重画失败保旧图 |
+| 媒体日志 / 备份 | `igs-media-journal` v1；四类酒馆备份 v2 | WAL 准备失败、离线上传恢复、版本合并、tombstone 防复活、浏览器数据丢失后恢复删除队列 |
+| 配置引用 | `igs-settings.json` v2；地图记录独立权威 | 网络/500 不覆盖、远程键合并、地图旧配置迁移与删除、导入新 ID/共享链接/头像/失败补偿 |
 
-## 当前覆盖补充（v0.2.5）
+## 预设持久化与公开接口夹具
 
 - `S8 storage`：新增 `app/fixtures/presets/preset-registry-snapshot.json`，覆盖预设 current 和 items 的持久化恢复。
 - `S9 registry`：新增 `app/fixtures/presets/text-presets-import-bundle.json` 与 `bad-current-overwrite-bundle.json`，覆盖文本预设导入、坏预设拒收和 current 守卫。
@@ -60,54 +65,17 @@ fixtures 文件应短小、可读、可复用。需要大资源时只放 manifes
 - `auto-illustration.test.js` 的内置一致性、衣装预检、目标衣装契约和完整参考几何用例验证确认前零请求、来源失效、取消／迟到拒收、原快照保留及统一几何 plan。
 - `cg-records-backup.test.js` 使用真实 IndexedDB Adapter 接口和已有事务替身，覆盖新旧轮次经文件备份、清缓存恢复的往返，以及坏来源拒收和私有租约剔除；不代表浏览器或酒馆实机事务验收。
 - `preset-generated-library.test.js`、`asset-generation.test.js` 覆盖全库衣柜、候选和 CG 引用保留，读取失败拒删及删除边界的迟到引用复核。跨设置、CG 库与酒馆文件不承诺原子性。
-- 本轮执行范围仅内置链路，DBG 不纳入修改或验收。实际计数、历史失败、产物边界和真实视觉验收表见 [命名衣装与内置一致性重绘](IGS_WARDROBE_CONSISTENCY.md)。
+- 生图功能以 IGS 内置 NAI 为目标；DBGen 相关夹具仅描述保留的兼容覆盖，不代表本轮已验证。操作与视觉验收表见 [命名衣装与内置一致性重绘](IGS_WARDROBE_CONSISTENCY.md)，本轮实际结果单独记录。
 
-## 命令约定
+## 媒体生命周期夹具
 
-后续接入真实构建后，优先使用：
-
-```text
-npm run gate
-```
-
-当前可执行单项命令：
-
-```text
-npm run structure
-npm run static
-npm run test
-npm run simulate
-npm run perf
-npm run build
-```
-
-pnpm 目标命令：
-
-```text
-pnpm gate
-pnpm test
-pnpm simulate
-pnpm build
-pnpm perf
-```
-
-命令未接入或无法执行时，AI 不得声称测试通过。应改为说明：
-
-- 已做静态文档或调用链自检
-- 哪些模拟测试尚未接入
-- skipped 原因
-- 残余风险
+- `media-cache-lifecycle`、`media-cache-concurrency`、`media-storage-lifecycle`、`media-transactions`、`media-settings-concurrency` 覆盖统一缓存、存储生命周期、事务与设置并发。
+- `helpers/fake-idb.js` 模拟多 store 原子事务、abort、quota 与升级；`helpers/fake-media-server.js` 模拟文件和图片 API，不接触真实图库。
+- 严格引用读取等待备份恢复完成；网络、非法 schema 或坏记录必须拒绝清理，合法空旧备份仍可恢复。文件回收用现有 `drain()` 等待备份确认与引用复核，不以固定延时推断完成。
+- 真实酒馆、移动端解码内存和真实 provider 为未验证边界，不用 fixture 结果替代真机验收。
 
 ## 验证证据格式
 
-每次实现完成后，最终回复或本地记录至少写明：
+只运行与变更相关的已有行为用例，命令使用 `node --test tests/<文件>.test.js`；构建入口以 `app/package.json` 为准。报告风险级别、证据文件、实际命令、发现数及通过／失败／取消／跳过数，并区分导入阻断与进入行为后的失败。历史记录中的门禁命令与计数不是本轮验证结果。
 
-```text
-风险级别：R1/R2/R3/R4/R5
-静态证据：读取的 CONTRACT/docs/schema
-模拟证据：运行的 S0-S10 项或 skipped 原因
-命令证据：npm run gate 或 pnpm test/simulate/build/perf 的结果
-残余风险：未覆盖真实 provider、真实 shujuku 或性能边界时写清楚
-```
-
-本项目的“实机验真”由 `S0-S10` 的模拟矩阵替代。只有用户明确要求发布实测时，才临时增加真实酒馆或真实 provider 验证。
+未覆盖真实 provider、真实 shujuku、酒馆／手机或性能边界时明确写为未验证；不将模拟结果称为实机验收。

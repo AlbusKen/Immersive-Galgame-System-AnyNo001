@@ -1,5 +1,46 @@
 # scene 模块契约
 
+## CG 跨场景切换（v0.36.75）
+
+- NSFW 页只提前显示下一张属于 NSFW 场景的 CG，不提前取后续 SFW 场景的图。已翻过的 NSFW 图在转为 SFW 场景后保持，直到新的 SFW CG 锚句页接管；整楼预备和独立逐页解析遵守同一规则。本节优先于下文旧的整楼前瞻说明。
+
+## CG 正文边界（v0.36.63）
+
+- 闭合的 `thinking` / `think` / `Subtext_think` 整块屏蔽内部标签、括号与代码示例；其中未闭合的示例不能污染后续正文。代码与注释里的 `<content>` 示例不作为正文容器。
+- `imageMarkerContentRanges` 保留原始字符偏移，每段真实 `<content>` 独立检查结构。容器外或另一段正文中的未闭合结构不得覆盖当前正文；当前正文内部真正未闭合的对白、HTML 与代码仍拒绝插图。
+
+## 背景槽与补图兜底（v0.36.61）
+
+- 同场景天气图 → 时段图 → 主图逐级选可用图片；空槽和已知不可用的内部图不得截断后续候选，回落主图时保持正确的 `timed` 标记。`lookupSceneBackground` 的可选第三参数只提供图片可用性判断，场景层不读图片、不发请求。
+- 已登记空场景仍继续查同场景生成图库、当前聊天图和默认占位；默认占位不代表素材已经齐全，保留 `needsGeneration`。差分匹配读取临时记录的状态与跳过原因，手动或新楼可重试失败，明确丢弃仍跳过。
+
+## 立绘读取与兜底（v0.36.59）
+
+- 原装未命中后继续查同角色生成图库和当前聊天素材，角色已登记不能截断显示兜底；登记状态只在所有现成图均未命中后参与自动补图判断。角色主名与已登记别名保持同一身份，不借其他角色或未选服装。
+- `isUnavailableImage` 只用于显示时跳过暂不可读的候选；`isMissingImage` 才表示确认缺图并参与补图判断。临时读取失败不得要求重新生图。已有原装可用时保持原有优先级。
+
+## 跨行对白结构（v0.36.55）
+
+- `directive-tags.js` 的 `normalizeClosedIgsDialogueLines` 先识别具有对应闭括号的 `igs-char` / `igs-thought`，将结构内部换行折叠为布局空白；`splitIgsDirectiveLines` 提供逻辑行及原始行号 / 字符偏移，正文、服装识别、指令提取与 CG 段落编号共用。
+- 在对应闭括号之前遇到下一条角色、心理、场景、演出或聊天指令，或 `<content>` / `<now_plot>` 边界时，不借用后面的闭括号；未闭合标签继续按既有行尾收口规则处理，避免吞并旁白和下一角色。
+- 指令提取保留原始字符偏移，空白行也计入坐标。已闭合对白、心理话在按句分页之前必须作为完整单元，分页后保持角色、情绪和服装归属，闭括号本身不成为可见页。
+- 旧 CG 标记移出括号时清理其两侧连续的插入换行；原消息、图片槽号和图片绑定不修改。CG 重新规划及标记移植使用完整逻辑行作为上下文，不把独占行 `]` 作为锚句。
+
+## 文字演出分页（v0.36.52）
+
+- `text-fx-markup.js` 是九种 `{效果:文字}` 标记与半角 / 全角冒号的统一语法来源，正文分页与视觉渲染共用，不在场景层依赖渲染层。
+- 按句分页完整消费已闭合、无嵌套的文字演出标记，不在标记内部断页；标记正文以句末符号结束时，在完整 `}` 之后断页，保留紧随的闭引号及译文。开关关闭时也保留结构，交给渲染层剥离已知标记。
+- 原消息不改写；对白与心理话的说话人、后续场景指令索引继续按同一份分页结果重映射。未知与未闭合写法不吞后续行，渲染层原有长度、转义与未知效果规则保持。
+
+## 立绘可用性（v0.36.51）
+
+- `image-marker-layout.js` 统一决定生图标记的结构边界与独占行布局：完整括号结构、HTML 元素和代码块不可拆开；`<content>` 作为正文容器，标记保留在容器内。锚句所在整行保留，不在句子中间插入；同一结构上的多个生成点保留锚句顺序和槽号。
+- 读取旧的错插 `[igs-img:N]` / `<IMG>N</IMG>` 时，只在阅读副本移出结构，去掉错误插入对白时产生的相邻换行；如果标记前后紧邻（可隔空行）独占一行、且不闭合任何括号的 `]`/`】`/`］`，也只在阅读副本剥掉该闭符，其他位置的独立括号不动。原消息 `raw` 不变，`markerLayoutSource` 为修正后的原文副本，阅读器定位服装、CG 和演出使用同一副本。重新规划旧楼也先整理标记再剥离，避免保留孤立闭括号。
+
+- 原装及生成图库先保留既有精确 / 情绪组 / 可选模糊 / 同向档 / 默认顺序；全部未命中但同角色仍有可用图时，再选平和、最后选该角色其余可用槽，不跨角色或借其他服装。
+- 已确认丢失的内部图先从候选中排除；内置裸体服装的底图丢失时不阻断同套平和 / 任意槽兜底。正常服装优先级保持不变。
+- CG 标记只定位槽位，不能证明图片可显示；没有图片时阅读器保留正常背景和立绘，图片到达后再让位给 CG。
+
 ## 职责
 
 - 维护当前场景状态：楼层、说话人、情绪、正文、时间、天气、地点、背景、立绘、生图状态。
@@ -38,7 +79,8 @@
 - 自动注入开关 `bridge.sceneAssets.promptRuleEnabled`（缺省开，经 `scenePromptRuleEnabled` 判断，只有存了 `false` 才算关）：关闭时按需注入与旧拼接两条路径都不再带【场景与台词】块，演出等其它语法块、时代规则与交互摘要照常；全部关闭时清空注入。设置页「复制到酒馆预设」给出通用标签规则 + 完整词表展开的场景规则 + 示例（输入框未保存的草稿优先），不含 `{{…}}` 占位符，供用户贴进酒馆预设后关闭自动注入。
 - `{{previous_outfit_dna}}` 经 `previous-outfit-dna.js` 和 `resolvePromptRuleContent` 展开：只列上一条 AI 正文标签中出场角色的最后衣装及对应衣柜中非空的已保存服装 DNA，附正文延续说明。复用正文过滤、别名、回看窗口内衣装继承和场景适用规则；显式默认标签才读取命名默认映射，不根据角色名或用户输入猜衣装。未登记、无非空 DNA 或没有匹配项时省略，整段可为空。只读当前有效素材视图，不改聊天或衣柜。默认规则附带该占位符，逐字等于旧精简 V4 的规则升级，自定义规则保持并提供添加提示；自动注入逐轮刷新，复制入口只生成当时静态快照。
 - 按需触发（`prompt-triggers.js`）：聊天、日常、战斗、亲密四块在最近 3 层出现对应标签、本轮用户输入命中触发词，或最近 12 层内有未闭合的成对标签时才发完整说明，否则只在索引行列出类型名。
-- 在场名单只由 `stage-cast.js` 的 `resolveStageCast` 推断：纯函数，不读宿主、不读 DOM；换 `[igs-scene]` 清空，每层楼从空名单开始。
+- 阅读器整楼准备的在场名单由 `reader-floor-plan.js` 与 `reader-floor-assets.js` 共用场景继承结果：`[igs-scene]` 可选第 5 栏为在场角色名单，第 4 栏仍只表示 NSFW；未写名单时按 `sceneCarryMode`（strict / smart / loose，默认 smart）和正文判断同行，跳时或分开时不无条件沿用。旧三栏、四栏写法保持兼容。
+- 旁白焦点由 `narration-focus.js` 按页序解析名字、别名、感知对象与代词；临时焦点只使用同屏空座，不挤占已经开口的角色。独立 `resolveStageCast` 仍为不读宿主或 DOM 的纯函数。
 - 陪衬挑选由 `stage-cast.js` 的 `pickCastMembers` 负责：调用方以 `STAGE_CAST_SCAN_LIMIT`（6）宽扫名单，再按有无立绘跳过无图角色，凑满 `STAGE_CAST_MAX_SEATS`（3）减说话人即停止解析；窄屏上限仍由渲染层 `layoutCastSlots` 截断。无图角色不得占用同屏名额。
 - 世界观（`worldview.js`）：`WORLDVIEWS` 为唯一注册表（modern / ancient / fantasy / scifi / apocalypse / taisho / magic 均已启用；`ready:false` 仍表示预留项，下拉中不可选、`applyWorldview` 拒绝写入），设置页一键档位条的「适配世界」下拉、`worldview:<id>` 动作与场景预设保存 / 应用 / 导入 / 导出只经 `resolveWorldview` / `applyWorldview` 读写，不直接碰存储字段。存储为枚举 `bridge.sceneAssets.worldview`，并同步写布尔 `ancient`（古代为 true，其余为 false）供既有消费方读取；读取时 `ancient: true` 优先按古代，`ancient` 为假时 `worldview: 'ancient'` 按现代，缺字段或未知值按现代。演出过滤与时代提示词由 `fx-era.js` 的 `applyFxWorldview` / `resolveWorldviewPromptRule` 负责（古代、现代与 `applyFxEra` / `ANCIENT_ERA_PROMPT_RULE` 逐值等价）；阅读器快照携带 `_worldview`，`_ancientEra` 保留。在现代结构上换皮的世界观统一登记在 `WORLD_SKIN_IDS`，演出 / 音效层只经 `worldSkinOf` 判断，不各自维护列表；新增世界观时先注册为 `ready:false`，补齐 `FX_WORLDVIEW_OFF`、时代规则、`fx-sfx` 的 `notify-<id>` 音色与 `fx-style` 的 `is-<id>` 换皮后再启用；日常（`fx-daily-style` 的 `is-<id>`）、物品（`data-igs-era="<id>"`）、战斗（`is-<id>`）、聊天（`data-igs-chat-world`）四类演出也各有一套样式分支，新增世界观须同步补齐，古代与现代不挂这些标记；世界观专属日常演出统一登记在 `FX_WORLDVIEW_ONLY`（古代 `FX_ERA_ANCIENT_ONLY`、魔法 `FX_MAGIC_ONLY`），当前世界观以外的表一律拨成关；未知 id 一律不改动。
 - 地点氛围（`place-ambience.js`）：`resolvePlaceAmbience(location, { worldview })` 是「人在车里 / 船上 / 浴室 / 水底 / 真空里」的唯一词表，返回 `{ kind, variant }` 或 null；日常演出的常驻氛围层（`fx-daily` 的 `.igs-dfx-amb`）与环境音（`scene-audio` 的 car / carriage / bath / underwater / space 层、水下闷音色调）都只经它判断，不各自维护地点词。古代与西幻（`isHorseDrawnWorld`）的「车里」按马车；水下与太空不分世界观。`STILL_PLACE_KINDS`（浴室、水下、太空）在 NSFW 页照常挂氛围层，`VEHICLE_KINDS` 只在 SFW 页挂。水下与真空在环境音里独占（不叠雨、风、人声）。
@@ -58,3 +100,9 @@
 - 不直接渲染 DOM。
 - 不直接调用生图 API。
 - 不直接发送用户输入。
+
+## 楼层准备（v0.36.62）
+
+- `prepareIllustrationPages` 与 `prepareEventCgPages` 一次建立整楼 CG 页计划，沿用原有停留、NSFW、场景变更和新说话人退场规则。
+- `createFxPageResolver` 顺序消费新增演出指令、保留区间状态；既有 `resolveFxAtPage` 仍支持独立单页解析，准备后的页不能被后续页回写。`createNarrationSpriteTracker` 与原有离场/回来规则共用状态推导。
+- 立绘可用性先确定当前角色及其别名，再只检查同角色槽位；不因任意一张图片读取失败而遍历其他角色图片。

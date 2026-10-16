@@ -1,7 +1,8 @@
 import { imageBackendMethod } from '../backend-methods.js';
-
+import { requireMediaCache } from '../../media/media-cache-owner.js';
 import { floorHasEventCg } from '../../scene/event-cg.js';
 import { numberParagraphs, formatNumberedParagraphs, insertMarkers, insertMarkersAtAnchors, findAnchorInsertIndex, appendedTail, reattachTail, transplantMarkers } from './marker-placer.js';
+import { normalizeImageMarkerLayout } from '../../scene/image-marker-layout.js';
 import { MIN_AUTO_IMAGE_BODY_CHARS, floorBodyLength } from './floor-body-length.js';
 import { buildPlannerUserPrompt, CG_TEMPLATE_PLANNER_SYSTEM, PLANNER_SYSTEM_PROMPT, cgWritingRequirements } from './planner-prompt.js';
 import { writeTemplateCaptionsWithLlm } from './caption-writer.js';
@@ -21,6 +22,7 @@ import { outfitAdoptionEvidence } from '../../scene/outfit-identity.js';
 import { inheritImageTaskLease } from '../image-task-runtime.js';
 
 const MARKER_RE = /(?:\[igs-img:\s*(\d+)\s*\]|<IMG>\s*(\d+)\s*<\/IMG>)/gi;
+const hasSlotImage = record => typeof record?.dataUrl === 'string' && Boolean(record.dataUrl.trim()) && !/^data:[^,]*,\s*$/.test(record.dataUrl);
 
 export const ILLUSTRATION_UPDATED_EVENT = 'igs:illustration-updated';
 export const ILLUSTRATION_PROGRESS_EVENT = 'igs:illustration-progress';
@@ -103,7 +105,6 @@ export function readCgViewport(globalObject, mode) {
     return windowViewport(globalObject, portrait);
 }
 
-const CACHE_LIMIT = 40;
 // 只有这些状态算「本楼已处理完」；failed / stale / 中途刷新残留的 planning 在下次渲染时重试，
 // 否则改好 Key 或地址之后，之前失败过的楼层永远不会再发请求。
 const SETTLED_STATUSES = new Set(['done']);
@@ -138,9 +139,11 @@ export function summarizeCharacterDna(characters, sceneAssets) {
     return out;
 }
 
-// CG 顺序：triggerWords → identity → 规划得到的当前外观/动作；defaultAppearance 只交给 planner，不在这里追加。
+// CG 顺序：triggerWords → identity → 规划得到的当前外观/动作。
+// defaultAppearance 和今天的穿着都只交给写词那一步作参考，不在这里追加，避免正文已经换了衣服还被钉死。
 // 具名 char 直接绑定；旧格式无名 char 只在「本张单人且上下文只有一个角色」时绑定，否则不注入并给出 warning。
-export function bindCharacterDnaToSlots(slots, sceneAssets, contextCharacters = []) {
+// identityOnly：柏宝绘 / 智绘姬回退时只拼身份，DNA 负面词交给插件自己的角色库与负面预设，不再并进 uc。
+export function bindCharacterDnaToSlots(slots, sceneAssets, contextCharacters = [], { identityOnly = false } = {}) {
     const resolver = createDnaResolver(sceneAssets);
     const warnings = [];
     if (!resolver || !Array.isArray(slots)) return { slots, warnings };
@@ -162,7 +165,7 @@ export function bindCharacterDnaToSlots(slots, sceneAssets, contextCharacters = 
             return {
                 ...char,
                 tags: parts.positive ? mergePromptTags(parts.positive, char.tags) : char.tags,
-                uc: parts.negative ? mergePromptTags(parts.negative, char.uc) : char.uc,
+                uc: parts.negative && !identityOnly ? mergePromptTags(parts.negative, char.uc) : char.uc,
             };
         });
         if (ambiguous) warnings.push(`第 ${slot.slot || '?'} 张插图有角色未写名字且无法唯一确定，未注入角色 DNA`);
@@ -171,40 +174,6 @@ export function bindCharacterDnaToSlots(slots, sceneAssets, contextCharacters = 
     return { slots: next, warnings };
 }
 
-// 数据库生图返回的 NaiCaption 没有角色名：按同一规则（单人且上下文唯一角色）把 DNA 并进 char caption。
-export function bindCharacterDnaToCaption(caption, sceneAssets, contextCharacters = [], slotId) {
-    const pos = caption && caption.v4_prompt && caption.v4_prompt.caption;
-    const neg = caption && caption.v4_negative_prompt && caption.v4_negative_prompt.caption;
-    const chars = pos && Array.isArray(pos.char_captions) ? pos.char_captions : [];
-    if (!chars.length) return { caption, warnings: [] };
-    const ucs = neg && Array.isArray(neg.char_captions) ? neg.char_captions : [];
-    const bound = bindCharacterDnaToSlots([{
-        slot: slotId,
-        chars: chars.map((item, i) => ({ tags: (item && item.char_caption) || '', uc: (ucs[i] && ucs[i].char_caption) || '' })),
-    }], sceneAssets, contextCharacters);
-    const next = bound.slots[0].chars;
-    return {
-        warnings: bound.warnings,
-        caption: {
-            ...caption,
-            v4_prompt: {
-                ...caption.v4_prompt,
-                caption: { ...pos, char_captions: chars.map((item, i) => ({ ...item, char_caption: next[i].tags })) },
-            },
-            v4_negative_prompt: {
-                ...(caption.v4_negative_prompt || {}),
-                caption: {
-                    ...(neg || {}),
-                    base_caption: (neg && neg.base_caption) || '',
-                    char_captions: chars.map((item, i) => ({
-                        ...(ucs[i] && typeof ucs[i] === 'object' ? ucs[i] : (item && item.centers ? { centers: item.centers } : {})),
-                        char_caption: next[i].uc || '',
-                    })),
-                },
-            },
-        },
-    };
-}
 
 export function createAutoIllustrationService(deps) {
     const { messageHost, llm, nai, store, getSettings, events } = deps;
@@ -219,9 +188,11 @@ export function createAutoIllustrationService(deps) {
     const locks = new Map();
     const runningFloors = new Map();
     const pendingFloors = new Map();
-    const cache = new Map();
-    const hydrated = new Set();
+    const cache = requireMediaCache(deps.mediaCache, 'auto-illustrations');
+    const states = cache.auxiliary.createMap('cg-states');
+    const resourceKey = key => `cg:${key}`;
     let offRendered = null;
+    let stopped = false;
     let regexesEnsured = false;
     const settings = () => normalizeAutoIllustrationSettings(getSettings ? getSettings() : null);
     const cgSize = (s) => cgSizeForMode(
@@ -234,13 +205,18 @@ export function createAutoIllustrationService(deps) {
         return value && typeof value === 'object' ? value : {};
     };
 
-    function remember(key, value) {
-        cache.delete(key);
-        cache.set(key, value);
-        while (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value);
+    function remember(key, value, { metadataOnly = false } = {}) {
+        if (stopped) return;
+        states.set(key, { status: value.status, hasImage: hasSlotImage(value) });
+        if (metadataOnly || !hasSlotImage(value)) return;
+        if (value.dataUrl) cache.forget(resourceKey(key));
+        if (/^(data:image\/|blob:|https?:)/i.test(String(value.dataUrl || ''))) cache.remember(resourceKey(key), value.dataUrl);
+        else if (value.dataUrl && cache.peek(value.dataUrl)) cache.remember(resourceKey(key), cache.peek(value.dataUrl));
     }
 
+
     function emit(floor, slot) {
+        if (stopped) return;
         if (events && typeof events.emit === 'function') {
             events.emit(ILLUSTRATION_UPDATED_EVENT, { chatId: floor.chatId, messageId: floor.messageId, swipeId: floor.swipeId, slot });
         }
@@ -344,17 +320,24 @@ export function createAutoIllustrationService(deps) {
             report('warn', `第 ${messageId} 楼数据库生图插件返回了 ${Array.isArray(written.captions) ? written.captions.length : 0} 张，按 ${returned.length} 张生成`);
         }
         const slots = [];
+        let unmatchedAnchors = 0, unsafeAnchors = 0;
         for (const item of returned) {
             const anchorSentence = String(item.anchorSentence || item.anchor || '').trim();
             const found = findAnchorInsertIndex(floor.text, anchorSentence);
             if (found.index < 0) {
-                report('warn', `第 ${messageId} 楼第 ${item.slotId} 张没有能对上正文的生成点，跳过`);
+                const matched = Number.isFinite(found.anchorIndex);
+                if (matched) unsafeAnchors++; else unmatchedAnchors++;
+                report('warn', `第 ${messageId} 楼第 ${item.slotId} 张${matched
+                    ? '生成点已命中正文，但无法在完整结构之后安全插入'
+                    : '没有能对上正文的生成点'}，跳过`);
                 continue;
             }
             const slot = Number(item.slotId);
             const context = characterState.at(found.index);
             const bound = template ? preflightCgCaption(item, task?.promptTask, context) : item.characterMeta === undefined
-                ? { ok: true, ...bindCharacterDnaToCaption(item.caption, sceneAssets, characters, slot) }
+                ? (() => { const result = bindCharacterDnaToSlots([{ slot, ...item.caption }], sceneAssets, characters,
+                    { identityOnly: ['baibai', 'chatu8'].includes(backendReady().via) });
+                    return { ok: true, caption: result.slots[0], warnings: result.warnings }; })()
                 : bindCgCaption(item.caption, item.characterMeta, context, sceneAssets);
             if (!bound.ok && !template) {
                 await store.putFloor(key, { ...base, status: 'failed', error: bound.error, updatedAt: now() });
@@ -377,7 +360,10 @@ export function createAutoIllustrationService(deps) {
                 originalSize: parseCgSize(cgSize(s)) });
         }
         if (!slots.length) {
-            const error = '数据库生图插件没有返回能对上正文的生成点';
+            const error = unsafeAnchors
+                ? unmatchedAnchors ? `生成点均不可用（正文未命中 ${unmatchedAnchors} 个，无法安全插入 ${unsafeAnchors} 个）`
+                    : '生成点已命中正文，但没有安全的独占行插入位置'
+                : '数据库生图插件没有返回能对上正文的生成点';
             await store.putFloor(key, { ...base, status: 'failed', error, updatedAt: now() });
             report('error', `第 ${messageId} 楼插图规划失败，未发送生图请求：${error}`);
             progress(floor, { phase: 'done' });
@@ -432,7 +418,6 @@ export function createAutoIllustrationService(deps) {
         },
         onAccepted(target, record) {
             const key = `${target.key}|${target.slot}`;
-            hydrated.add(key);
             remember(key, { status: record.status, dataUrl: record.dataUrl || '' });
             emit(target.floor, target.slot);
         },
@@ -522,6 +507,7 @@ export function createAutoIllustrationService(deps) {
             remember(`${key}|${request.slot}`, { status: attempt.status, dataUrl: attempt.dataUrl || '' });
         }
         let succeeded = 0;
+        let firstFailure = null;
         const errors = [];
         for (let index = 0; index < requests.length; index += 1) {
             const request = requests[index];
@@ -553,9 +539,10 @@ export function createAutoIllustrationService(deps) {
                     result = { ok: false, error: (error && error.message) || '出图失败' };
                 }
             }
-            if (result && result.ok) succeeded += 1;
+            if (result && result.ok && hasSlotImage(result)) succeeded += 1;
             else {
-                errors.push((result && result.error) || '出图失败');
+                errors.push((result && result.error) || '图像来源未返回图片，提示词已保留，可点击重试');
+                if (result && result.failure && !firstFailure) firstFailure = result.failure;
                 report('error', `第 ${messageId} 楼第 ${request.slot} 张插图生成失败：${(result && result.error) || '出图失败'}`);
             }
             await finishSlotPaint(key, request, attempts.get(request.slot), result,floor);
@@ -568,6 +555,7 @@ export function createAutoIllustrationService(deps) {
         return {
             ok: false, reason: 'generation-failed', count: succeeded, failedCount,
             error: `${failedCount} 张插图失败${succeeded ? `（成功 ${succeeded} 张）` : ''}：${Array.from(new Set(errors)).join('；')}`,
+            ...(firstFailure && { failure: firstFailure }),
         };
     }
 
@@ -619,7 +607,7 @@ export function createAutoIllustrationService(deps) {
         }
         // 标记还在但记录丢了（换设备、清缓存）时先去掉旧标记再规划，避免重复插入；写回时仍按原文校验。
         const expected = floor;
-        if (/(?:\[igs-img:\s*\d+\s*\]|<IMG>\s*\d+\s*<\/IMG>)/i.test(floor.text)) floor = { ...floor, text: stripIllustrationMarkers(floor.text) };
+        if (/(?:\[igs-img:\s*\d+\s*\]|<IMG>\s*\d+\s*<\/IMG>)/i.test(floor.text)) floor = { ...floor, text: stripIllustrationMarkers(normalizeImageMarkerLayout(floor.text)) };
         const numbered = numberParagraphs(floor.text);
         // 本楼没写场景标签 = 场景延续：继承最近一个带场景标签的楼的 NSFW，不让 NSFW 掉进过场概率。
         if (!numbered.scenes.length) numbered.isNsfw = inheritedNsfw(messageId);
@@ -744,7 +732,7 @@ export function createAutoIllustrationService(deps) {
                 ...(plan.diagnostic && { diagnostic: plan.diagnostic }) };
         }
         if (!template) {
-            const bound = bindCharacterDnaToSlots(plan.slots, readSceneAssets(), numbered.characters);
+            const bound = bindCharacterDnaToSlots(plan.slots, readSceneAssets(), numbered.characters, { identityOnly: backend.via === 'baibai' || backend.via === 'chatu8' });
             plan.slots = bound.slots;
             for (const warning of bound.warnings) report('info', `第 ${messageId} 楼${warning}`);
         }
@@ -799,6 +787,7 @@ export function createAutoIllustrationService(deps) {
             remember(`${key}|${request.slot}`, { status: attempt.status, dataUrl: attempt.dataUrl || '' });
         }
         let succeeded = 0;
+        let firstFailure = null;
         const errors = [];
         for (let index = 0; index < requests.length; index += 1) {
             const request = requests[index];
@@ -818,9 +807,10 @@ export function createAutoIllustrationService(deps) {
                     promptEdited: true, captionMode: 'final' };
             }
             catch (error) { result = { ok: false, error: `NAI 生成失败：${(error && error.message) || error}` }; }
-            if (result && result.ok) succeeded += 1;
+            if (result && result.ok && hasSlotImage(result)) succeeded += 1;
             else {
-                errors.push((result && result.error) || 'NAI 生成失败');
+                errors.push((result && result.error) || '图像来源未返回图片，可点击重试');
+                if (result && result.failure && !firstFailure) firstFailure = result.failure;
                 report('error', `第 ${messageId} 楼第 ${request.slot} 张插图生成失败：${(result && result.error) || 'NAI 生成失败'}`);
             }
             await finishSlotPaint(key, request, attempts.get(request.slot), result, floor);
@@ -833,6 +823,7 @@ export function createAutoIllustrationService(deps) {
         return {
             ok: false, reason: 'generation-failed', count: succeeded, failedCount,
             error: `${failedCount} 张插图失败${succeeded ? `（成功 ${succeeded} 张）` : ''}：${Array.from(new Set(errors)).join('；')}`,
+            ...(firstFailure && { failure: firstFailure }),
         };
     }
 
@@ -840,7 +831,7 @@ export function createAutoIllustrationService(deps) {
     async function markedSlots(key, text) {
         const present = new Set(Array.from(String(text || '').matchAll(MARKER_RE), (m) => Number(m[1] || m[2])));
         const all = (await store.getSlots(key)).filter((slot) => present.has(Number(slot.slot)));
-        return { all, retry: all.filter((slot) => slot.status !== 'done') };
+        return { all, retry: all.filter((slot) => slot.status !== 'done' || !hasSlotImage(slot)) };
     }
 
     // backfill：翻到旧楼时补 CG。和自动出图一样掷过场概率、看字数、跳过已经判定过的楼，只是放开最新楼的限制。
@@ -894,19 +885,23 @@ export function createAutoIllustrationService(deps) {
         };
         if (!floor.chatId) return '';
         const key = floorKeyOf(floor);
-        const hit = cache.get(`${key}|${slot}`);
-        if (hit) return hit.status === 'done' ? hit.dataUrl : '';
-        if (!hydrated.has(key)) {
-            hydrated.add(key);
-            store.getSlots(key).then((list) => {
-                let found = false;
-                for (const item of list) {
-                    remember(`${key}|${item.slot}`, { status: item.status, dataUrl: item.dataUrl || '' });
-                    if (item.status === 'done') found = true;
-                }
-                if (found) emit(floor, slot);
-            }).catch(() => { hydrated.delete(key); });
-        }
+        const slotKey = `${key}|${slot}`, resource = resourceKey(slotKey);
+        const hit = cache.peek(resource);
+        if (hit) return hit;
+        const known = states.get(slotKey);
+        if (known && !known.hasImage) return '';
+        if (stopped) return '';
+        const stamp = cache.token(resource), generation = states.epoch();
+        void cache.load(resource, async () => {
+            let record = typeof store.getSlotRecord === 'function' ? await store.getSlotRecord(slotKey)
+                : (await store.getSlots(key, { deferImages: true })).find(item => Number(item.slot) === Number(slot));
+            if (stopped || states.epoch() !== generation || cache.token(resource) !== stamp) return '';
+            if (record && store.hydrateSlot && !/^(data:image\/|blob:|https?:)/i.test(String(record.dataUrl || ''))) record = await store.hydrateSlot(record);
+            if (stopped || states.epoch() !== generation || cache.token(resource) !== stamp) return '';
+            if (record) remember(slotKey, record, { metadataOnly: true });
+            else remember(slotKey, { status: 'missing', dataUrl: '' }, { metadataOnly: true });
+            return hasSlotImage(record) ? record.dataUrl : '';
+        }, { persist: false, timeoutMs: 45000 }).then(value => { if (value && !stopped && states.epoch() === generation && cache.token(resource) === stamp) emit(floor, slot); }).catch(() => {});
         return '';
     }
 
@@ -942,7 +937,7 @@ export function createAutoIllustrationService(deps) {
     async function dropSlots(floor, key, slots) {
         for (const item of slots) {
             await store.deleteSlot(key, item.slot);
-            cache.delete(`${key}|${item.slot}`);
+            cache.forget(resourceKey(`${key}|${item.slot}`)); states.delete(`${key}|${item.slot}`);
             emit(floor, item.slot);
         }
     }
@@ -964,7 +959,7 @@ export function createAutoIllustrationService(deps) {
             } catch (error) {
                 return { ok: false, reason: 'delete-failed', error };
             }
-            cache.delete(`${key}|${identity.slot}`);
+            cache.forget(resourceKey(`${key}|${identity.slot}`)); states.delete(`${key}|${identity.slot}`);
             const live = messageHost && typeof messageHost.readFloor === 'function' ? messageHost.readFloor(floor.messageId) : null;
             if (!live || !/(?:\[igs-img:|<IMG>)/i.test(live.text)) {
                 await store.putFloor(key, { kind: 'none', status: 'done', updatedAt: now() });
@@ -1030,13 +1025,31 @@ export function createAutoIllustrationService(deps) {
         const key = floorKeyOf(floor);
         if (locks.has(key)) return locks.get(key);
         const job = (async () => {
+            const oldSlots = await store.getSlots(key, { deferImages: true });
+            const oldFloor = await store.getFloor(key);
             const removed = await removeMarkers(floor, null);
-            if (!removed.ok) return { ...removed, error: '无法删掉本楼的 CG 挂载点' };
-            const slots = await store.getSlots(key);
-            await dropSlots(floor, key, slots);
-            if (!slots.length) emit(floor, 1);
+            if (!removed.ok) return { ...removed, error: '无法改写本楼的 CG 挂载点' };
             const latest = withAnyFloor(messageHost.readFloor(messageId), true) || { ...floor, text: stripIllustrationMarkers(floor.text) };
-            return run(Number(messageId), latest, key, s, true);
+            let result;
+            try { result = await run(Number(messageId), latest, key, s, true); }
+            catch (error) { result = { ok: false, reason: 'generation-failed', error: error.message }; }
+            if (!result.ok && !result.count) {
+                const before = new Set(oldSlots.map(record => Number(record.slot)));
+                const current = await store.getSlots(key, { deferImages: true });
+                await dropSlots(floor, key, current.filter(record => !before.has(Number(record.slot))));
+                for (const record of oldSlots) await store.putSlot(key, record);
+                if (oldFloor) await store.putFloor(key, oldFloor);
+                const live = messageHost.readFloor(messageId);
+                if (live && live.chatId === floor.chatId && live.swipeId === floor.swipeId) {
+                    const restoredText = transplantMarkers(floor.text, stripIllustrationMarkers(live.text)).text;
+                    await messageHost.writeFloor(messageId, restoredText, live, { requireLatest: false });
+                }
+            } else if (result.ok) {
+                const live = messageHost.readFloor(messageId);
+                const keep = new Set(Array.from(String(live?.text || '').matchAll(MARKER_RE), match => Number(match[1] || match[2])));
+                await dropSlots(floor, key, oldSlots.filter(record => !keep.has(Number(record.slot))));
+            }
+            return result;
         })().finally(() => { if (locks.get(key) === job) locks.delete(key); });
         locks.set(key, job);
         return job;
@@ -1046,6 +1059,7 @@ export function createAutoIllustrationService(deps) {
         processMessage, getIllustrationUrl, clearIllustration, clearFloorIllustrations, rerollSlot, rerollFloor,
         preflightConsistency, redrawConsistency, acceptConsistency, cancelConsistency, describeConsistency,
         start() {
+            stopped = false;
             if (offRendered) return;
             messageHost.attachPromptStrip();
             const ready = messageId => { void processMessage(Number(messageId)); };
@@ -1053,9 +1067,12 @@ export function createAutoIllustrationService(deps) {
                 ? messageHost.onImageFloorReady(ready)
                 : messageHost.on('CHARACTER_MESSAGE_RENDERED', ready);
         },
+        clearCache() { states.clear(); },
         stop() {
             consistency.cancel();
             pendingFloors.clear();
+            stopped = true;
+            states.clear();
             if (offRendered) { offRendered(); offRendered = null; }
             messageHost.destroy();
         },
