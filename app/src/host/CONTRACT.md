@@ -1,5 +1,7 @@
 # host 模块契约
 
+- 0.36.90：宿主入口未就绪与已发送等待回执分别发布明确状态；保持原消息观察和单次发送，观察到原回执后自动继续，不把等待解释成发送失败后重发正文。
+
 ## 宿主事件接收隔离（PR #11，0.36.88 本地草稿）
 
 - `illustration-message-host.on(eventKey, handler)` 同步调用内部处理后返回 `undefined`。共用的私有 `invokeListener` 收束内部 Promise、同步异常与异步拒绝，诊断只记录事件键；`onImageFloorReady` 的即时和主生成结束后交付同样经过此入口。自动插图和素材补全的处理器返回内部任务 Promise，交由适配器收束。

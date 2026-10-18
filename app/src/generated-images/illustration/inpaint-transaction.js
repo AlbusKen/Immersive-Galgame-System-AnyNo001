@@ -41,7 +41,7 @@ export function createInpaintTransaction({ service, backend, matte }) {
     function saveCandidate(imageId, revision, changes, signal) {
         let currentRevision = revision;
         return recoverOperation(() => service.saveMatteEdit(imageId, currentRevision, changes, { signal }), {
-            signal,
+            signal, repeatable: 'save',
             repair: async failure => {
                 if (!['stale-revision', 'revision-conflict'].includes(failure?.reason)) return;
                 const latest = await service.getEditableImage(imageId);
@@ -84,7 +84,7 @@ export function createInpaintTransaction({ service, backend, matte }) {
                 const value = await backend.edit(request);
                 return value?.ok && value.dataUrl ? value : { ...value, ok: false, reason: value?.reason || 'edit-failed' };
             }, { signal });
-            if (result?.cancelled) return result;
+            if (result?.cancelled || result?.ok === false) return result;
             candidate = { imageId, revision: record.revision, dataUrl: result.dataUrl };
             return { ok: true, candidateDataUrl: result.dataUrl };
         })().finally(() => { inflight = null; });
@@ -96,7 +96,7 @@ export function createInpaintTransaction({ service, backend, matte }) {
         const c = candidate;
         const signal = controller.signal;
         const matted = await recoverOperation(() => rematte(c.dataUrl), { signal });
-        if (matted?.cancelled) return matted;
+        if (matted?.cancelled || matted?.ok === false) return matted;
         const saved = await saveCandidate(c.imageId, c.revision, {
             workingDataUrl: c.dataUrl,
             dataUrl: matted.dataUrl,
@@ -119,7 +119,7 @@ export function createInpaintTransaction({ service, backend, matte }) {
         if (!loaded.editable) return { ok: false, reason: 'source-unavailable' };
         const record = loaded.record;
         const matted = await recoverOperation(() => rematte(record.originalDataUrl), { signal });
-        if (matted?.cancelled) return matted;
+        if (matted?.cancelled || matted?.ok === false) return matted;
         const result = await saveCandidate(imageId, record.revision, {
             workingDataUrl: '',
             dataUrl: matted.dataUrl,

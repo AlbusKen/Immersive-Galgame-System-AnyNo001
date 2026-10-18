@@ -190,10 +190,12 @@ export function createSettingsHost(deps) {
         if (saved.ok === false) {
             if (!current.asyncState.closingRecovery) {
                 current.asyncState.closingRecovery = recoverOperation(saveForClose, { signal: current.recoveryController.signal,
+                    repeatable: 'save',
                     isActive: () => state.activeSettings === current,
                     global: options.global || globalThis }).then(result => {
                     delete current.asyncState.closingRecovery;
-                    return result?.cancelled ? result : closeSettings();
+                    if (result?.ok === false || result === false) { reportSettingsFailure(result); return result; }
+                    return closeSettings();
                 });
             }
             return { ok: true, pending: true, completion: current.asyncState.closingRecovery };
@@ -518,12 +520,10 @@ export function createSettingsHost(deps) {
             global: options.global || globalThis,
             signal: panel.recoveryController.signal,
             isActive: () => state.activeSettings === panel,
-            onRecover({ result, phase }) {
+            onRecover({ result, phase, message }) {
                 panel.asyncState.operationRecovery = { action, phase, reason: String(result?.reason || 'operation-pending') };
                 recoveryProgress ||= beginSettingsProgress(() => panel.dom?.root, '正在自动恢复操作…');
-                recoveryProgress.update(phase === 'waiting-condition'
-                    ? '操作尚未完成，输入和结果已保留；正在等待失败条件解除'
-                    : '正在修复并续接原操作…');
+                recoveryProgress.update(message || '正在修复并续接原操作…');
                 // 保留现有表单、文件和已完成结果，下一轮从原操作继续。
                 rerenderSettings();
             },

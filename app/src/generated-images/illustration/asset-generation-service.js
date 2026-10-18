@@ -243,9 +243,9 @@ export function createAssetGenerationService(deps) {
     }
 
     async function persistTempRecord(record) {
-        const old = await recoverOperation(() => store.getAsset(record.key), { signal: recoveryController.signal, isActive: () => !stopped });
+        const old = await recoverOperation(() => store.getAsset(record.key), { repeatable: 'read', signal: recoveryController.signal, isActive: () => !stopped });
         if (stopped) return;
-        const saved = await recoverOperation(() => store.putAsset(record), { signal: recoveryController.signal, isActive: () => !stopped });
+        const saved = await recoverOperation(() => store.putAsset(record), { repeatable: 'save', signal: recoveryController.signal, isActive: () => !stopped });
         if (saved?.cancelled || stopped) return;
         tempCache.remember(record);
         if (old?.imageId && old.imageId !== record.imageId) await deleteImagesImpl([old.imageId]);
@@ -464,8 +464,8 @@ export function createAssetGenerationService(deps) {
 
     // 完整图片记录始终保留；保存暂时失败时续写同一记录，不删原图或遮罩。
     async function persistGeneratedImage(image) {
-        const saved = await recoverOperation(() => store.putImage(image), { signal: recoveryController.signal, isActive: () => !stopped });
-        return saved?.cancelled ? saved : { ok: true };
+        const saved = await recoverOperation(() => store.putImage(image), { repeatable: 'save', signal: recoveryController.signal, isActive: () => !stopped });
+        return saved?.cancelled || saved?.ok === false ? saved : { ok: true };
     }
 
     async function generateItem(item, s, floor, floorKey) {
@@ -1137,6 +1137,7 @@ export function createAssetGenerationService(deps) {
                 const input = { signal: target.signal, shouldStart: target.shouldStart };
                 const execute = guarded => recoverOperation(() => run(Number(messageId), current, key,
                     readSettings(guarded.signal), manual, refresh), {
+                    retryUnchanged: false,
                     signal: guarded.signal, isActive: guarded.shouldStart,
                     onRecover: () => report('info', '素材任务正在自动恢复'),
                 });
@@ -1260,7 +1261,7 @@ export function createAssetGenerationService(deps) {
             const record = await store.getImageRecord?.(imageId) || await store.getImage(imageId);
             attemptedRevision = record?.revision ?? expectedRevision;
             return store.updateImage(imageId, attemptedRevision, patch, now());
-        }, { signal: linked.signal, isActive: () => !stopped,
+        }, { repeatable: 'save', signal: linked.signal, isActive: () => !stopped,
             repair: async result => {
                 if (!['stale-revision', 'revision-conflict'].includes(result?.reason)) return;
                 const latest = await store.getImageRecord?.(imageId) || await store.getImage(imageId);
@@ -1354,6 +1355,7 @@ export function createAssetGenerationService(deps) {
     // 模板及手改定稿绕过旧正文组合；身份只由 image-backend 的准备入口展开。
     function saveOutfitDna(save, clothing, { signal, shouldStart } = {}) {
         return recoverOperation(() => save(clothing), {
+            repeatable: 'save',
             signal: signal || recoveryController.signal,
             isActive: () => !stopped && (!shouldStart || shouldStart()),
         });
@@ -1362,6 +1364,7 @@ export function createAssetGenerationService(deps) {
     async function paintExpressionCaption(...args) {
         const options = args[4] || {};
         return recoverOperation(() => paintExpressionCaptionOnce(...args), {
+            retryUnchanged: false,
             signal: options.signal || recoveryController.signal,
             isActive: () => !stopped && (!options.shouldStart || options.shouldStart()),
             onRecover: ({ attempt }) => { if (attempt === 1) report('info', '正在自动续接本张立绘'); },
@@ -1400,6 +1403,7 @@ export function createAssetGenerationService(deps) {
                 error: (painted && painted.error) || '出图失败',
                 ...(painted?.reason && { reason: painted.reason }),
                 ...(painted?.stopGeneration && { stopGeneration: true }),
+                ...(painted?.recoveryStopped && { recoveryStopped: true }),
                 prompt: storedPromptFromResult(painted, upright),
                 caption: protocol?.caption || upright,
                 ...characterPromptRecovery(templateInput), ...(exact && { edited: true }),
@@ -2031,7 +2035,7 @@ export function createAssetGenerationService(deps) {
         const saved = await recoverOperation(async () => {
             const live = await (store.getImageRecord ? store.getImageRecord(key) : store.getImage(key));
             return store.updateImagePrompt(key, live?.revision ?? revision, stored, now());
-        }, { signal: recoveryController.signal, isActive: () => !stopped });
+        }, { repeatable: 'save', signal: recoveryController.signal, isActive: () => !stopped });
         if (!saved?.ok) return { ok: false, reason: saved?.reason || 'update-failed',
             error: saved?.reason === 'stale-revision' ? '图片或提示词已变化，请重新打开编辑' : '提示词没存上' };
         return { ok: true, prompt: saved.record.prompt, revision: saved.record.revision };
@@ -2148,6 +2152,7 @@ export function createAssetGenerationService(deps) {
                 const perform = () => execute(...(objectInput && captured ? [guarded, ...args.slice(1)] : args));
                 const readOnly = ['readStoredImage', 'readStoredImageRecord', 'getImagePrompt'].includes(method);
                 return recoverOperation(perform, {
+                retryUnchanged: false,
                 signal: guarded.signal,
                 global: deps.global || llm?.recoveryGlobal || globalThis,
                 isActive: () => !stopped && (!guarded.shouldStart || guarded.shouldStart()),

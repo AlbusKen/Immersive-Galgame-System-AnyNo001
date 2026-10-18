@@ -169,7 +169,7 @@ export function createCgGalleryPanel(doc, options = {}) {
             const src = result && result.ok ? safeItemImageUrl(result.dataUrl) : '';
             target.innerHTML = src
                 ? viewerHtml(entry, src, '')
-                : viewerHtml(entry, safeItemImageUrl(view.tileOf(entry.key).url), result?.reason === 'missing' ? '这张图片已删除' : '正在恢复图片读取');
+                : viewerHtml(entry, safeItemImageUrl(view.tileOf(entry.key).url), result?.reason === 'missing' ? '这张图片已删除' : `图片未能读取：${result?.error || result?.reason || '读取失败'}`);
         });
     }
 

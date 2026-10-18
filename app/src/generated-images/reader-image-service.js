@@ -412,6 +412,7 @@ export function createReaderImageService(options = {}) {
             return recoverOperation(() => execute.call(receiver, { ...context, signal, recoveryCheckpoint: checkpoint,
                 ...(!context.settings && options.getUnifiedSettings && { unifiedSettings: options.getUnifiedSettings() }) }), {
                 signal, global: globalObject,
+                retryUnchanged: !['generate', 'regenerate', 'test'].includes(method),
                 isActive: () => {
                     const latest = cacheScope(context, context.message);
                     return !recoveryController.signal.aborted && latest.chatId === identity.chatId

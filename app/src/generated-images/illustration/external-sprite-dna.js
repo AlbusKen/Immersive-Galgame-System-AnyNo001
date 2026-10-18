@@ -145,6 +145,7 @@ export function createExternalSpriteDnaPreparation({ llm, readSettings, isExtern
                 entry.job.saving = true;
                 try {
                     const saved = await recoverOperation(() => owner.save(prepared[index].dna), {
+                        repeatable: 'save',
                         signal, isActive: () => current() && owner.targetCurrent(),
                     });
                     if (saved?.ok !== true) {

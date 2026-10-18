@@ -17,7 +17,7 @@ export function stopMediaRequests(global) {
 // 文件、目录和本地清单属于同一媒体运行时；关闭时结束等待，重新启动使用新的所有者。
 export async function recoverMediaOperation(global, execute, options = {}) {
     const linked = linkRecoverySignals([requestOwner(global).controller.signal, options.signal]);
-    try { return await recoverOperation(execute, { ...options, signal: linked.signal, global }); }
+    try { return await recoverOperation(execute, { repeatable: 'save', ...options, signal: linked.signal, global }); }
     finally { linked.release(); }
 }
 

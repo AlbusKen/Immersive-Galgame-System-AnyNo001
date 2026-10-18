@@ -8,6 +8,38 @@ import {
 } from '../src/visual/igs-ui/settings-sections.js';
 import { handleSettingsAction } from '../src/visual/igs-ui/settings-actions.js';
 import { moodTierLabels } from '../src/scene/mood-groups.js';
+import { createRecoveryNotice } from '../src/visual/igs-ui/recovery-notice.js';
+import { recoverOperation, wakeRecoveringOperations } from '../src/storage/automatic-recovery.js';
+
+test('恢复提示：显示失败原因、点击对应设置、保存生效后自动续接且清除提示', { timeout: 3000 }, async () => {
+    const doc = makeDoc(), global = { document: doc }, opened = [];
+    const ui = createRecoveryNotice({ global, getDocument: () => doc, openSettings: input => opened.push(input) });
+    let key = 'expired', captured = key, calls = 0, waiting;
+    const entered = new Promise(resolve => { waiting = resolve; });
+    try {
+        const pending = recoverOperation(() => {
+            calls++;
+            return captured === 'fixed' ? { ok: true, image: 'original-task' } : { ok: false, status: 401 };
+        }, { global, retryUnchanged: false,
+            waitFor: { message: '副 API 凭据已失效（HTTP 401），保存备用模型配置后自动继续。', page: 'llm', actionLabel: '打开备用模型' },
+            canResume() { if (captured === key) return false; captured = key; return true; },
+            onRecover: () => waiting(),
+        });
+        await entered;
+        assert.match(doc.body.textContent, /HTTP 401/);
+        const button = doc.body.querySelector('button');
+        assert.equal(button.textContent, '打开备用模型');
+        button.dispatch('click');
+        assert.deepEqual(opened, [{ page: 'llm' }]);
+        wakeRecoveringOperations(global);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(calls, 1, '打开设置和无关保存不能重复请求');
+        key = 'fixed'; wakeRecoveringOperations(global);
+        assert.equal((await pending).image, 'original-task');
+        assert.equal(calls, 2);
+        assert.equal(doc.body.querySelector('.igs-recovery-notice'), null);
+    } finally { ui.dispose(); }
+});
 
 function parseCompound(sel) {
     const tokens = [];

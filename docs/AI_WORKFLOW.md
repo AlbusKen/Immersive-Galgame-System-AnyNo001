@@ -134,23 +134,23 @@ git status --short
 
 ## 每轮结束回退点
 
-每次更新都升 patch，选择性暂存本轮文件，提交并推送 main，同时为该提交打 `test-v<当前版本>` 测试标签。保留无关工作区改动，不自动创建正式版标签。
+每次更新都升 patch，选择性暂存本轮文件，提交并推送 main，同时为该提交打 `v<当前版本>` 版本标签。保留无关工作区改动；标签必须与程序及在线导入包版本一致。
 
 ```powershell
 cd app
 npm run build
-npm run build:loader -- --release test-v<当前版本>
+npm run build:loader -- --release v<当前版本>
 cd ..
 # 仅 git add 本轮修改的具体文件
-git commit -m "test-v<当前版本>: <简短说明>"
-git tag -a test-v<当前版本> -m "test-v<当前版本>: <简短说明>"
+git commit -m "v<当前版本>: <简短说明>"
+git tag -a v<当前版本> -m "v<当前版本>: <简短说明>"
 git push origin HEAD:main
-git push origin test-v<当前版本>
+git push origin v<当前版本>
 git status --short --branch
 git ls-remote --heads origin main
-git ls-remote --tags origin test-v<当前版本>
+git ls-remote --tags origin v<当前版本>
 ```
 
-标签版本与脚本版本一致；已存在标签不覆盖、不强推。真实设备尚未终验时明确记录，测试标签不阻断交付。只有用户明确要求不要上传或不要打标签时跳过。
+标签版本与脚本版本一致；已存在标签不覆盖、不强推。真实设备尚未终验时明确记录，不能用版本标签代替验收。只有用户明确要求不要上传或不要打标签时跳过。
 
 详细发布与上传命令见 `docs/RELEASE.md`。

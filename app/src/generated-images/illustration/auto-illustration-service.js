@@ -189,6 +189,7 @@ export function createAutoIllustrationService(deps) {
         if (!['putFloor', 'putSlot', 'deleteSlot', 'getFloor', 'getSlots', 'getSlotRecord', 'hydrateSlot'].includes(key))
             return value.bind(target);
         return (...args) => recoverOperation(() => value.apply(target, args), {
+            repeatable: /^(?:get|hydrate)/.test(key) ? 'read' : 'save',
             signal: recoveryController.signal, isActive: () => !stopped,
             global: deps.global || llm?.recoveryGlobal || nai?.recoveryGlobal || globalThis,
         });
@@ -210,6 +211,7 @@ export function createAutoIllustrationService(deps) {
     let stopped = false;
     let recoveryController = new AbortController();
     const recover = (floor, execute, input) => recoverOperation(execute, {
+        retryUnchanged: false,
         signal: recoveryController.signal, global: deps.global || llm?.recoveryGlobal || nai?.recoveryGlobal || globalThis,
         isActive: () => targetStillLive(floor),
         onRecover: ({ attempt }) => { if (attempt === 1) report('info', '正在自动续接本楼 CG 任务'); },

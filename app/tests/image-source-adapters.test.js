@@ -4,6 +4,34 @@ import { pngFixture } from './helpers/png-fixture.js';
 
 import { createImageBackend } from '../src/generated-images/image-backend.js';
 import { parseCaptionSlots } from '../src/generated-images/illustration/caption-writer.js';
+import { recoverOperation, subscribeRecoveries } from '../src/storage/automatic-recovery.js';
+
+for (const mode of ['dbgen', 'baibai', 'chatu8', 'nai']) test(`来源失败终态：${mode}不进入无条件等待且外层不再次出图`, { timeout: 2500 }, async t => {
+    const controller = new AbortController();
+    t.after(() => controller.abort());
+    let calls = 0;
+    const fail = async () => { calls++; throw new Error('fixture-provider-failed'); };
+    const global = mode === 'dbgen' ? { NaiDbGen: { generate: fail, generateSinglePrompt: async () => ({ ok: true, value: '#1\nscene: quiet room' }) } }
+        : mode === 'baibai' ? { STBaiBaiImage: { apiVersion: 1, getBackendStatus: () => ({ configured: true }), generate: fail } } : {};
+    const snapshots = [];
+    const off = subscribeRecoveries(global, entries => snapshots.push(entries));
+    try {
+        const backend = createImageBackend({ global,
+            getBridge: () => ({ imageApi: { mode }, autoIllustration: { retry: { enabled: false }, nai: { apiKey: 'fixture' } } }),
+            nai: { generate: async () => { calls++; return { ok: false, status: 503, error: 'fixture-NAI-503' }; } },
+            chatu8: { findHost: () => ({}), request: fail },
+            retryGate: { wait: async () => {}, note429() {} }, retrySleep: async () => {},
+        });
+        const result = await recoverOperation(() => mode === 'dbgen'
+            ? backend.generateCaption({ caption: parseCaptionSlots('#1\nscene: quiet room').captions[0].caption, signal: controller.signal })
+            : backend.generate({ scene: 'quiet room', chars: [] }, {}, { signal: controller.signal }), { global, signal: controller.signal });
+        assert.equal(result.ok, false);
+        assert.equal(result.recoveryStopped, true);
+        assert.equal(calls, 1);
+        assert.ok(snapshots.some(entries => entries.some(entry => entry.phase === 'failed')));
+        assert.ok(!snapshots.some(entries => entries.some(entry => entry.phase === 'waiting-condition')));
+    } finally { off(); }
+});
 
 function fakeBaibai({ supportsCharacters = false, fail = null } = {}) {
     const calls = [];

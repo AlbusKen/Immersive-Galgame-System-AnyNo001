@@ -6,6 +6,7 @@ import { bindImageCacheDocument } from '../../media/tavern-image-cache.js';
 import { buildIgsTextPayload, getMessagePrimaryText, getVisibleMessageTextFromElement, normalizeSourceFilter, normalizeVirtualRegex } from '../../scene/message-source.js';
 import { applyVoiceBark, canonicalName, noteFormGender, setActiveFormGenders } from './voice-bark.js';
 import { createSettingsHost } from './settings-host.js';
+import { createRecoveryNotice } from './recovery-notice.js';
 import { handleSettingsAction } from './settings-actions.js';
 import { normalizeBridgeConfig, normalizeReaderSettings } from './settings-host-normalize.js';
 import { extractSceneDirectives, resolveSceneAtSourceOffset, resolveIllustrationForPage, resolveHeldSourceOffsets, locateNarrativeOffset, stripIllustrationMarkers, classifySceneKey, resolveCharacterKey, setCharacterNameFallback } from '../../scene/scene-directives.js';
@@ -426,6 +427,13 @@ export function createIgsReaderHost(options = {}) {
             readerStaleBehindSettings = false;
             return stale;
         },
+    });
+
+    const recoveryNotice = createRecoveryNotice({
+        global: options.global || globalThis,
+        getDocument: () => getRootDocument(options.global),
+        getTheme: readSettingsTheme,
+        openSettings,
     });
 
     const host = {
@@ -949,6 +957,7 @@ export function createIgsReaderHost(options = {}) {
 
     function destroy() {
         readerRecoveryController.abort();
+        recoveryNotice.dispose();
         state.activeSettings?.recoveryController?.abort();
         moodAutoDisposed = true;
         if (moodAutoTimer) moodAutoTimers().clearTimeout(moodAutoTimer);
@@ -1475,6 +1484,9 @@ export function createIgsReaderHost(options = {}) {
             await recoverOperation(() => ({ ok: state.activeReader?.streamPhase !== 'streaming' }), {
                 signal: readerRecoveryController.signal, global: options.global || globalThis,
                 isActive: () => Boolean(state.activeReader),
+                retryUnchanged: false,
+                waitFor: { message: '正在等待本次回复生成完成，随后自动发送已输入的内容。' },
+                canResume: () => state.activeReader?.streamPhase !== 'streaming',
             });
             if (!state.activeReader) return { ok: true, cancelled: true };
         }

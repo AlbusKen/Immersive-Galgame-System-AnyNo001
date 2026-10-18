@@ -11,7 +11,7 @@ import { waitFloorPromptTags } from './floor-prompt-tags.js';
 import { writeCaptionsWithLlm, writeTemplateCaptionsWithLlm } from './illustration/caption-writer.js';
 import { clampPixelPair } from './illustration/cg-pixel-cap.js';
 import { annotateImageFailure, readImageRetrySettings, sharedRateGate, withImageRetry } from './retry-policy.js';
-import { recoverOperation, waitForRecovery } from '../storage/automatic-recovery.js';
+import { recoverOperation, trackRecovery, waitForRecovery } from '../storage/automatic-recovery.js';
 import { checkPromptTask, isSceneOnlyPromptOutput } from '../schemas/prompt-recipe.js';
 import { prepareCharacterCaption } from './character-caption.js';
 import { runImageTask, staleImageTask, inheritImageTaskLease, imageTaskState } from './image-task-runtime.js';
@@ -223,16 +223,16 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
         source, gate: retryGate, onRetry, settings: readImageRetrySettings(readBridge(undefined, meta).autoIllustration),
         ...(retrySleep && { sleep: retrySleep }), ...(retryRandom && { random: retryRandom }),
     }), { signal: meta.signal, global: recoveryGlobal, retryUnchanged: false, repair,
+        waitFor: result => source === 'nai' && repair && [400, 401, 402, 403, 422].includes(result?.status)
+            ? { message: `NAI 请求被拒绝（HTTP ${result.status}）。请修正图像来源中的凭据或模型并保存；配置生效后自动续接本次请求。`,
+                page: 'source', actionLabel: '打开图像来源' } : null,
         canResume: async result => {
-            const rejected = [400, 401, 402, 403, 422, 429].includes(result?.status);
-            if (source === 'nai' && !rejected) return false;
-            if (result?.failure?.kind === 'pluginTimeout') return false;
+            if (source !== 'nai' || ![400, 401, 402, 403, 422].includes(result?.status)) return false;
             const fixed = await repair?.(result);
             return fixed?.changed === true;
         },
         isActive: () => !meta.shouldStart || meta.shouldStart(),
-        onRecover: ({ phase }) => report?.(phase === 'waiting-condition' ? 'error' : 'info',
-            phase === 'waiting-condition' ? '当前图像请求未完成，原任务和输入已保留；没有修复进展时不会重复发送' : '已更新本次请求的失效配置，继续原任务'),
+        onRecover: ({ phase, message }) => report?.(phase === 'waiting-condition' ? 'error' : 'info', message),
     });
     const timeouts = { ...DBGEN_TIMEOUTS, ...(dbgenTimeouts && typeof dbgenTimeouts === 'object' ? dbgenTimeouts : {}) };
     const readBridge = (override, meta) => (override && typeof override === 'object' ? override
@@ -307,16 +307,25 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
     const requestChatu8 = typeof chatu8Bridge.request === 'function' ? chatu8Bridge.request : requestChatu8Image;
     async function waitSourceReady(source, meta, prompt = false) {
         let reported = false;
+        const notice = trackRecovery(recoveryGlobal);
+        const label = { dbgen: '数据库生图（nai-dbgen）', baibai: '柏宝绘', chatu8: '智绘姬' }[source] || source;
+        try {
         while (!imageTaskStopped(meta)) {
             const api = source === 'dbgen' ? findDbgenApi(globalObject)
                 : source === 'baibai' ? findBaibaiApi(globalObject) : findChatu8();
             const ready = api && (source !== 'dbgen' || !prompt || typeof api.generateSinglePrompt === 'function')
                 && (source !== 'baibai' || readBaibaiStatus(api).configured !== false);
             if (ready) return api;
-            if (!reported) { reported = true; report?.('info', '原生图任务已保留，图像来源就绪后自动继续；当前只读取就绪状态，没有发送生图请求'); }
+            if (!reported) {
+                reported = true;
+                const message = `${label}尚未就绪。请安装、启用并完成该插件的配置；程序每秒读取就绪状态，就绪后自动继续本次任务。`;
+                notice.update({ phase: 'waiting-condition', message, page: 'source', actionLabel: '查看图像来源' });
+                report?.('info', message);
+            }
             await waitForRecovery(1000, { global: recoveryGlobal, signal: meta.signal });
         }
         return null;
+        } finally { notice.end(); }
     }
 
     function waitUntilReady(meta = {}) {
@@ -340,6 +349,8 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
                 : { ok: false, reason: 'nai-config-unset' }, {
                 global: recoveryGlobal, signal: guarded.signal, retryUnchanged: false,
                 isActive: () => !imageTaskStopped(guarded), canResume: refresh,
+                waitFor: { message: '尚未配置 NAI Key，生图请求还未发送。请在图像来源中填写并保存；保存成功后自动继续本次任务。',
+                    page: 'source', actionLabel: '打开图像来源' },
                 onRecover: () => report?.('info', '原任务已保留；保存 NAI 设置后从当前步骤继续'),
             });
         });
@@ -614,10 +625,11 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             : { ok: false, error: (result && result.error) || '出图失败', prompt,
                 ...(result?.reason && { reason: result.reason }),
                 ...(result?.stopGeneration && { stopGeneration: true }),
-                ...(result?.failure && { failure: result.failure }) };
+                ...(result?.failure && { failure: result.failure }),
+                ...(result?.recoveryStopped && { recoveryStopped: true }) };
     }
 
-    const sourceFailure = reason => ({ ok: false, reason: 'source-unavailable', error: reason });
+    const sourceFailure = (reason, result) => ({ ...result, ok: false, reason: 'source-unavailable', error: reason });
 
     async function pluginFloorTag(source, label, meta) {
         if (meta.messageId == null || !(Number(meta.slot) >= 1)) return null;
@@ -642,14 +654,14 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             const result = await retryRun('baibai', ({ seed }) => requestBaibaiImage(findBaibaiApi(globalObject) || api, slot, { size, seed: seed || naiSettings?.seed, floorTag,
                 signal: guarded.signal, onSlow: () => report?.('info', '柏宝绘仍在处理同一次请求，继续接收原结果') }), guarded);
             if (imageTaskStopped(guarded)) return staleImageTask();
-            if (!result.ok) return sourceFailure(result.error);
+            if (!result.ok) return sourceFailure(result.error, result);
             return { ok: true, via: 'baibai', dataUrl: result.dataUrl, prompt: promptFromText(result.prompt, '') };
         });
     }
 
     function viaChatu8(slot, naiSettings, meta = {}) {
         return runImageTask(taskRuntime, inheritImageTaskLease(meta, inheritImageTaskLease(slot, { ...meta })), async guarded => {
-            const fallback = reason => imageTaskStopped(guarded) ? staleImageTask() : sourceFailure(reason);
+            const fallback = (reason, result) => imageTaskStopped(guarded) ? staleImageTask() : sourceFailure(reason, result);
             if (imageTaskStopped(guarded)) return staleImageTask();
             const host = await waitSourceReady('chatu8', guarded);
             if (!host) return staleImageTask();
@@ -660,7 +672,7 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
             const result = await retryRun('chatu8', () => requestChatu8(findChatu8() || host, prompt, {
                 signal: guarded.signal, onSlow: () => report?.('info', '智绘姬仍在处理同一个请求，继续等待相同 ID 的回执') }), guarded);
             if (imageTaskStopped(guarded)) return staleImageTask();
-            if (!result || !result.ok) return fallback((result && result.error) || `${CHATU8_LABEL}出图失败`);
+            if (!result || !result.ok) return fallback((result && result.error) || `${CHATU8_LABEL}出图失败`, result);
             try {
                 const dataUrl = await chatu8ImageToDataUrl(result.imageData, host.win || globalObject);
                 if (imageTaskStopped(guarded)) return staleImageTask();
@@ -906,10 +918,10 @@ export function createImageBackend({ nai, getBridge, global: globalObject = glob
     const withRecoveryReport = meta => inheritImageTaskLease(meta, { ...meta,
         onRecovery(event) {
             meta.onRecovery?.(event);
-            report?.(event.phase === 'waiting-condition' ? 'error' : 'info', event.phase === 'slow'
+            report?.(event.phase === 'waiting-condition' ? 'error' : 'info', event.message || (event.phase === 'slow'
                 ? '写词仍在处理同一次请求，继续接收原回复'
                 : event.phase === 'waiting-condition' ? '写词尚未完成，原任务已保留；相同错误输出不会持续循环请求'
-                    : '正在按上一份输出的具体缺失字段修正，继续原写词任务');
+                    : '正在按上一份输出的具体缺失字段修正，继续原写词任务'));
         } });
     const guardedWritePrompt = (meta = {}) => {
         // provided 必须先于复制／租约捕获筛选，不能读取禁止字段 getter。

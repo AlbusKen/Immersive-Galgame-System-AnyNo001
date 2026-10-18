@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { recoverOperation, createOperationCheckpoint, checkpointService, wakeRecoveringOperations } from '../src/storage/automatic-recovery.js';
+import { recoverOperation, createOperationCheckpoint, checkpointService, wakeRecoveringOperations, subscribeRecoveries } from '../src/storage/automatic-recovery.js';
 import { mediaRequest } from '../src/media/tavern-media-http.js';
 import { createArchiveDownload } from '../src/media/archive-download.js';
 import { createIdbConnection } from '../src/media/idb-connection.js';
@@ -171,7 +171,9 @@ test('无进展恢复：错误措辞变化不会持续循环，条件解除后�
     const pending = recoverOperation(() => {
         calls++;
         return writable ? { ok: true, value: 'kept' } : { ok: false, reason: `same-failure-${calls}` };
-    }, { global, signal: controller.signal, wait: async () => {}, onRecover({ phase }) {
+    }, { global, signal: controller.signal, wait: async () => {},
+        waitFor: { message: '存储暂不可写，恢复后自动续存。' }, canResume: () => writable,
+        onRecover({ phase }) {
         if (phase === 'waiting-condition') waiting();
     } });
     await stalled;
@@ -192,6 +194,7 @@ test('请求续接：没有新的凭据依据时不重复发送，修复凭据�
         calls++;
         return captured === 'valid' ? { ok: true, image: 'original-request-result' } : { ok: false, reason: 'authentication-failed' };
     }, { global, signal: controller.signal, retryUnchanged: false,
+        waitFor: { message: '凭据已失效，保存新凭据后自动继续。', page: 'source' },
         canResume() { const changed = captured !== key; captured = key; return changed; },
         onRecover({ phase }) { if (phase === 'waiting-condition') waiting(); } });
     await stalled;
@@ -202,6 +205,42 @@ test('请求续接：没有新的凭据依据时不重复发送，修复凭据�
     key = 'valid'; wakeRecoveringOperations(global);
     assert.equal((await pending).ok, true);
     assert.equal(calls, 2);
+});
+
+test('没有续接条件的失败明确结束，外层不会再次请求或挂起', async () => {
+    const global = {}, snapshots = [];
+    const off = subscribeRecoveries(global, entries => snapshots.push(entries));
+    let calls = 0;
+    const inner = () => recoverOperation(() => {
+        calls++; return { ok: false, reason: 'provider-unavailable', error: '插件出图失败' };
+    }, { global, retryUnchanged: false, canResume: () => false });
+    const result = await recoverOperation(inner, { global });
+    assert.equal(result.ok, false);
+    assert.equal(result.recoveryStopped, true);
+    assert.equal(calls, 1);
+    const entries = snapshots.at(-1);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].phase, 'failed');
+    assert.equal(entries[0].message, '插件出图失败');
+    entries[0].dismiss();
+    assert.deepEqual(snapshots.at(-1), []);
+    off();
+});
+
+test('保存持续失败时主动续存并显示原因，恢复后复用原图片完成', async () => {
+    const global = {}, snapshots = [];
+    const off = subscribeRecoveries(global, entries => snapshots.push(entries));
+    let calls = 0;
+    const result = await recoverOperation(() => {
+        calls++;
+        if (calls < 4) throw Object.assign(new Error('浏览器存储空间不足'), { name: 'QuotaExceededError', code: 22 });
+        return { ok: true, image: 'original' };
+    }, { global, repeatable: 'save', wait: async () => {} });
+    assert.equal(result.image, 'original');
+    assert.equal(calls, 4);
+    assert.ok(snapshots.some(entries => entries.some(entry => entry.page === 'data' && /存储空间不足.*续存原结果/.test(entry.message))));
+    assert.deepEqual(snapshots.at(-1), []);
+    off();
 });
 
 test('媒体请求：响应头错误及响应体损坏后原请求自动恢复', async () => {

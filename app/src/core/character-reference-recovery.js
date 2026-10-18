@@ -13,7 +13,7 @@ export function createCharacterReferenceRecovery({ readAssets, readContext, save
         const scope = resolveAssetScope(readContext()).key;
         const live = () => !signal?.aborted && (!shouldStart || shouldStart())
             && resolveAssetScope(readContext()).key === scope;
-        const recover = execute => recoverOperation(execute, { signal, isActive: live });
+        const recover = (execute, repeatable) => recoverOperation(execute, { signal, isActive: live, repeatable });
         const service = getService();
         const selected = failure?.characterKey
             ? characters.filter(row => row.characterKey === failure.characterKey) : characters;
@@ -24,7 +24,7 @@ export function createCharacterReferenceRecovery({ readAssets, readContext, save
                 characters: keys.map(name => ({ name, dna: initialAssets.characterDna?.[name] })),
                 requireDna: true, signal, shouldStart: live,
             }));
-            if (prepared?.cancelled) return prepared;
+            if (prepared?.cancelled || prepared?.ok === false) return prepared;
         }
         const results = await Promise.all(selected.map(async character => {
             const name = character.characterKey;
@@ -45,7 +45,7 @@ export function createCharacterReferenceRecovery({ readAssets, readContext, save
                 if (patch?.ok === false) return patch;
                 Object.assign(target, patch);
                 return saveAssets(root);
-            });
+            }, 'save');
             const result = await service.generateExpressionImage({ name, mood: '平和',
                 dna: assets.characterDna?.[name], outfit: { name: outfitName, prompt },
                 signal, shouldStart: live,

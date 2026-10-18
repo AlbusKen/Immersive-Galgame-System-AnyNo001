@@ -283,6 +283,8 @@ export function createCgConsistencyService(deps) {
             onRecover: () => report(task, 'info', '正在自动续接当前角色'),
         })));
         guard(task);
+        const failed = values.find(value => value?.ok === false || value?.cancelled);
+        if (failed) return failed;
         return { ok: true, values };
     }
     function release(task) {
@@ -297,6 +299,7 @@ export function createCgConsistencyService(deps) {
     async function generate(task) {
         try {
             return await recoverOperation(() => generateOnce(task), {
+                retryUnchanged: false,
                 signal: task.controller.signal, isActive: () => live(task),
                 onRecover: () => report(task, 'info', '正在自动续接一致性任务'),
                 repair: async () => {
@@ -514,7 +517,7 @@ export function createCgConsistencyService(deps) {
                     status: 'done', updatedAt: now() },
                 { expectedToken: current.revisionToken, preserveBaseline: true, clearSentPrompt: true,
                     beforeCommit: () => guard(task), shouldCommit: () => live(task) });
-            }, { signal: task.controller.signal, isActive: () => live(task),
+            }, { repeatable: 'save', signal: task.controller.signal, isActive: () => live(task),
                 repair: async result => {
                     if (!['stale-revision', 'revision-conflict'].includes(result?.reason)) return;
                     const latest = await store.getSlotRecord(task.record.key);
@@ -522,12 +525,13 @@ export function createCgConsistencyService(deps) {
                         || latest.revisionToken !== attemptedToken)) };
                 },
                 onRecover: () => report(task, 'info', '正在自动续存同一候选') });
-            if (result?.cancelled) return result;
-            await recoverOperation(async () => {
+            if (result?.cancelled || result?.ok === false) return result;
+            const notified = await recoverOperation(async () => {
                 await onAccepted?.(task.target, result.record);
                 if (result.warning) await deps.repairIndex?.(task.target, result.record);
                 return { ok: true };
-            }, { signal: task.controller.signal, isActive: () => live(task) });
+            }, { repeatable: 'save', signal: task.controller.signal, isActive: () => live(task) });
+            if (notified?.ok === false) return notified;
             report(task, 'success', '已接受并保存');
             return { ok: true, reason: 'accepted' };
         }

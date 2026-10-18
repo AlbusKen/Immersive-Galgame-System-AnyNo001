@@ -68,7 +68,8 @@ export function createItemImageService(deps) {
     let queue = Promise.resolve();
     let offRendered = null, retryTarget = null, stopped = false;
     let recoveryController = new AbortController();
-    const recover = (chatId, execute, floor) => recoverOperation(execute, {
+    const recover = (chatId, execute, floor, repeatable) => recoverOperation(execute, {
+        retryUnchanged: Boolean(repeatable), repeatable,
         signal: recoveryController.signal, global: deps.global || llm?.recoveryGlobal || nai?.recoveryGlobal || globalThis,
         isActive: () => !stopped && chatOf() === chatId
             && (!floor || floorKeyOf(messageHost.readFloor(floor.messageId) || {}) === floorKeyOf(floor)),
@@ -167,9 +168,9 @@ export function createItemImageService(deps) {
             }, floor); }
             catch (e) { result = { ok: false, error: `NAI 生成失败：${(e && e.message) || e}` }; }
             if (result && result.ok && result.dataUrl) {
-                const dataUrl = await recover(chatId, () => matte(result.dataUrl, { alreadyTransparent: transparent }), floor);
+                const dataUrl = await recover(chatId, () => matte(result.dataUrl, { alreadyTransparent: transparent }), floor, 'read');
                 const imageId = newId();
-                const persisted = await recover(chatId, () => store.putImage({ id: imageId, dataUrl, type: ITEM_ASSET_TYPE, createdAt: base.createdAt }), floor);
+                const persisted = await recover(chatId, () => store.putImage({ id: imageId, dataUrl, type: ITEM_ASSET_TYPE, createdAt: base.createdAt }), floor, 'save');
                 if (persisted?.cancelled) return persisted;
                 cache.rememberImage(imageId, dataUrl);
                 record = { ...base, imageId, status: 'ready' };
@@ -181,9 +182,9 @@ export function createItemImageService(deps) {
             record = { ...base, imageId: '', status: 'failed', error };
         }
         if (chatId !== chatOf() || stopped) return { ok: true, cancelled: true };
-        const persisted = await recover(chatId, () => store.putAsset(record), floor);
+        const persisted = await recover(chatId, () => store.putAsset(record), floor, 'save');
         if (persisted?.cancelled) return persisted;
-        if (record.status === 'ready' && previous && previous.imageId && previous.imageId !== record.imageId) await recover(chatId, () => cache.dropImage(previous.imageId));
+        if (record.status === 'ready' && previous && previous.imageId && previous.imageId !== record.imageId) await recover(chatId, () => cache.dropImage(previous.imageId), floor, 'save');
         cache.set(record);
         emit({ chatId, key, name: need.name, reason: record.status === 'ready' ? 'generated' : 'failed' });
         return { ok: record.status === 'ready', error, record };
@@ -296,7 +297,7 @@ export function createItemImageService(deps) {
         const record = await cache.read(chatId, itemAssetKeyOf(chatId, name));
         if (!record) return { ok: false, reason: 'not-found' };
         const next = { ...record, imageId: '', status: 'discarded', updatedAt: now() };
-        await recover(chatId, () => store.putAsset(next));
+        await recover(chatId, () => store.putAsset(next), undefined, 'save');
         cache.set(next);
         await cache.dropImage(record.imageId);
         emit({ chatId, key: record.key, name: record.name, reason: 'discarded' });

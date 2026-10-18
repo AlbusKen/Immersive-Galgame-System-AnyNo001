@@ -221,18 +221,19 @@ export function createCgLibraryView(library, options = {}) {
             if (gen !== openGen) return;
             state.sync = { ...state.sync, ...progress };
             emit('status');
-        }), { isActive: () => !disposed && gen === openGen,
+        }), { repeatable: 'save', isActive: () => !disposed && gen === openGen,
             signal: workController.signal,
+            shouldRecover: result => !result?.entries?.length,
             onRecover() { state.syncNote = '目录正在自动恢复'; emit('status'); } });
         if (gen !== openGen) return;
         state.sync = null;
         if (!synced.ok && !synced.entries.length && !fromIndex) {
             state.phase = 'error';
-            state.error = `CG 库读取失败：${cgReasonText(synced.reason)}；正在自动恢复。`;
+            state.error = `CG 库读取失败：${cgReasonText(synced.reason)}`;
             emit('list');
             return;
         }
-        state.syncNote = synced.ok ? '' : `部分内容未能读取：${cgReasonText(synced.reason)}；正在自动补齐。`;
+        state.syncNote = synced.ok ? '' : `部分内容未能读取：${cgReasonText(synced.reason)}`;
         const before = pageKeys();
         const total = state.list.length;
         if (!recompute(synced.entries)) return;
@@ -259,6 +260,7 @@ export function createCgLibraryView(library, options = {}) {
             if (opening) await opening;
             if (disposed || refreshTokens.get(key) !== token) return;
             const result = await recoverOperation(() => library.refreshEntry(key), {
+                repeatable: 'read',
                 signal: workController.signal,
                 isActive: () => !disposed && refreshTokens.get(key) === token,
                 onRecover() { state.notice = '正在自动恢复图片目录'; emit('status'); },
@@ -277,7 +279,7 @@ export function createCgLibraryView(library, options = {}) {
             emit('list');
             emit('entry', key);
             loadPageThumbs();
-        }).catch(() => { if (!disposed) { state.notice = 'CG 更新正在自动恢复'; emit('status'); } })
+        }).catch(error => { if (!disposed) { state.notice = `CG 更新未完成：${cgReasonText(error?.message || 'read-failed')}`; emit('status'); } })
             .finally(() => {
                 refreshing.delete(job);
                 if (refreshTokens.get(key) === token) refreshTokens.delete(key);
@@ -298,13 +300,14 @@ export function createCgLibraryView(library, options = {}) {
         resetThumbWork();
         state.notice = '';
         const job = recoverOperation(async () => { await runOpen(gen); return { ok: true }; }, {
+            repeatable: 'read',
             signal: workController.signal,
             isActive: () => !disposed && gen === openGen,
             onRecover() { state.syncNote = '图库正在自动恢复'; emit('status'); },
-        }).catch(() => {
+        }).catch(error => {
             if (gen !== openGen) return;
             state.phase = 'error';
-            state.error = 'CG 库正在自动恢复。';
+            state.error = `CG 库未能打开：${cgReasonText(error?.message || 'read-failed')}`;
             emit('list');
         }).finally(() => {
             if (opening === job) opening = null;

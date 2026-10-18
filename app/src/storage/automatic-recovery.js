@@ -1,9 +1,39 @@
 // 原操作持有输入和已完成步骤；再次执行必须有修复进展或真实的环境变更。
 const recoverySignals = new WeakMap();
 const recoverySignalFor = global => {
-    if (!recoverySignals.has(global)) recoverySignals.set(global, { revision: 0, listeners: new Set() });
+    if (!recoverySignals.has(global)) recoverySignals.set(global, { revision: 0, listeners: new Set(), notices: new Map(), subscribers: new Set(), sequence: 0 });
     return recoverySignals.get(global);
 };
+
+export function recoveryFailureText(result) {
+    const reason = result?.error?.message || result?.error || result?.message || result?.reason;
+    return typeof reason === 'string' && reason.trim() ? reason.trim() : '操作没有完成';
+}
+
+// 状态由业务层发布、视觉层订阅；关闭提示不会取消或重放原操作。
+export function subscribeRecoveries(global = globalThis, listener) {
+    const state = recoverySignalFor(global);
+    state.subscribers.add(listener);
+    listener([...state.notices.values()]);
+    return () => state.subscribers.delete(listener);
+}
+
+export function trackRecovery(global = globalThis) {
+    const state = recoverySignalFor(global), id = ++state.sequence;
+    const emit = () => {
+        for (const listener of [...state.subscribers]) {
+            try { listener([...state.notices.values()]); } catch { /* UI 不影响原任务。 */ }
+        }
+    };
+    const end = () => { if (state.notices.delete(id)) emit(); };
+    return {
+        update({ phase, message, page, actionLabel }) {
+            // 提示不持有请求、模型正文或图片字节。
+            state.notices.set(id, { phase, message, page, actionLabel, id, dismiss: end }); emit();
+        },
+        end,
+    };
+}
 export function recoveryCancelled(value) {
     return value?.cancelled === true || /^(?:cancelled|canceled|user-cancelled|dna-cancelled|abort-by-user|request-stale|stale-target|stale-chat|stale-config)$/.test(value?.reason || '');
 }
@@ -103,18 +133,27 @@ async function recoveryStep(execute, signal) {
 
 export async function recoverOperation(execute, { signal, isActive = () => true,
     shouldRecover = () => true, repair, onRecover, wait = waitForRecovery,
-    retryUnchanged = true, canResume = () => true, observe,
+    retryUnchanged = true, canResume, observe, waitFor, repeatable,
     initialDelayMs = 100, maxDelayMs = 30000, global = globalThis } = {}) {
     let attempt = 0, retriedUnchanged = false;
+    const notice = trackRecovery(global);
+    let failed = false;
+    try {
     while (!signal?.aborted && isActive()) {
         const revision = recoverySignalFor(global).revision;
         let result, cause;
         try {
             result = await recoveryStep(execute, signal);
-        } catch (error) { cause = error; result = error?.result || { ok: false, reason: error?.code || error?.message || 'operation-pending' }; }
+        } catch (error) { cause = error; result = error?.result || { ok: false,
+            reason: error?.code || error?.message || 'operation-pending', error: error?.message || String(error) }; }
         if (signal?.aborted || !isActive()) break;
         if (result !== false && result?.ok !== false) return result;
-        if (recoveryCancelled(result) || result?.reason === 'recovery-exhausted') return result;
+        if (recoveryCancelled(result) || result?.recoveryStopped) return result;
+        if (result?.reason === 'recovery-exhausted') {
+            failed = true;
+            notice.update({ phase: 'failed', message: recoveryFailureText(result), result });
+            return { ...result, recoveryStopped: true };
+        }
         if (!shouldRecover(result, cause)) { if (cause) throw cause; return result; }
         attempt++;
         let repaired;
@@ -127,15 +166,36 @@ export async function recoverOperation(execute, { signal, isActive = () => true,
         let resumed = false;
         if (!progressed && recoverySignalFor(global).revision !== revision) {
             try {
-                const ready = await recoveryStep(() => canResume(result, cause), signal);
+                const ready = await recoveryStep(() => canResume?.(result, cause), signal);
                 resumed = ready === true || ready?.changed === true;
             } catch { /* 变化没有解除本次失败原因。 */ }
         }
         const retry = progressed || resumed || (retryUnchanged && !retriedUnchanged);
         if (retry) retriedUnchanged = true;
+        const condition = (typeof waitFor === 'function' ? waitFor(result, cause) : waitFor)
+            || (repeatable === 'save' && (cause?.name === 'QuotaExceededError' || /quota|存储.*满|空间不足/i.test(recoveryFailureText(result)))
+                ? { message: `保存尚未完成：${recoveryFailureText(result)}。请在备份中清理缓存或无用素材；释放空间后自动续存原结果。`,
+                    page: 'data', actionLabel: '打开备份与缓存' } : null);
+        // 条件等待必须显式声明等待对象及可验证的续接条件。observe 则实际重读来源。
+        if (!retry && !observe && !repeatable && !(condition?.message && typeof canResume === 'function')) {
+            failed = true;
+            notice.update({ phase: 'failed', message: recoveryFailureText(result), result });
+            const failure = { ...(result || { ok: false }), ok: false, recoveryStopped: true };
+            if (cause) { cause.result = failure; throw cause; }
+            return failure;
+        }
         let observed = recoverySignalFor(global).revision;
-        try { onRecover?.({ attempt, result, phase: retry ? 'repairing' : 'waiting-condition' }); } catch { /* 展示不可阻止恢复。 */ }
+        const detail = { attempt, result, phase: retry ? 'repairing' : 'waiting-condition',
+            ...(condition || {}),
+            message: retry ? `正在恢复：${recoveryFailureText(result)}`
+                : condition?.message || `${repeatable === 'save' ? '保存' : '读取'}尚未完成：${recoveryFailureText(result)}。正在自动${repeatable === 'save' ? '续存原结果' : '重新读取'}，成功后自动继续。` };
+        notice.update(detail);
+        try { onRecover?.(detail); } catch { /* 展示不可阻止恢复。 */ }
         if (!retry) {
+            if (repeatable) {
+                await wait(Math.min(maxDelayMs, initialDelayMs * 2 ** Math.min(attempt, 16)), { signal, global });
+                continue;
+            }
             let probes = 0;
             while (!signal?.aborted && isActive()) {
                 if (observe) await wait(Math.min(maxDelayMs, initialDelayMs * 2 ** Math.min(probes++, 16)), { signal, global });
@@ -152,6 +212,7 @@ export async function recoverOperation(execute, { signal, isActive = () => true,
         await wait(Math.min(maxDelayMs, initialDelayMs * 2 ** Math.min(attempt - 1, 16)), { signal, global });
     }
     return { ok: false, cancelled: true, reason: 'cancelled', stopGeneration: true };
+    } finally { if (!failed) notice.end(); }
 }
 
 // 服务成功结果跨保存重试复用；读取不缓存，始终取最新状态。

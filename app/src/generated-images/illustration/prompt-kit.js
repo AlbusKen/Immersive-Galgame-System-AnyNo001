@@ -3,7 +3,7 @@
 import { BUILTIN_PROMPTS, SCENE_DICTIONARY } from '../prompt-registry.js';
 import { prepareImageWritingRequest } from '../image-prompt-runtime.js';
 import { SecondaryLlmError, secondaryLlmFailure, secondaryLlmText } from '../../host/secondary-llm-result.js';
-import { recoverOperation } from '../../storage/automatic-recovery.js';
+import { recoverOperation, recoveryFailureText } from '../../storage/automatic-recovery.js';
 import { imageTaskState } from '../image-task-runtime.js';
 
 export const TAG_WRITING_RULES = [
@@ -78,7 +78,8 @@ export async function requestWithSoftRetry(llm, options, llmSettings) {
             const latest = latestState?.config?.autoIllustration?.llm;
             if (!latest) return false;
             const keys = ['apiKey', 'endpoint', 'transport', 'source'];
-            if (invalidOutput || unconfigured || result?.diagnostic?.field === 'model') keys.push('model');
+            if (invalidOutput || unconfigured || result?.diagnostic?.field === 'model'
+                || [400, 404, 422].includes(result?.status)) keys.push('model');
             const changed = keys.some(key => settings[key] !== latest[key]);
             if (changed) {
                 const held = imageTaskState(guarded)?.config?.autoIllustration?.llm;
@@ -115,6 +116,19 @@ export async function requestWithSoftRetry(llm, options, llmSettings) {
                         ? `副 API 返回空正文，正在重新获取（${invalidAttempts + 1}/${MAX_OUTPUT_ATTEMPTS}）`
                         : `副 API 输出不完整，正在修正（${invalidAttempts + 1}/${MAX_OUTPUT_ATTEMPTS}）` }) }),
             canResume: result => refreshRejectedSettings(result),
+            waitFor: result => {
+                if (typeof llm.readImageTaskState !== 'function') return null;
+                if (result?.reason === 'llm-config-unset' || result?.diagnostic?.rejected
+                    || [400, 401, 402, 403, 404, 422].includes(result?.status)) return {
+                    message: `副 API 尚未完成：${recoveryFailureText(result)}。请在备用模型中修正配置并保存；配置生效后自动继续本次任务。`,
+                    page: 'llm', actionLabel: '打开备用模型',
+                };
+                if (!dispatched && guarded.imagePrompt) return {
+                    message: `写词预设尚未就绪：${recoveryFailureText(result)}。请修正并保存或启用预设；生效后自动继续本次任务。`,
+                    page: 'rules', actionLabel: '打开写法规则',
+                };
+                return null;
+            },
             isActive: () => !guarded.shouldStart || guarded.shouldStart(),
             repair: async result => {
                 if (!invalidOutput) return { changed: await refreshRejectedSettings(result) };

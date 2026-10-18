@@ -9,7 +9,7 @@ async function recoverableWriter(file, writer, globalObject) {
         'igs-export-staging', 1, db => { if (!db.objectStoreNames.contains('chunks')) db.createObjectStore('chunks'); }) : null;
     let count = 0, replay = false, committed = false;
     const controller = new AbortController();
-    const recovering = execute => recoverOperation(execute, { signal: controller.signal, global: globalObject });
+    const recovering = execute => recoverOperation(execute, { repeatable: 'save', signal: controller.signal, global: globalObject });
     const read = index => connection ? connection.transact('chunks', 'readonly', tx => tx.objectStore('chunks').get(prefix + index)) : chunks.get(index);
     const put = (index, bytes) => connection ? connection.transact('chunks', 'readwrite', tx => tx.objectStore('chunks').put(bytes, prefix + index)) : chunks.set(index, bytes);
     const cleanup = async () => {
@@ -56,7 +56,7 @@ export async function createArchiveDownload(globalObject, name) {
     if (typeof globalObject.showSaveFilePicker === 'function') {
         try {
             const file = await globalObject.showSaveFilePicker({ suggestedName: name, types: [{ description: 'ZIP', accept: { 'application/zip': ['.zip'] } }] });
-            const writer = await recoverOperation(() => file.createWritable(), { global: globalObject });
+            const writer = await recoverOperation(() => file.createWritable(), { repeatable: 'save', global: globalObject });
             return { mode: 'file', ...await recoverableWriter(file, writer, globalObject) };
         } catch (error) { if (!['SecurityError', 'NotAllowedError', 'NotSupportedError'].includes(error.name)) throw error; }
     }

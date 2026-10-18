@@ -160,7 +160,7 @@ export function createMapBasemapGenerator(options = {}) {
                 entry.status = 'ready';
                 if (cache.get(input.key) === entry) remember(input.key, entry);
                 return entry;
-            }), { signal: entry.controller.signal,
+            }), { repeatable: 'read', signal: entry.controller.signal,
                 isActive: () => !disposed && !entry.cancelled && currentGeneration === generation })
             .then(result => {
                 if (result?.cancelled) { entry.status = 'failed'; entry.error = 'disposed'; return entry; }
