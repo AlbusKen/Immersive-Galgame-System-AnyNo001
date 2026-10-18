@@ -1,8 +1,8 @@
 import { characterDnaNeedsViews } from '../../scene/character-dna.js';
 import { resolveSpriteAsset } from '../../scene/asset-match.js';
 import { esc } from './reader-value-utils.js';
-import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit } from '../../scene/character-outfits.js';
-import { readDefaultOutfit, outfitSpriteSlots, resolveCharacterAppearance } from '../../scene/character-appearance.js';
+import { BUILTIN_NUDE_OUTFIT, OUTFIT_RESET, isBuiltinNudeOutfit, resolveWardrobePrompt } from '../../scene/character-outfits.js';
+import { readDefaultOutfit, outfitSpriteSlots, pickOutfitSprite, resolveCharacterAppearance } from '../../scene/character-appearance.js';
 import { characterPromptRecovery } from '../../generated-images/illustration/character-prompt-task.js';
 import { promptProvenance } from '../../generated-images/generation-prompt.js';
 
@@ -341,11 +341,21 @@ export function renderCharacterSlotTabs({ charName, baseMoods, baseListHtml, bas
 }
 
 // 规则页的衣柜提示词。focus 是从服装面板跳过来的那一条，高亮显示。
-export function renderWardrobe(wardrobe, { resolveUrl, scopeTag, scopeMenu, focus = '', lead = '' } = {}) {
+export function renderWardrobe(wardrobe, { sceneAssets = {}, resolveUrl, scopeTag, scopeMenu, focus = '', lead = '' } = {}) {
     const tag = typeof scopeTag === 'function' ? scopeTag : () => '';
     const ownItem = typeof scopeMenu === 'function' ? scopeMenu : () => '';
+    const linkedSprites = new Map();
+    for (const outfits of Object.values(plain(sceneAssets.characterOutfits))) {
+        for (const [outfitName, outfit] of Object.entries(plain(outfits))) {
+            const linked = resolveWardrobePrompt(wardrobe, outfit, outfitName);
+            if (!linked || linkedSprites.has(linked.name)) continue;
+            const sprite = pickOutfitSprite(outfit, '平和', sceneAssets);
+            if (sprite.ok) linkedSprites.set(linked.name, sprite.url);
+        }
+    }
     const rows = Object.entries(plain(wardrobe)).filter(([name]) => !isBuiltinNudeOutfit(name)).map(([name, entry]) => {
-        const reference = entry && typeof entry.reference === 'string' ? entry.reference : '';
+        const reference = entry && typeof entry.reference === 'string' ? entry.reference.trim() : '';
+        const preview = reference || linkedSprites.get(name) || '';
         const encoded = encSeg(name);
         const nsfwBoost = Boolean(entry && entry.nsfwBoost);
         const menu = renderRowMenu([
@@ -358,8 +368,8 @@ export function renderWardrobe(wardrobe, { resolveUrl, scopeTag, scopeMenu, focu
             ownItem('wardrobe', name),
             menuItem(`wardrobe-remove:${encoded}`, '删除', ' is-danger'),
         ], `「${name}」的操作`);
-        const rowThumb = reference
-            ? thumb(reference, `${name}参考图`, '', resolveUrl)
+        const rowThumb = preview
+            ? thumb(preview, `${name}${reference ? '参考图' : '立绘'}`, '', resolveUrl)
             : '<span class="igs-outfit-thumb igs-outfit-thumb-empty" aria-hidden="true"></span>';
         return `<div class="igs-sprite-slot igs-wardrobe-item${name === focus ? ' is-focus' : ''}" data-wardrobe-item="${esc(name)}"><div class="igs-btn-mgr-row igs-scene-mood-row">`
             + rowThumb
