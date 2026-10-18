@@ -61,7 +61,9 @@ export function createStoryOutfitService(deps) {
             row.status = 'failed'; persist(row);
             return fail(safeReason(result?.reason) || 'outfit-write-failed');
         }
-        row.prompt = prompt; row.status = 'ready'; row.reason = '';
+        row.prompt = prompt;
+        if (result.promptHalfBody !== undefined) row.promptHalfBody = result.promptHalfBody;
+        row.status = 'ready'; row.reason = '';
         return persist(row);
     }
 
@@ -111,9 +113,12 @@ export function createStoryOutfitService(deps) {
         const ctx = deps.getContext(row);
         const assets = ctx && effectiveSceneAssets(ctx.root, row.scopeKey);
         const entry = assets?.characterOutfits?.[row.character]?.[row.word];
-        const prompt = assets?.wardrobe?.[entry?.wardrobe]?.prompt;
-        if (prompt) row.prompt = prompt;
-        return current(row) && Boolean(prompt);
+        const clothing = resolveWardrobePrompt(assets?.wardrobe, entry, row.word);
+        if (clothing?.prompt) {
+            row.prompt = clothing.prompt;
+            if (clothing.promptHalfBody !== undefined) row.promptHalfBody = clothing.promptHalfBody;
+        }
+        return current(row) && Boolean(clothing?.prompt);
     }
     function finish(row) {
         row.status = 'saved';
@@ -186,7 +191,8 @@ export function createStoryOutfitService(deps) {
             if (!row.imageId) {
                 row.status = 'painting'; notify();
                 const result = await deps.assets.generateExpressionSet({ name: row.character, dna,
-                    outfit: { name: row.word, prompt: row.prompt }, moods: ['平和'],
+                    outfit: { name: row.word, prompt: row.prompt,
+                        ...(row.promptHalfBody !== undefined && { promptHalfBody: row.promptHalfBody }) }, moods: ['平和'],
                     messageId: row.messageId, ...(deps.signal && { signal: deps.signal }),
                     shouldStart: paintCurrent,
                     ...(template && { onOutfitDna: async clothing => {
