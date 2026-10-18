@@ -317,7 +317,11 @@ test('gate:presets:image-default-upgrade-preserves-custom-blocks-and-restores-by
     assert.equal(after.data.modules.find(m => m.task === 'avatar').content, '用户头像要求');
     assert.deepEqual(after.data.prompt_order, before.data.prompt_order);
     assert.equal(after.data.revision, 4);
-    assert.equal(registry.restoreImagePromptBlock(current.id, options).reason, 'preset-revision-conflict');
+    const restoredSnapshot = registry.snapshot(), restoredDisk = storage.dump();
+    const repeated = registry.restoreImagePromptBlock(current.id, options);
+    assert.deepEqual({ ok: repeated.ok, changed: repeated.changed }, { ok: true, changed: false });
+    assert.deepEqual(registry.snapshot(), restoredSnapshot);
+    assert.deepEqual(storage.dump(), restoredDisk);
 });
 
 test('gate:presets:image-default-v1-to-latest-upgrades-protocol-and-keeps-custom-state', async () => {
