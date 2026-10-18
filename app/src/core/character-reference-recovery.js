@@ -50,13 +50,14 @@ export function createCharacterReferenceRecovery({ readAssets, readContext, save
                 dna: assets.characterDna?.[name], outfit: { name: outfitName, prompt },
                 signal, shouldStart: live,
                 onOutfitDna: clothing => save((effective, target) => {
-                    const planned = prepareOutfitDnaSave(effective, name, clothing.name, clothing.description);
+                    const planned = prepareOutfitDnaSave(effective, name, clothing.name, clothing.description,
+                        { descriptionHalfBody: clothing.descriptionHalfBody });
                     if (!planned.ok || !planned.patch.characterOutfits) return planned.ok ? {} : planned;
                     return { characterOutfits: { ...target.characterOutfits,
                         [name]: planned.patch.characterOutfits[name] },
                         ...(planned.patch.wardrobe && { wardrobe: { ...target.wardrobe,
                             ...Object.fromEntries(Object.entries(planned.patch.wardrobe)
-                                .filter(([key]) => !Object.hasOwn(effective.wardrobe || {}, key))) } }) };
+                                .filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(effective.wardrobe?.[key]))) } }) };
                 }),
             });
             if (result?.cancelled) return result;

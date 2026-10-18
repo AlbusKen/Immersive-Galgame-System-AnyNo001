@@ -110,7 +110,9 @@ export function prepareCharacterCaption(input = {}) {
         // 替换回调保真 $、权重与标点；只替换原模板，不再扫描替换产物。
         pos.char_caption = pos.char_caption.replace(`<<dna:${b.token}>>`, () => identity.subject);
         const outfit = outfits.value.characters.find(c => c.captionIndex === b.captionIndex);
-        if (outfit) pos.char_caption = pos.char_caption.replace(`<<outfit:${b.token}>>`, () => outfit.description);
+        if (outfit) pos.char_caption = pos.char_caption.replace(`<<outfit:${b.token}>>`, () =>
+            b.framing === 'half_body' && ['sprite', 'derived'].includes(selected.value?.purpose)
+                ? outfit.descriptionHalfBody || outfit.description : outfit.description);
         if (neg) neg.char_caption = neg.char_caption.replace(`<<dna_uc:${b.token}>>`, () => identity.negative);
         const { correction, outfit: selectedOutfit, ...binding } = b;
         characters.push({ ...binding, source: candidate ? 'candidate' : view.source,
@@ -140,7 +142,8 @@ export function prepareCharacterCaption(input = {}) {
         ...(checked.value.outfitMode === 'template' && { outfitSnapshot: outfits.value,
             ...(input.characterMeta && { characterMeta: { ...structuredClone(input.characterMeta), characters: input.characterMeta.characters.map(c => {
                 const outfit = outfits.value.characters.find(o => o.captionIndex === c.captionIndex);
-                return outfit ? { ...structuredClone(c), outfit: { name: outfit.name, description: outfit.description } } : structuredClone(c);
+                return outfit ? { ...structuredClone(c), outfit: { name: outfit.name, description: outfit.description,
+                    ...(outfit.descriptionHalfBody !== undefined && { descriptionHalfBody: outfit.descriptionHalfBody }) } } : structuredClone(c);
             }) } }) }),
         ...(output.value.dnaCandidates !== undefined && { dnaCandidates: output.value.dnaCandidates }) });
 }

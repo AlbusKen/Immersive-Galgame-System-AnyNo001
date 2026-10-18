@@ -189,7 +189,8 @@ function wardrobeChoices(charName, outfitName, entry, wardrobe) {
     const options = [choice('', '同名服装'), choice(BUILTIN_NUDE_OUTFIT, BUILTIN_NUDE_OUTFIT)]
         .concat(names.map((item) => choice(item, item)));
     if (selected && !nude && !names.includes(selected)) options.push(choice(selected, selected));
-    const edit = nude ? '' : `<button type="button" class="igs-outfit-tab igs-outfit-tab-add igs-outfit-wardrobe-edit" data-action="scene-outfit-dna:${encSeg(charName)}:${encSeg(outfitName)}">编辑服装描述</button>`;
+    const edit = nude ? '' : `<button type="button" class="igs-outfit-tab igs-outfit-tab-add igs-outfit-wardrobe-edit" data-action="scene-outfit-dna:${encSeg(charName)}:${encSeg(outfitName)}">编辑服装描述</button>`
+        + `<button type="button" class="igs-outfit-tab igs-outfit-tab-add igs-outfit-wardrobe-edit" data-action="scene-outfit-half-dna:${encSeg(charName)}:${encSeg(outfitName)}" title="从完整服装描述删减画外部分，留空时下次生成立绘补齐">半身服装 DNA</button>`;
     return `<select class="igs-asset-move igs-wardrobe-pick" aria-label="使用衣柜" data-outfit-wardrobe-char="${esc(charName)}" data-outfit-wardrobe="${esc(outfitName)}">${options.join('')}</select>${edit}`;
 }
 
@@ -349,6 +350,7 @@ export function renderWardrobe(wardrobe, { resolveUrl, scopeTag, scopeMenu, focu
         const nsfwBoost = Boolean(entry && entry.nsfwBoost);
         const menu = renderRowMenu([
             menuItem(`wardrobe-prompt:${encoded}`, '提示词'),
+            menuItem(`wardrobe-half-prompt:${encoded}`, '半身服装 DNA'),
             menuItem(`wardrobe-generate-prompt:${encoded}`, '生成提示词'),
             menuItem(`wardrobe-reference:${encoded}`, '生图参考'),
             `<button type="button" class="igs-add-menu-item igs-wardrobe-nsfw${nsfwBoost ? ' is-on' : ''}" data-action="wardrobe-nsfw:${encoded}" role="menuitem" aria-pressed="${nsfwBoost ? 'true' : 'false'}">${nsfwBoost ? '关闭瑟瑟加强' : '瑟瑟加强'}</button>`,

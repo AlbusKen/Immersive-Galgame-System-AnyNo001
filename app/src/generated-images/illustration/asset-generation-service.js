@@ -1347,6 +1347,7 @@ export function createAssetGenerationService(deps) {
                 transparent,
                 whiteBackground: (via === 'nai' || via === 'dbgen') && !transparent,
                 templates: s.auto.assets.templates,
+                fixedSpritePrompts: template,
                 ...(!template && { positiveContext: s.auto.nai.artistPrefix }),
             },
         );
@@ -1467,8 +1468,8 @@ export function createAssetGenerationService(deps) {
             outfit = outfit ? structuredClone(outfit) : outfit;
         }
         let outfitWrite;
-        if (template && !context[0].outfit.description?.trim()) {
-            // 新衣装只提取一次资料；保存成功后再生成默认图或表情差分。
+        if (template && (!context[0].outfit.description?.trim() || !context[0].outfit.descriptionHalfBody?.trim())) {
+            // 新衣装同次建立双份资料；旧衣装只从完整母版补半身视图。
             const task = characterPromptTask(context, 'derived', 'half_body', [[name]]);
             reportExpressionProgress(onProgress, { phase: 'write', done: 0, total: labels.length });
             const written = await writePrompt({ signal, ...task, imagePromptTask: 'outfit',
@@ -1492,7 +1493,8 @@ export function createAssetGenerationService(deps) {
                 const saved = await saveOutfitDna(onOutfitDna, clothing, { signal, shouldStart });
                 if (!saved?.ok) return saved || { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存失败' };
             }
-            outfit = { ...outfit, name: clothing.name, prompt: clothing.description };
+            outfit = { ...outfit, name: clothing.name, prompt: clothing.description,
+                ...(clothing.descriptionHalfBody !== undefined && { promptHalfBody: clothing.descriptionHalfBody }) };
             context = singleCharacterContext(name, dna, outfit, readSettings(signal).sceneAssets);
             // 未提供持久化回调的独立调用保持候选来源，不冒充已保存。
             if (typeof onOutfitDna === 'function') context[0].outfits = context[0].outfits
@@ -1585,13 +1587,14 @@ export function createAssetGenerationService(deps) {
                     }
                     if (clothing?.source === 'candidate') {
                         if (stopped()) return { ok: false, reason: 'stale-target', error: '目标已变化，未保存服装 DNA' };
-                        const saved = await saveOutfitDna(onOutfitDna, { name: clothing.name, description: clothing.description }, { signal, shouldStart });
+                        const saved = await saveOutfitDna(onOutfitDna, clothing, { signal, shouldStart });
                         if (!saved?.ok) return saved || { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存失败' };
-                        outfit = { ...outfit, name: clothing.name, prompt: clothing.description };
+                        outfit = { ...outfit, name: clothing.name, prompt: clothing.description,
+                            ...(clothing.descriptionHalfBody !== undefined && { promptHalfBody: clothing.descriptionHalfBody }) };
                         // 只有已确认保存成功才更新本任务基线；当前批次与后续批次共用保存值。
                         context = singleCharacterContext(name, dna, outfit, readSettings(signal).sceneAssets);
                         context[0].outfits = context[0].outfits.filter(c => c.name !== clothing.name)
-                            .concat({ name: clothing.name, description: clothing.description });
+                            .concat(clothing);
                         task.characterContext = structuredClone(context);
                     }
                 }
@@ -1642,7 +1645,7 @@ export function createAssetGenerationService(deps) {
             writtenFromDna: spritePromptNeedsWriting(dna, outfit) };
         const paintDna = expressionPaintDna(dna, outfit);
         outfit = outfit ? structuredClone(outfit) : outfit;
-        const context = singleCharacterContext(name, dna, outfit, readSettings(signal).sceneAssets);
+        let context = singleCharacterContext(name, dna, outfit, readSettings(signal).sceneAssets);
         const templateMeta = expressionPaintMeta({ template: true, signal });
         const stopped = () => Boolean(signal && signal.aborted)
             || (typeof shouldStart === 'function' && shouldStart() !== true);
@@ -1668,10 +1671,18 @@ export function createAssetGenerationService(deps) {
                     results.push({ ...checked, mood, caption, ...characterPromptRecovery(item) });
                     continue;
                 }
-                if (item.expression === undefined && !['默认', '平和'].includes(mood)) {
+                if (!context[0].outfit.descriptionHalfBody?.trim()
+                    || (item.expression === undefined && !['默认', '平和'].includes(mood))) {
                     const regenerated = await generateExpressionSet({ name, dna: context[0].dna, outfit,
                         moods: [mood], nsfw, onProgress, signal, shouldStart, onOutfitDna });
                     results.push(...(regenerated.items || [{ ...regenerated, mood, caption, ...characterPromptRecovery(item) }]));
+                    const completed = regenerated.items?.find(result => result.ok)?.outfitSnapshot?.characters;
+                    if (completed?.length === 1 && completed[0].characterKey === name
+                        && completed[0].name === context[0].outfit.name && completed[0].descriptionHalfBody?.trim()) {
+                        outfit = { ...outfit, name: completed[0].name, prompt: completed[0].description,
+                            promptHalfBody: completed[0].descriptionHalfBody };
+                        context = singleCharacterContext(name, dna, outfit, readSettings(signal).sceneAssets);
+                    }
                     generationStopped = regenerated.stopped === true || regenerated.stopGeneration === true
                         || regenerated.items?.some(result => result.stopGeneration === true) === true;
                     continue;
@@ -1856,7 +1867,7 @@ export function createAssetGenerationService(deps) {
                 const ready = preflightCharacterTask(context, 'derived', 'half_body');
                 const complete = nude || (context[0].dna.personality !== undefined
                     && ['full_body', 'half_body', 'portrait'].every(view => context[0].dna.views?.[view]?.subject?.trim()));
-                const built = ready.ok && complete ? savedExpressionTemplate(context, '平和', meta.userPrompts,
+                const built = ready.ok && complete && context[0].outfit.descriptionHalfBody?.trim() ? savedExpressionTemplate(context, '平和', meta.userPrompts,
                     { purpose: nude ? 'derived' : 'sprite' }) : null;
                 if (built?.ok && built.available) {
                     input = characterTemplateInput(built.value, built.value.promptTask, context);
@@ -1894,13 +1905,14 @@ export function createAssetGenerationService(deps) {
                 if (!clothing || checked.outfitSnapshot.characters.length !== 1)
                     return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '立绘衣装无法唯一绑定' };
                 if (!input.characterContext[0].outfits.some(item => item.name === clothing.name
-                    && item.description === clothing.description)) {
+                    && item.description === clothing.description && item.descriptionHalfBody === clothing.descriptionHalfBody)) {
                     if (stopped()) return stale();
-                    const saved = await saveOutfitDna(onOutfitDna, { name: clothing.name, description: clothing.description }, { signal, shouldStart });
+                    const saved = await saveOutfitDna(onOutfitDna, clothing, { signal, shouldStart });
                     if (!saved?.ok) return saved || { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存失败' };
                     if (stopped()) return stale();
                     const updated = singleCharacterContext(who, dna,
-                        { name: clothing.name, prompt: clothing.description }, readSettings(signal).sceneAssets);
+                        { name: clothing.name, prompt: clothing.description,
+                            ...(clothing.descriptionHalfBody !== undefined && { promptHalfBody: clothing.descriptionHalfBody }) }, readSettings(signal).sceneAssets);
                     input = inheritImageTaskLease(input, { ...input, characterContext: updated });
                     const rebound = prepareCharacterCaption(input);
                     if (!rebound.ok) return rebound;

@@ -36,7 +36,8 @@ export function expressionWritingInput(task, context) {
         const source = sources[0], view = readCharacterDnaView(source.dna, character.framing);
         if (!view.ok) return view;
         characters.push({ characterKey: character.characterKey, dna: view.value,
-            outfit: { name: source.outfit?.name || '', description: source.outfit?.description || '' } });
+            outfit: { name: source.outfit?.name || '', description: character.framing === 'half_body'
+                ? source.outfit?.descriptionHalfBody || source.outfit?.description || '' : source.outfit?.description || '' } });
     }
     return { ok: true, value: { characterContext: characters,
         outputs: { format: 'expression-fragments', rows: slots.map(slot => ({ slotId: slot.slotId,
@@ -80,11 +81,15 @@ export function singleCharacterContext(name, dna, outfit, assets = {}) {
     const selected = readDefaultOutfit(assets, name);
     const original = outfits.find(o => o.default === true)
         || (selected.ok ? { name: selected.outfitName, description: '' } : null);
+    const saved = outfit?.name ? outfits.find(o => o.name === outfit.name) : original;
+    const half = outfit?.nude ? 'No clothing; retain the fixed identifying features.'
+        : outfit?.promptHalfBody ?? saved?.descriptionHalfBody;
     return [{ characterKey: name, dna: profile, outfits, outfit: {
         name: String(outfit?.name || (outfit?.nude ? '裸体' : original?.name) || ''),
         description: outfit?.nude ? 'No clothing; retain the fixed identifying features.'
             : String(outfit?.prompt || (outfit?.name ? outfits.find(o => o.name === outfit.name)?.description
                 : original?.description) || ''),
+        ...(half !== undefined && { descriptionHalfBody: half }),
         ...(Array.isArray(outfit?.words) && { words: [...outfit.words] }),
         ...(outfit?.nsfwBoost === true && { nsfwBoost: true }),
     } }];
@@ -113,7 +118,9 @@ export function savedExpressionTemplate(context, mood, prompts, { expression,
         || [expression.positive, expression.negative].some(text => text.length > 4096 || /<<\s*(?:dna|outfit)/i.test(text))))
         return { ok: false, reason: 'SPRITE_DATA_INVALID', error: '独立表情资料无效，未继续绘图' };
     const source = context[0], outfit = source.outfit;
-    const clothing = outfit?.description || source.outfits?.find(o => o.name === outfit?.name)?.description;
+    const saved = source.outfits?.find(o => o.name === outfit?.name);
+    const clothing = outfit?.description || saved?.description;
+    const half = outfit?.descriptionHalfBody ?? saved?.descriptionHalfBody;
     if (!clothing?.trim()) return { ok: true, available: false };
     const task = characterPromptTask(context, purpose, framing, [[source.characterKey]]);
     if (promptTask) {
@@ -140,7 +147,8 @@ export function savedExpressionTemplate(context, mood, prompts, { expression,
         promptRecipe: { version: 1, mode: 'dna_template', outfitMode: 'template',
             caption, bindings: [binding] },
         characterMeta: { version: 1, characters: [{ characterKey: source.characterKey,
-            captionIndex: 0, identityAnchor: '', signatureDetails: '', outfit: { name: outfit.name, description: clothing },
+            captionIndex: 0, identityAnchor: '', signatureDetails: '', outfit: { name: outfit.name, description: clothing,
+                ...(half !== undefined && { descriptionHalfBody: half }) },
             centers, positionExplicit: true }] },
         promptTask: task.promptTask,
         ...(fragment && { expression: fragment }),
@@ -173,7 +181,9 @@ export function characterTemplateInput(entry, task, context) {
             const saved = source?.outfits?.find(o => o.name === outfit?.name);
             if (character.outfit?.name === outfit?.name
                 && (outfit?.description || saved?.description))
-                character.outfit = { name: outfit.name, description: outfit.description || saved.description };
+                character.outfit = { name: outfit.name, description: outfit.description || saved.description,
+                    ...((outfit.descriptionHalfBody ?? saved?.descriptionHalfBody) !== undefined && {
+                        descriptionHalfBody: outfit.descriptionHalfBody ?? saved.descriptionHalfBody }) };
         }
     }
     return inheritImageTaskLease(entry, { caption: entry.promptRecipe?.caption || entry.caption,

@@ -106,6 +106,8 @@ export function normalizeWardrobe(raw) {
         const prompt = typeof source.prompt === 'string' ? source.prompt.replace(/\r\n?/g, '\n').trim() : '';
         const reference = typeof source.reference === 'string' ? source.reference.trim() : '';
         out[name] = { prompt };
+        if (typeof source.promptHalfBody === 'string')
+            out[name].promptHalfBody = source.promptHalfBody.replace(/\r\n?/g, '\n').trim();
         if (reference.startsWith('igs-gen:')) out[name].reference = reference;
         if (source.nsfwBoost === true) out[name].nsfwBoost = true;
         // 新建时填的具体要求，写提示词时带上；不进生图词。
@@ -120,8 +122,10 @@ export function resolveWardrobePrompt(wardrobe, outfitEntry, outfitName) {
     const linked = outfitEntry && typeof outfitEntry.wardrobe === 'string' ? outfitEntry.wardrobe.trim() : '';
     const key = linked || String(outfitName || '').trim();
     if (!key || !hasOwn(map, key)) return null;
-    const entry = map[key] || {};
+    const source = map[key];
+    const entry = typeof source === 'string' ? { prompt: source } : source || {};
     const resolved = { name: key, prompt: String(entry.prompt || '').trim() };
+    if (typeof entry.promptHalfBody === 'string') resolved.promptHalfBody = entry.promptHalfBody.trim();
     if (entry.nsfwBoost === true) resolved.nsfwBoost = true;
     return resolved;
 }

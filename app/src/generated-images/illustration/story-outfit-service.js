@@ -2,9 +2,9 @@ import { recoverOperation } from '../../storage/automatic-recovery.js';
 import { adoptCharacterSeed } from '../../scene/generation-seeds.js';
 // 剧情衣装候选：发现时仅登记，用户选择后才写词、入库及按需生成立绘。
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
-import { createOutfitResolver, isValidOutfitName, isBuiltinNudeOutfit } from '../../scene/character-outfits.js';
+import { createOutfitResolver, isValidOutfitName, isBuiltinNudeOutfit, resolveWardrobePrompt } from '../../scene/character-outfits.js';
 import { assetOwnerKey, effectiveSceneAssets, ensureCardLibrary } from '../../scene/asset-scope.js';
-import { prepareStoryOutfitAdoption, prepareOutfitAdoption } from '../../scene/outfit-identity.js';
+import { prepareStoryOutfitAdoption, prepareOutfitAdoption, prepareOutfitDnaSave } from '../../scene/outfit-identity.js';
 import { prepareInitialDefaultOutfitSelection } from '../../scene/character-appearance.js';
 import { loadStoryOutfitCandidates, saveStoryOutfitCandidate, removeStoryOutfitCandidate, storyOutfitId } from '../../scene/outfit-review-store.js';
 import { normalizeCharacterDna, readCharacterDnaView } from '../../scene/character-dna.js';
@@ -188,7 +188,28 @@ export function createStoryOutfitService(deps) {
                 const result = await deps.assets.generateExpressionSet({ name: row.character, dna,
                     outfit: { name: row.word, prompt: row.prompt }, moods: ['平和'],
                     messageId: row.messageId, ...(deps.signal && { signal: deps.signal }),
-                    shouldStart: paintCurrent });
+                    shouldStart: paintCurrent,
+                    ...(template && { onOutfitDna: async clothing => {
+                        if (!paintCurrent() || clothing.name !== row.word) return fail('stale-target');
+                        const latest = deps.getContext(row), next = structuredClone(latest.root);
+                        const effective = effectiveSceneAssets(latest.root, row.scopeKey);
+                        const owner = assetOwnerKey(latest.root, row.scopeKey, fields, row.character);
+                        const target = owner ? ensureCardLibrary(next, owner) : next;
+                        const prepared = prepareOutfitDnaSave(target, row.character, row.word, clothing.description,
+                            { readWardrobe: effective.wardrobe, descriptionHalfBody: clothing.descriptionHalfBody });
+                        if (!prepared.ok) return prepared;
+                        Object.assign(target, prepared.patch);
+                        const saved = await commit(row, { changed: Object.keys(prepared.patch).length > 0,
+                            sceneAssets: next }, latest.root);
+                        if (!saved?.ok) return saved || fail('save-failed');
+                        if (!paintCurrent()) return fail('stale-target');
+                        const readback = effectiveSceneAssets(deps.getContext(row).root, row.scopeKey);
+                        const actual = resolveWardrobePrompt(readback.wardrobe,
+                            readback.characterOutfits?.[row.character]?.[row.word], row.word);
+                        return actual?.prompt === clothing.description
+                            && actual.promptHalfBody === clothing.descriptionHalfBody
+                            ? { ok: true } : fail('save-readback-failed');
+                    } }) });
                 const image = result?.items?.find(item => item.ok && item.mood === '平和' && item.imageId);
                 if (!image) {
                     const item = result?.items?.[0];
@@ -218,6 +239,13 @@ export function createStoryOutfitService(deps) {
             plan = { changed: true, sceneAssets: structuredClone(ctx.root) };
             const owner = assetOwnerKey(ctx.root, row.scopeKey, fields, row.character);
             const target = owner ? ensureCardLibrary(plan.sceneAssets, owner) : plan.sceneAssets;
+            if (checked.patch.characterOutfits) target.characterOutfits = { ...target.characterOutfits,
+                [row.character]: checked.patch.characterOutfits[row.character] };
+            if (checked.patch.wardrobe) {
+                const effective = effectiveSceneAssets(ctx.root, row.scopeKey);
+                target.wardrobe = { ...target.wardrobe, ...Object.fromEntries(Object.entries(checked.patch.wardrobe)
+                    .filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(effective.wardrobe?.[key]))) };
+            }
             const outfit = target.characterOutfits?.[row.character]?.[row.word];
             if (!outfit) return fail('OUTFIT_ADOPTION_CONFLICT');
             const url = `${GENERATED_ASSET_URL_PREFIX}${row.imageId}`;

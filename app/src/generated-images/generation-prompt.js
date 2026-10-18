@@ -161,10 +161,14 @@ export function promptProvenance(value = {}) {
                 || indexes.has(c.captionIndex) || typeof c.token !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(c.token)
                 || typeof c.name !== 'string' || c.name.length > 128
                 || typeof c.description !== 'string' || c.description.length > 4096
-                || /<<\s*(?:dna|outfit)/i.test(c.description)) invalid();
+                || /<<\s*(?:dna|outfit)/i.test(c.description)
+                || (c.descriptionHalfBody !== undefined && (typeof c.descriptionHalfBody !== 'string'
+                    || !c.descriptionHalfBody.trim() || c.descriptionHalfBody.length > 4096
+                    || /<<\s*(?:dna|outfit)/i.test(c.descriptionHalfBody)))) invalid();
             indexes.add(c.captionIndex);
             return { characterKey: c.characterKey, captionIndex: c.captionIndex, token: c.token,
-                name: c.name, description: c.description, source: c.source };
+                name: c.name, description: c.description,
+                ...(c.descriptionHalfBody !== undefined && { descriptionHalfBody: c.descriptionHalfBody }), source: c.source };
         }) };
     }
     if (value.sentPrompt !== undefined) {

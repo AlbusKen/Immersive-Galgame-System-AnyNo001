@@ -239,7 +239,7 @@ test('gate:outfits:binding-lists-merged-wardrobe-and-jumps-to-rules', () => {
 
 test('gate:outfits:wardrobe-prompt-editor-saves-and-cancel-keeps-text', async () => {
     const t = createCtx();
-    t.sa().wardrobe = { 校服: { prompt: 'uniform', nsfwBoost: true } };
+    t.sa().wardrobe = { 校服: { prompt: 'uniform', promptHalfBody: 'uniform collar', nsfwBoost: true } };
     const action = `wardrobe-prompt:${enc('校服')}`;
     const ctx = { ...t.ctx, settingsState: t.state.activeSettings };
     let opened = null;
@@ -247,9 +247,11 @@ test('gate:outfits:wardrobe-prompt-editor-saves-and-cancel-keeps-text', async ()
     await handleOutfitAction(action, ctx);
     assert.deepEqual(opened, ['「校服」的提示词', 'uniform']);
     assert.equal(t.sa().wardrobe.校服.prompt, 'uniform');
+    assert.equal(t.sa().wardrobe.校服.promptHalfBody, 'uniform collar');
     ctx.dialogs.edit = async () => '  sailor fuku  ';
     await handleOutfitAction(action, ctx);
     assert.equal(t.sa().wardrobe.校服.prompt, 'sailor fuku');
+    assert.equal(Object.hasOwn(t.sa().wardrobe.校服, 'promptHalfBody'), false);
     assert.equal(t.sa().wardrobe.校服.nsfwBoost, true);
 });
 
@@ -272,6 +274,15 @@ test('outfit-description: 角色和衣柜入口双向编辑同一条记录，不
     ctx.dialogs.edit = async (_title, value) => { opened = value; return null; };
     await handleOutfitAction(role, ctx);
     assert.equal(opened, 'green dress');
+    ctx.dialogs.edit = async (_title, value) => { opened = value; return 'green dress, ribbon'; };
+    await handleOutfitAction(`scene-outfit-half-dna:${enc('小林海斗', '初始衣装')}`, ctx);
+    assert.equal(opened, '');
+    assert.equal(t.sa().wardrobe[linked].prompt, 'green dress');
+    assert.equal(t.sa().wardrobe[linked].promptHalfBody, 'green dress, ribbon');
+    ctx.dialogs.edit = async (_title, value) => { opened = value; return null; };
+    await handleOutfitAction(`wardrobe-half-prompt:${enc(linked)}`, ctx);
+    assert.equal(opened, 'green dress, ribbon');
+    assert.equal(t.sa().wardrobe[linked].promptHalfBody, 'green dress, ribbon');
     assert.equal(t.sa().characterOutfits.小林海斗.初始衣装.wardrobe, linked);
     assert.deepEqual(Object.keys(t.sa().wardrobe), [linked]);
     assert.equal(t.sa().wardrobe[linked].reference, 'igs-gen:ref');

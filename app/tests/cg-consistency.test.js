@@ -780,9 +780,9 @@ for (const edited of [false, true]) {
 }
 
 
-for (const mode of ['cancel', 'confirm']) test(`衣装预检：多人集中回退-${mode}`, async t => {
+for (const mode of ['cancel', 'confirm']) test(`衣装预检：多人集中回退-${mode}`, { timeout: 5000 }, async t => {
     const f = await consistencyBuiltinFixture(2);
-    t.after(() => f.dispose());
+    t.after(() => { f.service.cancel(); f.dispose(); });
     for (const name of f.names) {
         f.assets.characterOutfits[name].夏装 = f.assets.characterOutfits[name].冬装;
         f.assets.characterDefaultOutfits[name].outfitName = '夏装';

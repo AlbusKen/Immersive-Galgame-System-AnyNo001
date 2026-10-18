@@ -12,8 +12,11 @@ export function savedCharacterOutfits(assets = {}, name) {
     const selected = readDefaultOutfit(assets, name);
     return Object.entries(assets.characterOutfits?.[name] || {}).flatMap(([key, entry]) => {
         if (!isValidOutfitName(key) || isBuiltinNudeOutfit(key)) return [];
-        const description = resolveWardrobePrompt(assets.wardrobe, entry, key)?.prompt || '';
-        return description ? [{ name: key, description, ...(selected.ok && selected.outfitName === key && { default: true }) }] : [];
+        const saved = resolveWardrobePrompt(assets.wardrobe, entry, key);
+        const description = saved?.prompt || '';
+        return description ? [{ name: key, description,
+            ...(saved.promptHalfBody !== undefined && { descriptionHalfBody: saved.promptHalfBody }),
+            ...(selected.ok && selected.outfitName === key && { default: true }) }] : [];
     });
 }
 
@@ -46,7 +49,8 @@ export function prepareOutfitAdoption(assets, name, imageId, record = {},
         // 外部来源可以只交完整绘图词。正文已给衣装名时直接登记图片，衣装 DNA 留空。
         const saved = allowEmptyDescription && !candidate.description?.trim()
             ? prepareOutfitDnaPatch(assets, name, candidate.name, '', readWardrobe)
-            : prepareOutfitDnaSave(assets, name, candidate.name, candidate.description, { readWardrobe });
+            : prepareOutfitDnaSave(assets, name, candidate.name, candidate.description,
+                { readWardrobe, descriptionHalfBody: candidate.descriptionHalfBody });
         if (!saved.ok) return saved;
         const all = saved.patch.characterOutfits || assets.characterOutfits || {};
         const entry = all[name]?.[candidate.name];
@@ -108,33 +112,54 @@ export function prepareOutfitAdoption(assets, name, imageId, record = {},
         return adoptDefault(clothes[0]);
     }
 
-    const candidates = prepared.outfitSnapshot.characters.filter(c => c.characterKey === sourceName && c.source === 'candidate');
+    const candidates = prepared.outfitSnapshot.characters.filter(c => c.characterKey === sourceName
+        && (c.source === 'candidate' || c.descriptionHalfBody !== undefined));
     if (!candidates.length) return { ok: true, patch: {} };
     if (candidates.length !== 1) return fail('candidate-binding', '衣装候选无法唯一绑定目标角色');
 
     const candidate = candidates[0];
     if (!isValidOutfitName(candidate.name)) return fail('candidate-name', '衣装候选名称不合法');
     if (isBuiltinNudeOutfit(candidate.name)) return { ok: true, patch: {} };
-    return prepareOutfitDnaSave(assets, name, candidate.name, candidate.description, { readWardrobe });
+    return prepareOutfitDnaSave(assets, name, candidate.name, candidate.description,
+        { readWardrobe, descriptionHalfBody: candidate.descriptionHalfBody });
 }
 
 // 服装 DNA 独立于图片保存；调用方负责归属、冻结基线与持久化。
-export function prepareOutfitDnaSave(assets, name, outfitName, description, { readWardrobe = assets.wardrobe } = {}) {
-    const fail = () => ({ ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '服装 DNA 或已有资料冲突，原资料保持不变' });
+export function prepareOutfitDnaSave(assets, name, outfitName, description,
+    { readWardrobe = assets.wardrobe, descriptionHalfBody } = {}) {
     if (!name || ['__proto__', 'constructor', 'prototype'].includes(name)
         || !isValidOutfitName(outfitName) || isBuiltinNudeOutfit(outfitName)
         || typeof description !== 'string' || !description.trim() || description.length > 4096
-        || /<<\s*(?:dna|outfit)/i.test(description)) return fail();
-    return prepareOutfitDnaPatch(assets, name, outfitName, description, readWardrobe);
+        || /<<\s*(?:dna|outfit)/i.test(description)
+        || (descriptionHalfBody !== undefined && (typeof descriptionHalfBody !== 'string'
+            || !descriptionHalfBody.trim() || descriptionHalfBody.length > 4096
+            || /<<\s*(?:dna|outfit)/i.test(descriptionHalfBody)))) return outfitDnaConflict();
+    return prepareOutfitDnaPatch(assets, name, outfitName, description, readWardrobe, descriptionHalfBody);
 }
 
-function prepareOutfitDnaPatch(assets, name, outfitName, description, readWardrobe) {
+function outfitDnaConflict() {
+    return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '服装 DNA 或已有资料冲突，原资料保持不变' };
+}
+
+function prepareOutfitDnaPatch(assets, name, outfitName, description, readWardrobe, descriptionHalfBody) {
     const characterOutfits = { ...(assets.characterOutfits || {}) };
     const outfits = { ...(characterOutfits[name] || {}) };
     const existing = outfits[outfitName];
     if (existing && !description) return { ok: true, patch: {} };
     const saved = (existing || description) ? resolveWardrobePrompt(readWardrobe, existing, outfitName) : null;
     if (saved?.prompt) {
+        // 旧衣装只补缺失的半身视图；完整母版和已保存半身均不得被候选覆盖。
+        if (descriptionHalfBody !== undefined) {
+            if (saved.prompt !== description || (saved.promptHalfBody && saved.promptHalfBody !== descriptionHalfBody)) return outfitDnaConflict();
+            if (!saved.promptHalfBody) {
+                outfits[outfitName] = { words: [], moods: {}, ...existing, wardrobe: saved.name };
+                characterOutfits[name] = outfits;
+                return { ok: true, patch: { characterOutfits,
+                    wardrobe: { ...(assets.wardrobe || {}), [saved.name]: {
+                        ...(typeof readWardrobe[saved.name] === 'string' ? { prompt: saved.prompt } : readWardrobe[saved.name]),
+                        promptHalfBody: descriptionHalfBody } } } };
+            }
+        }
         if (existing) return { ok: true, patch: {} };
         outfits[outfitName] = { words: [], moods: {}, wardrobe: saved.name };
         characterOutfits[name] = outfits;
@@ -144,7 +169,8 @@ function prepareOutfitDnaPatch(assets, name, outfitName, description, readWardro
     let wardrobeKey = `${name}·${outfitName}`, suffix = 1;
     while (Object.hasOwn(wardrobe, wardrobeKey) || Object.hasOwn(readWardrobe || {}, wardrobeKey))
         wardrobeKey = `${name}·${outfitName}·${++suffix}`;
-    wardrobe[wardrobeKey] = { prompt: description };
+    wardrobe[wardrobeKey] = { prompt: description,
+        ...(descriptionHalfBody !== undefined && { promptHalfBody: descriptionHalfBody }) };
     outfits[outfitName] = { words: [], moods: {}, ...existing, wardrobe: wardrobeKey };
     characterOutfits[name] = outfits;
     return { ok: true, patch: { characterOutfits, wardrobe } };

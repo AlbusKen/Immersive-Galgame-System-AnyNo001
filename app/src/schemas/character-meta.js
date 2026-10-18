@@ -36,6 +36,8 @@ export function checkCharacterMeta(raw, caption, allowedKeys) {
         keys.add(c.characterKey); indexes.add(c.captionIndex);
         if (!plain(c.outfit)) return fail('character-meta-text', 'meta_outfit_description', 'invalid',
             c.captionIndex, 'object-required');
+        if (c.outfit.descriptionHalfBody !== undefined && !text(c.outfit.descriptionHalfBody))
+            return fail('character-meta-text', 'outfit_half_body', 'invalid', c.captionIndex);
         for (const [field, value, max] of [['meta_identity', c.identityAnchor, 4096],
             ['meta_signature', c.signatureDetails, 4096], ['meta_outfit_name', c.outfit?.name, 128],
             ['meta_outfit_description', c.outfit?.description, 4096]]) {
@@ -52,7 +54,8 @@ export function checkCharacterMeta(raw, caption, allowedKeys) {
             return fail('character-meta-region', 'meta_region', 'invalid', c.captionIndex);
         characters.push({ characterKey:c.characterKey, captionIndex: c.captionIndex,
             identityAnchor: c.identityAnchor.trim(), signatureDetails: c.signatureDetails.trim(),
-            outfit: { name: c.outfit.name.trim(), description: c.outfit.description.trim() },
+            outfit: { name: c.outfit.name.trim(), description: c.outfit.description.trim(),
+                ...(c.outfit.descriptionHalfBody !== undefined && { descriptionHalfBody: c.outfit.descriptionHalfBody.trim() }) },
             centers: c.centers.map((p) => ({ x: p.x, y: p.y })), positionExplicit: c.positionExplicit === true,
             ...(r && { region: { x: r.x, y: r.y, width: r.width, height: r.height } }) });
     }

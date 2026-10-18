@@ -3,7 +3,7 @@ import { CHARACTER_DNA_REQUIRED_VIEWS, CHARACTER_DNA_VIEWS, checkDnaViews, check
 import { isValidOutfitName } from '../../scene/character-outfits.js';
 import { savedExpressionTemplate, bindAutoSpriteOutfitNames } from './character-prompt-task.js';
 import { checkPromptOutput, checkPromptTask } from '../../schemas/prompt-recipe.js';
-import { DNA_WEIGHT_RULE } from '../prompt-tasks/common.js';
+import { DNA_WEIGHT_RULE, OUTFIT_HALF_BODY_RULE } from '../prompt-tasks/common.js';
 
 export const SPRITE_DATA_RULE = [
     '仅 outputs.format 为 sprite-data 或 expression-fragments 时执行本段：只提取可复用资料，不生成 scene、char、构图、姿势、背景或完整绘图提示词。其他格式不执行本段。',
@@ -11,6 +11,7 @@ export const SPRITE_DATA_RULE = [
     '资料字段直接写 字段名: 值，不带 Char 索引或竖线，不加 meta_ 前缀。景别字段为 dna_full_body、dna_half_body、dna_portrait，新身份及身份 UC 只写逗号分隔的英文 TAG，细节同样用标签，不写自然语言或人物介绍；已有身份逐字保留。expression-fragments 同样按槽号和角色键绑定，不带索引。',
     '缺身份景别时输出 dna_full_body、dna_half_body、dna_portrait，以及可选 dna_uc_对应景别。三份从同一纯 TAG 外貌母版仅删除画外部位标签，共同标签逐字相同，权重组保持完整闭合；已有景别逐字保留。身份只含稳定外貌，不含衣装、当次表情、灰尘、临时伤势、动作或场景。',
     DNA_WEIGHT_RULE,
+    OUTFIT_HALF_BODY_RULE,
     '身份主语中的躯干、四肢和颈部直接描述身体本身，不夹带身穿何物、衣领露出什么、裤子或靴子；穿戴内容只放 outfit_description。dna_uc_* 只写对应身份的英文排除项，无额外排除项可省略或留空，不写默认值说明、沿用正向、表情姿势说明或交付指令。',
     '仅 sprite 任务且 personality 字段缺失时另写 personality: 独立英文性格特点；只描述稳定性格，无依据留空，不写外貌、衣装、动作或当次心情。不得把性格复制进各景别。已有性格可省略或逐字保留，显式空值不补建。derived 衣装提取不输出身份和性格。',
     '每份写 outfit_name 和 outfit_description。衣装原名逐字沿用输入，已保存说明逐字复用；缺说明时建立纯英文 TAG 服装 DNA，逐件绑定颜色、款式及适用长度，材质、剪裁及细节也只用标签，首次未指定细节协调补全。不写自然语言、人物身份、表情、动作或背景。',
@@ -47,7 +48,7 @@ export function parseSpriteData(text, meta) {
         && slots.length === 1 && slots[0].tokens.length === 1
         && slots[0].tokens[0] === task.value.characters[0].token ? slots[0] : undefined;
     const allowed = new Set(['slotid', 'character', ...(fragments ? ['expression', 'expression_uc']
-        : ['outfit_name', 'outfit_description', 'personality', ...viewFields])]);
+        : ['outfit_name', 'outfit_description', 'outfit_half_body', 'personality', ...viewFields])]);
     const rows = new Map();
     let row;
     for (const [index, line] of String(text || '').split(/\r?\n/).entries()) {
@@ -85,6 +86,10 @@ function assembleSpriteData(rows, meta, fragments, slots) {
         if (!source || row.character !== character.characterKey) return fail('character', 'mismatch');
         const data = fragments ? readExpression(row) : readIdentity(row, source, task.purpose);
         if (!data.ok) return locateFailure(data, row);
+        const half = data.outfit?.descriptionHalfBody || source.outfit?.descriptionHalfBody
+            || source.outfits?.find(o => o.name === data.outfit?.name)?.descriptionHalfBody;
+        if (!fragments && meta.imagePromptTask !== 'dna' && character.framing === 'half_body' && !half?.trim())
+            return locateFailure(fail('outfit_half_body', 'missing'), row);
         const built = savedExpressionTemplate([{ ...source, outfit: data.outfit || source.outfit }], '平和', meta.userPrompts, {
             purpose: task.purpose, framing: character.framing, slotId: slot.slotId, promptTask: task,
             ...(data.candidate && { dnaCandidates: data.candidate }),
@@ -105,7 +110,12 @@ function readExpression(row) {
 
 function readIdentity(row, source, purpose) {
     if (!isValidOutfitName(row.outfit_name) || !validText(row.outfit_description)) return fail('outfit');
-    const outfit = { name: row.outfit_name, description: row.outfit_description };
+    const outfit = { name: row.outfit_name, description: row.outfit_description,
+        ...(row.outfit_half_body !== undefined && { descriptionHalfBody: row.outfit_half_body }) };
+    const saved = source.outfits?.find(o => o.name === outfit.name) || (source.outfit?.name === outfit.name ? source.outfit : undefined);
+    // DNA-only 仍兼容原资料协议；立绘／换装的新资料不能静默退回带鞋袜的完整服装。
+    if (!outfit.descriptionHalfBody?.trim() && !saved?.descriptionHalfBody?.trim()
+        && row.outfit_half_body !== undefined) return fail('outfit_half_body', 'missing');
     const hasViews = viewFields.some(key => Object.hasOwn(row, key));
     const hasPersonality = Object.hasOwn(row, 'personality');
     const missingViews = CHARACTER_DNA_REQUIRED_VIEWS.some(view => !source.dna?.views?.[view]?.subject?.trim());

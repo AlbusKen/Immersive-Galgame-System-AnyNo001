@@ -9,7 +9,7 @@ export const BUILTIN_PROMPTS = Object.freeze({
     sprite: Object.freeze({
         // {tags} = DNA 组成的角色词与当次表情／动作；无 DNA 时使用写词结果。{matte} = 底色词。
         positive: '{tags}, solo, upper body, framed from the top of the head to the hips, standing, facing viewer, looking at viewer, straight-on, centered, {matte}',
-        negative: 'multiple views, 2girls, 2boys, multiple girls, multiple boys, crowd, close-up, portrait, full body, feet, head out of frame, cropped arms, scenery, detailed background, white background, gradient background, patterned background, drop shadow, floor, furniture, holding weapon, text, speech bubble, watermark, signature, frame, border',
+        negative: 'multiple views, 2girls, 2boys, multiple girls, multiple boys, crowd, close-up, portrait, full body, feet, head out of frame, cropped arms, 1.2::scenery, detailed background::, white background, 1.2::gradient background, patterned background, drop shadow, floor, furniture::, holding weapon, text, speech bubble, watermark, signature, frame, border',
         // 立绘站得太板正：要一个不挡身体的日常小动作。
         poseRule: '根据角色性格和本次情境设计自然、轻微的日常动作。人物站姿稳定，手部与身体姿态协调，手势安排在取景范围内，随身物件置于身体轮廓两侧或画面侧边，躯干轮廓与衣装主要结构清晰可见。',
     }),
