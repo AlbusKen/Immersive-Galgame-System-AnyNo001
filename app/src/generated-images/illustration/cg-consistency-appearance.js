@@ -78,8 +78,6 @@ export async function prepareConsistencyAppearances({ record, characters, assets
             requestedOutfit: requirement.requestedOutfit, purpose: 'consistency', sceneAssets: assets,
             ownerScope: JSON.stringify(scope), imageAvailability: states });
         if (!selected.ok) return { ...selected, characterKey: character.characterKey, error: fail(selected.reason, character.characterKey).error };
-        if (selected.confirmationRequired) return { ...fail('cg-reference-repair-needed', character.characterKey),
-            requestedOutfit: requirement.requestedOutfit };
         const reference = selected.referenceImage;
         if (!reference?.ok || !reference.verified || !images.has(reference.url))
             return fail('cg-reference-unverified', character.characterKey);
