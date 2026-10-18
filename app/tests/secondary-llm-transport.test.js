@@ -101,11 +101,18 @@ test('gate:llm:an-empty-plugin-key-does-not-inherit-the-main-connection-key', as
     assert.equal(JSON.parse(backend.calls[0].body.custom_include_headers).Authorization, '');
 });
 
-test('gate:llm:planning-timeout-aborts-the-response-body-read', async () => {
-    const backend = nativeOnly(() => ({ ok: true, status: 200, text: () => new Promise(() => {}) }));
+test('gate:llm:计时只提示，继续接收同一次请求的响应正文', { timeout: 3000 }, async () => {
+    let finishBody, onSlow;
+    const body = new Promise(resolve => { finishBody = resolve; });
+    const slow = new Promise(resolve => { onSlow = resolve; });
+    const backend = nativeOnly(() => ({ ok: true, status: 200, text: () => body }));
     const llm = createSecondaryLlm(fakeLlmHost(), { fetch: backend.fetch });
-    await assert.rejects(llm.request(prompts, { ...config, timeoutMs: 10 }), /超时/);
-    assert.equal(backend.calls[0].init.signal.aborted, true);
+    const pending = llm.request(prompts, { ...config, timeoutMs: 10, onSlow });
+    await slow;
+    assert.equal(backend.calls[0].init.signal.aborted, false);
+    finishBody(JSON.stringify({ choices: [{ message: { content: 'same request result' } }] }));
+    assert.equal(await pending, 'same request result');
+    assert.equal(backend.calls.length, 1);
 });
 
 test('gate:llm:model-list-timeout-also-aborts-a-hung-response-body', async t => {

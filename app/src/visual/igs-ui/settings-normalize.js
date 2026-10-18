@@ -149,10 +149,12 @@ export function normalizeSettingsValue(path, value) {
         return Number(value);
     }
     if (/^bridge\.imageApi\.(sprite|background|item)Model$/.test(path)) return String(value || '').trim();
-    if (path === 'bridge.imageApi.dbgenSpriteTransparent') {
+    if (path === 'bridge.imageApi.dbgenSpriteTransparent' || path === 'bridge.imageApi.naiSpriteTransparent'
+        || path === 'bridge.imageApi.externalSpriteDna') {
         return !(value === false || value === 'false' || value === 0 || value === '0');
     }
     if (path === 'bridge.imageCache.maxCount') return normalizeImageCacheCount(value);
+    if (path === 'bridge.imageCache.compressDisplay') return value === true || value === 'true' || value === 1 || value === '1';
     return value;
 }
 

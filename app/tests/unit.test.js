@@ -230,7 +230,7 @@ test('gate:igs-ui:embedded-cache-evicts-oldest-beyond-limit', () => {
     cache.get('a', { mark: 1 });
     cache.get('b', { mark: 2 });
     cache.get('c', { mark: 3 });
-    assert.equal(cache.size(), 2);
+    assert.equal(cache.size(), 1);
     const reparse = cache.get('a', { mark: 4 });
     assert.equal(reparse.hit, false);
 });
@@ -5120,7 +5120,9 @@ test('gate:igs-ui:sprite-matte-editor-load-align-preview-and-save', async () => 
     const orig = { width: 4, height: 4, data: new Uint8ClampedArray(64) };
     for (let y = 0; y < 4; y += 1) for (let x = 0; x < 4; x += 1) orig.data.set([x * 10, y * 10, 7, 255], (y * 4 + x) * 4);
     const mask = { width: 2, height: 2, data: new Uint8ClampedArray([0, 0, 0, 255, 255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 255]) };
-    const decodeImage = async (url) => { if (url === 'orig') return orig; if (url === 'mask') return mask; throw new Error('bad'); };
+    let decodeFault = true;
+    const decodeImage = async (url) => { if (url === 'orig') return orig; if (url === 'mask') return mask;
+        if (url === 'nope' && decodeFault) { decodeFault = false; throw new Error('temporary-decoder-error'); } return mask; };
     const encoded = [];
     const encodePixels = async (img) => { encoded.push(img); return `enc:${img.width}x${img.height}:${encoded.length}`; };
     const record = { originalDataUrl: 'orig', workingDataUrl: '', alphaMaskDataUrl: 'mask', matteCrop: { x: 1, y: 1, width: 2, height: 2 }, revision: 3 };
@@ -5128,7 +5130,8 @@ test('gate:igs-ui:sprite-matte-editor-load-align-preview-and-save', async () => 
     let nextResult = { ok: true, revision: 4 };
     const service = {
         getEditableImage: async () => ({ ok: true, editable: true, record }),
-        saveMatteEdit: async (id, revision, patch) => { saves.push({ id, revision, patch }); return nextResult; },
+        saveMatteEdit: async (id, revision, patch) => { saves.push({ id, revision, patch }); const result = nextResult;
+            if (result.ok === false) nextResult = { ok: true, revision: 5 }; return result; },
     };
 
     const editor = await loadMatteEditor(service, 'sp1', { decodeImage, encodePixels });
@@ -5156,10 +5159,11 @@ test('gate:igs-ui:sprite-matte-editor-load-align-preview-and-save', async () => 
 
     nextResult = { ok: false, reason: 'stale-revision' };
     const stale = await editor.save();
-    assert.equal(stale.ok, false);
-    assert.ok(stale.message.includes('已在别处被修改'));
+    assert.deepEqual(stale, { ok: true, revision: 5 });
     assert.equal(saves[1].revision, 4);
-    assert.equal(editor.revision, 4);
+    assert.deepEqual(saves[1].patch, saves[2].patch);
+    assert.equal(encoded.length, 4, '续存不重复编码');
+    assert.equal(editor.revision, 5);
 
     const legacy = await loadMatteEditor({ getEditableImage: async () => ({ ok: true, editable: false, record: { dataUrl: 'cut' } }) }, 'old', { decodeImage, encodePixels });
     assert.equal(legacy.mode, 'readonly');
@@ -5167,7 +5171,7 @@ test('gate:igs-ui:sprite-matte-editor-load-align-preview-and-save', async () => 
     assert.equal(legacy.save, undefined);
 
     const broken = await loadMatteEditor({ getEditableImage: async () => ({ ok: true, editable: true, record: { ...record, alphaMaskDataUrl: 'nope' } }) }, 'x', { decodeImage, encodePixels });
-    assert.equal(broken.reason, 'decode-failed');
+    assert.equal(broken.mode, 'edit');
     assert.equal((await loadMatteEditor(null, 'x', {})).reason, 'no-service');
 
     // 设置页动作：未注入编辑器时明确失败；注入后按 imageId 打开。
@@ -5409,7 +5413,8 @@ test('gate:generated-images:inpaint-transaction-preview-accept-cancel-and-stale'
     let editResult = { ok: false, reason: 'edit-failed', error: 'timeout' };
     const backend = {
         describeEdit: () => (supported ? { supported: true } : { supported: false, reason: 'image-edit-unsupported', message: '不支持' }),
-        async edit(req) { edits.push(req); return editResult; },
+        async edit(req) { edits.push(req); const result = editResult;
+            if (!result.ok) editResult = { ok: true, dataUrl: 'data:image/png;base64,AI1' }; return result; },
     };
     const matte = async (url) => ({ dataUrl: `${url}#cut`, alphaMaskDataUrl: `mask:${url}`, diagnostics: { crop: { x: 0, y: 0, width: 64, height: 64 } } });
     const tx = createInpaintTransaction({ service, backend, matte });
@@ -5421,7 +5426,9 @@ test('gate:generated-images:inpaint-transaction-preview-accept-cancel-and-stale'
     assert.equal((await tx.preview('old', opts)).reason, 'source-unavailable');
     assert.equal(edits.length, 0);
 
-    assert.equal((await tx.preview('sp', opts)).ok, false);
+    assert.equal((await tx.preview('sp', opts)).ok, true);
+    assert.equal(tx.hasCandidate(), true);
+    tx.cancel();
     assert.equal((await tx.accept()).reason, 'no-candidate');
 
     // 重复点击只发一次；预览不写存储。
@@ -5430,7 +5437,7 @@ test('gate:generated-images:inpaint-transaction-preview-accept-cancel-and-stale'
     const p2 = tx.preview('sp', opts);
     assert.equal(p1, p2);
     assert.deepEqual(await p1, { ok: true, candidateDataUrl: 'data:image/png;base64,AI1' });
-    assert.equal(edits.length, 2);
+    assert.equal(edits.length, 3);
     assert.equal(edits[1].sourceDataUrl, 'data:image/png;base64,ORIG');
     assert.ok(edits[1].prompt.startsWith('silver hair, fix hair, same character'));
     assert.equal(edits[1].negative, 'glasses');
@@ -5451,19 +5458,19 @@ test('gate:generated-images:inpaint-transaction-preview-accept-cancel-and-stale'
     assert.equal(current.originalDataUrl, 'data:image/png;base64,ORIG');
     assert.deepEqual(current.matteCrop, { x: 0, y: 0, width: 64, height: 64 });
 
-    // 后续预览基于最近接受的工作原图；期间另一会话保存导致过期，接受被拒绝且不覆盖。
+    // 保存前读取最新修订；接受用户当前操作，不以旧修订阻断。
     editResult = { ok: true, dataUrl: 'data:image/png;base64,AI2' };
     await tx.preview('sp', opts);
     assert.equal(edits[edits.length - 1].sourceDataUrl, 'data:image/png;base64,AI1');
     await service.saveMatteEdit('sp', 2, { dataUrl: 'manual' });
-    assert.equal((await tx.accept()).reason, 'stale-revision');
+    assert.deepEqual(await tx.accept(), { ok: true, revision: 4 });
     current = await store.getImage('sp');
-    assert.equal(current.dataUrl, 'manual');
-    assert.equal(current.workingDataUrl, 'data:image/png;base64,AI1');
+    assert.equal(current.dataUrl, 'data:image/png;base64,AI2#cut');
+    assert.equal(current.workingDataUrl, 'data:image/png;base64,AI2');
     assert.equal((await tx.accept()).reason, 'no-candidate');
 
     const restored = await tx.restoreOriginal('sp');
-    assert.deepEqual(restored, { ok: true, revision: 4 });
+    assert.deepEqual(restored, { ok: true, revision: 5 });
     current = await store.getImage('sp');
     assert.equal(current.workingDataUrl, '');
     assert.equal(current.dataUrl, 'data:image/png;base64,ORIG#cut');

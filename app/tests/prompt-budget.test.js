@@ -12,6 +12,16 @@ import { DEFAULT_SCENE_PROMPT_RULE, LEGACY_DEFAULT_SCENE_PROMPT_RULE_V3 } from '
 import { resolveChatShowPromptRule } from '../src/visual/igs-ui/chat-show-runtime.js';
 import { resolveFxPromptRule, resolveItemFxPromptRule } from '../src/visual/igs-ui/fx-prompt.js';
 import { resolveTextFxPromptRule } from '../src/visual/igs-ui/text-fx.js';
+import { collectPromptContext } from '../src/host/prompt-context.js';
+
+test('生成前上下文保留完整非系统历史，标签触发窗口独立，不引用已删除的截断常量', () => {
+    const chat = Array.from({ length: 60 }, (_, index) => ({ is_user: index % 2 === 0, mes: `${index}:${'长正文'.repeat(1000)}` }));
+    const context = collectPromptContext({ name2: 'Fixture', chat: [{ is_system: true, mes: 'system' }, ...chat] }, { lookback: 3 });
+    assert.equal(context.previousAiTexts.length, 30); assert.equal(context.history.length, 60);
+    assert.deepEqual(context.recentAiTexts, chat.filter(row => !row.is_user).slice(-3).map(row => row.mes));
+    assert.equal(context.previousAiTexts[0], chat[1].mes); assert.equal(context.history[0].text, chat[0].mes);
+    assert.equal(context.userText, chat[58].mes);
+});
 
 const MAIN = 'igs-scene-assets-format-rule';
 const DEPTH0 = 'igs-scene-assets-depth0';

@@ -15,6 +15,52 @@ import { fakeMediaServer, pixel, settleMedia } from './helpers/fake-media-server
 
 const assetService = (store, mediaCache) => createAssetGenerationService({ store, mediaCache, messageHost: { getChatId: () => '' }, getSettings: () => ({}) });
 
+test('图片缓存兼容已存在的 v4：直接续读续写，图片和共享别名保留', { timeout: 3000 }, async () => {
+    const { createFakeIndexedDB } = await import('./helpers/fake-idb.js');
+    const { createIdbImageCacheStore } = await import('../src/media/image-cache-store.js');
+    const { createIdbConnection } = await import('../src/media/idb-connection.js');
+    const indexedDB = createFakeIndexedDB();
+    const initial = createIdbImageCacheStore(indexedDB);
+    await initial.put('/old.png', pixel('old'), 1, 12, 'same-pixels');
+    await initial.put('/alias.png', pixel('old'), 2, 12, 'same-pixels');
+    await initial.close();
+    const upgraded = createIdbConnection(indexedDB, 'igs-image-cache', 4);
+    await upgraded.open(); await upgraded.close();
+    const opened = [], open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = (...args) => { opened.push(args); return open(...args); };
+    const current = createIdbImageCacheStore(indexedDB);
+    assert.equal(await current.get('/old.png'), pixel('old'));
+    assert.deepEqual(opened, [['igs-image-cache', 3], ['igs-image-cache']]);
+    assert.equal(await current.get('/alias.png'), pixel('old'));
+    await current.put('/new.webp', pixel('webp'), 3, 8, 'new-pixels', true);
+    assert.equal(await current.get('/new.webp'), pixel('webp'));
+    assert.equal((await current.allMeta()).length, 3);
+    const existing = indexedDB.databases.get('igs-image-cache');
+    assert.equal(existing.version, 4);
+    assert.equal(existing.stores.get('files').rows.size, 2);
+    await current.close();
+});
+
+test('图片缓存新建仍使用 v3，兼容重开仅适用于相同表结构', { timeout: 3000 }, async () => {
+    const { createFakeIndexedDB } = await import('./helpers/fake-idb.js');
+    const { createIdbImageCacheStore } = await import('../src/media/image-cache-store.js');
+    const { createIdbConnection } = await import('../src/media/idb-connection.js');
+    const fresh = createFakeIndexedDB(), current = createIdbImageCacheStore(fresh);
+    await current.put('/normal.png', pixel('normal'), 1, 12);
+    assert.equal(fresh.databases.get('igs-image-cache').version, 3);
+    await current.close();
+    const different = createFakeIndexedDB();
+    const newer = createIdbConnection(different, 'igs-image-cache', 4, db => {
+        db.createObjectStore('files', { keyPath: 'other' });
+        db.createObjectStore('meta', { keyPath: 'path' });
+    });
+    await newer.open(); await newer.close();
+    const incompatible = createIdbImageCacheStore(different);
+    await assert.rejects(incompatible.get('/normal.png'), { name: 'VersionError' });
+    assert.equal(different.databases.get('igs-image-cache').version, 4);
+    await incompatible.close();
+});
+
 test('gate:media:failed-pixel-read-cannot-erase-images-when-saving-a-prompt', async () => {
     const server = fakeMediaServer(), host = server.host(), raw = createMemoryGeneratedAssetStore();
     const store = withTavernGeneratedAssetFiles(raw, host), service = assetService(store, localImageCacheFor(host));
@@ -40,7 +86,7 @@ test('gate:media:metadata-queries-do-not-read-original-working-or-mask-pixels', 
     await service.getEditableImage('sprite'); assert.equal(server.downloads.length, 4);
 });
 
-test('gate:media:cg-reroll-keeps-the-old-file-during-generation-and-after-failure', async () => {
+test('gate:media:cg-reroll-keeps-the-old-file-during-generation-and-after-failure', { timeout: 3000 }, async t => {
     const server = fakeMediaServer(), host = server.host(), raw = createMemoryIllustrationStore();
     const store = withTavernIllustrationFiles(raw, host), key = '聊天|1|0';
     await store.putSlot(key, { slot: 1, status: 'done', caption: { kept: true }, dataUrl: pixel('old') });
@@ -49,12 +95,18 @@ test('gate:media:cg-reroll-keeps-the-old-file-during-generation-and-after-failur
     const gate = new Promise(resolve => { release = resolve; });
     const service = createAutoIllustrationService({ store, mediaCache: localImageCacheFor(host), getSettings: () => ({ nsfwEnabled: true }),
         nai: { describe: () => ({ via: 'dbgen', ready: { ok: true } }), generateDbgenCaption: () => gate },
-        messageHost: { getChatId: () => '聊天', readFloor: () => ({ chatId: '聊天', messageId: 1, swipeId: 0, isAi: true }) }, events: { emit() {} } });
-    const job = service.rerollSlot({ chatId: '聊天', messageId: 1, swipeId: 0, slot: 1 });
+        messageHost: { getChatId: () => '聊天', readFloor: () => ({ chatId: '聊天', messageId: 1, swipeId: 0, isAi: true, text: '[igs-img:1]' }), destroy() {} }, events: { emit() {} } });
+    t.after(() => { service.stop(); localImageCacheFor(host).destroy(); });
+    let finished = false;
+    const job = service.rerollSlot({ chatId: '聊天', messageId: 1, swipeId: 0, slot: 1 })
+        .then(result => { finished = true; return result; });
     await settleMedia(); assert.equal((await raw.getSlotRecord(`${key}|1`)).dataUrl, old.dataUrl);
     release({ ok: false, error: 'provider-failed' });
-    assert.equal((await job).ok, false);
+    await settleMedia();
+    assert.equal(finished, false, '来源失败时保留原操作及旧图，等待故障解除');
     assert.equal((await raw.getSlotRecord(`${key}|1`)).dataUrl, old.dataUrl);
+    service.stop();
+    assert.equal((await job).cancelled, true, '所有者关闭结束等待');
     assert.equal(server.images.has(old.dataUrl), true); assert.equal(server.deletions.length, 0);
 });
 

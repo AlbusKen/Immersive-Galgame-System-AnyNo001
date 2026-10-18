@@ -48,3 +48,30 @@ test('gate: photo-album composes stage cast between background and speaker', asy
     assert.match(dataUrl, /^data:image\/jpeg/);
     assert.deepEqual(drawn, ['bg.png', 'a.png', 'b.png', 's.png']);
 });
+
+test('photo-album 自动恢复保留完整图层，读取失败不保存少人的照片', async t => {
+    const { createCgLibrary, fixtureMedia } = await import('./helpers/media-fixtures.js');
+    const media = fixtureMedia(); t.after(() => media.destroy());
+    let fail = true;
+    const frames = [];
+    class Image {
+        naturalWidth = 100; naturalHeight = 200;
+        set src(value) {
+            this.url = value;
+            const broken = value === 'a.png' && fail;
+            if (broken) fail = false;
+            queueMicrotask(() => broken ? this.onerror?.() : this.onload?.());
+        }
+    }
+    const doc = { defaultView: { Image }, createElement() {
+        const drawn = [];
+        return { getContext: () => ({ fillRect() {}, drawImage: image => drawn.push(image.url) }),
+            toDataURL() { frames.push(drawn); return 'data:image/jpeg;base64,AAAA'; } };
+    } };
+    const store = createMemoryPhotoAlbumStore();
+    const library = createCgLibrary({ mediaCache: media, photoStore: store, getDocument: () => doc });
+    const layer = name => ({ image: `url("${name}.png")` });
+    assert.equal((await library.capturePhoto({ bg: layer('bg'), cast: [layer('a'), layer('b')], sprite: layer('s') })).ok, true);
+    assert.deepEqual(frames, [['bg.png', 'a.png', 'b.png', 's.png']]);
+    assert.equal((await store.listIds()).length, 1);
+});

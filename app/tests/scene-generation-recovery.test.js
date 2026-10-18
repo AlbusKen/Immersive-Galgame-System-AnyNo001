@@ -143,7 +143,7 @@ test('gate:scene-recovery:manual-background-button-reaches-the-dbgen-painter-wit
     const bridge = { imageApi: { mode: 'dbgen' }, autoIllustration: { retry: { enabled: false }, assets: { backgroundEnabled: false, spriteEnabled: false } }, sceneAssets: { enabled: true, scenes: {}, characters: {} } };
     const backend = createImageBackend({ getBridge: () => bridge, global: { NaiDbGen: {
         async generateSinglePrompt(req) { writes++; assert.equal(req.skipRecall, true); assert.equal(req.messageId, 3); return { ok: true, value: { caption: caption('classroom, night') } }; },
-        async generate(req) { paints++; assert.equal(req.replaceCharacterKeywords, true); return { ok: true, value: [{ blob: new Blob([Uint8Array.from(atob(PNG.split(',')[1]), c => c.charCodeAt(0))], { type: 'image/png' }) }] }; },
+        async generate(req) { paints++; assert.equal(req.replaceCharacterKeywords, false); return { ok: true, value: [{ blob: new Blob([Uint8Array.from(atob(PNG.split(',')[1]), c => c.charCodeAt(0))], { type: 'image/png' }) }] }; },
     } } });
     const service = createAssetGenerationService({ store: createMemoryGeneratedAssetStore(), nai: backend, messageHost: host('[igs-scene:教室|夜晚|雨]\n教室里的灯已经熄灭。'), getSettings: () => bridge });
     t.after(() => service.stop());

@@ -46,6 +46,11 @@ const FEATURE_ALIASES = Object.freeze({
 // 有 group 的按演出分组落到对应页（open 为所在折叠 key）；其余写 page / open / path。
 // 旧叫法（皮肤、副LLM、清除素材缓存）留作别名，老用户照旧搜得到。
 const EXTRA_ENTRIES = Object.freeze([
+    { id: 'nai-sprite-transparent', label: '内置 NAI 立绘透明底', aliases: ['NAI', '透明底', 'V5', '抠图'], page: 'source', path: 'bridge.imageApi.naiSpriteTransparent' },
+    { id: 'external-sprite-dna', label: '外部生图前补齐角色 DNA', aliases: ['副API', '副 API', '备用模型', '外部立绘', 'dbgen', '建档'], page: 'source', path: 'bridge.imageApi.externalSpriteDna' },
+    { id: 'image-prompt-presets', label: '固定提示词组预设', aliases: ['生图预设', '提示块', '导入预设', '编辑提示词'], page: 'llm' },
+    { id: 'artist-library', label: '画师串库', aliases: ['画师', '导入画师', '选择画师', '画师库'], page: 'kinds' },
+    { id: 'consistency-strength', label: '一致性重绘强度', aliases: ['强度', '角色一致性', '重绘', 'strength'], page: 'source', path: 'bridge.autoIllustration.consistencyStrength' },
     { id: 'my-phone', label: '我的手机', group: 'special', open: ['perf-my-phone'], aliases: ['手机壳', '机型', '壁纸', '铃声', '手机外观', '壳色', '折叠屏', '刘海屏', '平板'] },
     { id: 'comic-mode', label: '漫画演出模式', group: 'stage', open: ['perf-comic-mode'], path: 'readerSettings.comicMode.enabled', aliases: ['漫画', '对话泡', '气泡', '竖排', '黑白', '漫画模式', '吹き出し'] },
     { id: 'cinema-bars', label: '电影黑边', group: 'stage', open: [], path: 'readerSettings.cinemaBars', aliases: ['黑边', '宽银幕', '上下黑条'] },

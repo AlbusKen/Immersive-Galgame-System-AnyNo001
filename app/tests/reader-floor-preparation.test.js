@@ -14,6 +14,42 @@ import { createStatusHudRowLookup, findStatusHudRow } from '../src/data/shujuku/
 
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+test('旧楼补图完成、拒绝或同步异常后，当前 CG 立即解除忙碌状态', async t => {
+    for (const outcome of ['complete', 'reject', 'throw']) await t.test(outcome, async t => {
+        let finish, began;
+        const pending = new Promise(resolve => { finish = resolve; });
+        const started = new Promise(resolve => { began = resolve; });
+        const raw = '[igs-img:7]\n[igs-char:Alice|平和|她看向窗外。]\n[igs-char:Alice|平和|她重新看向门口。]';
+        const floor = { chatId: 'toolbar-recovery', messageId: 40, swipeId: 0,
+            isAi: true, isLatest: false, text: raw };
+        const host = createIgsReaderHost({ global: {}, pageRenderGapMs: 0,
+            getUnifiedSettings: () => ({ bridge: {}, readerSettings: { titleScreen: false, typewriter: { enabled: false } } }),
+            getCurrentChatId: () => floor.chatId,
+            getIllustrationSource: () => floor,
+            getIllustrationUrl: () => 'saved-cg.png',
+            illustrations: { processMessage() {
+                began();
+                if (outcome === 'throw') throw new Error('backfill-sync');
+                if (outcome === 'reject') return Promise.reject(new Error('backfill-async'));
+                return pending;
+            } },
+        });
+        t.after(() => host.destroy());
+        const opened = host.openReader({ messageId: 40, raw }, { mode: 'pc', skipTitle: true });
+        await opened.controller.invokeAction('last-page');
+        await started;
+        if (outcome === 'complete') {
+            assert.equal(host.getState().activeReader.snapshot.content.imageRetrying, true);
+            finish({ ok: true, reason: 'disabled' });
+        }
+        await new Promise(resolve => setImmediate(resolve));
+        const content = host.getState().activeReader.snapshot.content;
+        assert.equal(content.imageRetrying, false);
+        assert.equal(content.illustrationSlot, 7);
+        assert.equal(content.illustrationActive, true);
+    });
+});
+
 function reader(t, { raw, sceneAssets, statusHud, table, generatedAssets } = {}) {
     let tables = table || {};
     let exports = 0, revision = 1;
@@ -54,10 +90,28 @@ test('整楼准备沿用原有有界正文缓存，普通翻页不重准备，�
     assert.equal(cache.getPrepareCount(), 1);
     assert.notEqual(cache.prepare('a', ['修改'], prepare), original);
     cache.get('b', '另一楼'); cache.get('c', '第三楼');
-    assert.equal(cache.size(), 2);
+    assert.equal(cache.size(), 1);
     let count = 0; cache.visitPrepared(() => count++);
     assert.equal(count, 0, '被淘汰楼的准备结果也已释放');
     cache.invalidate(); assert.equal(cache.size(), 0);
+});
+
+test('正文缓存超出八楼后批量释放解析和准备结果，最近阅读楼复用且下一楼不再清理', () => {
+    const cache = createReaderSourceCache({ parse: input => ({ text: input }) });
+    for (let index = 0; index < 8; index++) {
+        cache.get(`floor-${index}`, `${index}`);
+        cache.prepare(`floor-${index}`, [], () => ({ floor: index }));
+    }
+    const current = cache.prepare('floor-0', [], () => assert.fail('must reuse preparation'));
+    cache.get('floor-8', '8'); assert.equal(cache.size(), 6);
+    const prepared = []; cache.visitPrepared(value => prepared.push(value));
+    assert.equal(prepared.includes(current), true);
+    assert.equal(prepared.some(value => [1, 2, 3].includes(value.floor)), false);
+    assert.equal(cache.get('floor-0', '0').hit, true);
+    assert.equal(cache.prepare('floor-0', [], () => null), current);
+    cache.get('floor-9', '9'); assert.equal(cache.size(), 7);
+    assert.equal(cache.get('floor-4', '4').hit, true);
+    assert.equal(cache.getParseCount(), 10); cache.invalidate(); assert.equal(cache.size(), 0);
 });
 
 test('正文位置一次建图并顺序匹配，重复句子不退回上一场景，提示词中的同句不认领', () => {

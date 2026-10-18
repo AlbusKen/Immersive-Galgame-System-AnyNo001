@@ -7,7 +7,6 @@ import { localImageCacheFor } from './tavern-image-cache.js';
 import { withMediaLock } from './media-lock.js';
 const collectors = new WeakMap();
 const WRITE_LEASE_MS = 120000;
-const MAX_AUTO_ATTEMPTS = 3;
 
 export function mediaFileGcFor(globalObject = globalThis) {
     if (collectors.has(globalObject)) return collectors.get(globalObject);
@@ -66,7 +65,7 @@ export function mediaFileGcFor(globalObject = globalThis) {
     async function references() { const { live, writing } = await referenceState(); return new Set([...live, ...writing]); }
     function clearTimer() { (globalObject.clearTimeout || clearTimeout)(timer); timer = null; }
     function schedule(delay = 5000) {
-        if (stopped || timer || !tavernHeaders(globalObject)) return;
+        if (stopped || timer) return;
         timer = (globalObject.setTimeout || setTimeout)(() => { timer = null; void drain({ automatic: true }).catch(() => {}); }, delay);
         timer?.unref?.();
     }
@@ -78,14 +77,14 @@ export function mediaFileGcFor(globalObject = globalThis) {
         draining = (async () => {
             let tasks = (await state.all()).filter(row => row.kind === 'gc');
             if (!automatic) for (const row of tasks) if (row.error || row.paused) await state.put({ ...row, attempts: 0, paused: false, error: '' });
-            tasks = tasks.filter(row => !automatic || (!row.protected && !row.paused));
+            tasks = tasks.filter(row => !automatic || !row.protected);
             if (!tasks.length) return { ok: true, pending: 0, protected: 0 };
             // flush 自己持有 commit 锁，必须在最终引用检查锁之外执行。
             if (!(await flushMediaJournals(globalObject, { automatic, onlyPending: true })).ok) throw new Error('media-backup-pending');
             return withMediaLock(globalObject, 'commit', async () => {
                 if (stopped || generation !== stamp) throw new Error('media-stopped');
                 const { live, writing } = await referenceState();
-                const tasks = (await state.all()).filter(row => row.kind === 'gc' && (!automatic || (!row.protected && !row.paused)));
+                const tasks = (await state.all()).filter(row => row.kind === 'gc' && (!automatic || !row.protected));
                 let protectedCount = 0, failed = 0;
                 for (const task of tasks) {
                     if (stopped || generation !== stamp) throw new Error('media-stopped');
@@ -102,22 +101,22 @@ export function mediaFileGcFor(globalObject = globalThis) {
                     } catch (error) {
                         failed += 1;
                         const attempts = (task.attempts || 0) + 1;
-                        await state.put({ ...task, protected: false, waitingForWrite: false, attempts, paused: attempts >= MAX_AUTO_ATTEMPTS, error: error.message });
+                        await state.put({ ...task, protected: false, waitingForWrite: false, attempts, paused: false, error: error.message });
                     }
                 }
                 if (failed) throw Object.assign(new Error('media-file-delete-failed'), { recorded: true });
                 lastError = '';
-                if (!(await state.all()).some(row => row.kind === 'gc' && !row.protected && !row.paused)) clearTimer();
+                if (!(await state.all()).some(row => row.kind === 'gc' && !row.protected)) clearTimer();
                 return { ok: true, pending: protectedCount, protected: protectedCount };
             });
         })().catch(async error => {
             lastError = error.message || String(error);
             if (!stopped && generation === stamp) {
-                if (!error.recorded) for (const task of (await state.all()).filter(row => row.kind === 'gc' && !row.paused && (!automatic || !row.protected))) {
+                if (!error.recorded) for (const task of (await state.all()).filter(row => row.kind === 'gc' && (!automatic || !row.protected))) {
                     const attempts = (task.attempts || 0) + 1;
-                    await state.put({ ...task, protected: false, attempts, paused: attempts >= MAX_AUTO_ATTEMPTS, error: lastError });
+                    await state.put({ ...task, protected: false, attempts, paused: false, error: lastError });
                 }
-                const retryable = (await state.all()).filter(row => row.kind === 'gc' && !row.protected && !row.paused);
+                const retryable = (await state.all()).filter(row => row.kind === 'gc' && !row.protected);
                 if (retryable.length) schedule(Math.min(60000, 5000 * 2 ** Math.max(...retryable.map(row => row.attempts || 0))));
                 else clearTimer();
             }
@@ -190,12 +189,12 @@ export function mediaFileGcFor(globalObject = globalThis) {
             const stamp = generation;
             starting = (async () => {
                 const rows = await state.all();
-                for (const task of rows.filter(row => row.kind === 'gc' && row.protected && !row.paused)) {
+                for (const task of rows.filter(row => row.kind === 'gc' && row.protected)) {
                     if (stopped || generation !== stamp) return;
                     if (task.waitingForWrite && rows.some(row => row.kind === 'lease' && row.path === task.path && row.expiresAt > Date.now())) continue;
                     await state.put({ ...task, protected: false, waitingForWrite: false });
                 }
-                if ((await state.all()).some(row => row.kind === 'gc' && !row.protected && !row.paused)) schedule();
+                if ((await state.all()).some(row => row.kind === 'gc' && !row.protected)) schedule();
             })().catch(error => { lastError = error.message || String(error); }).finally(() => { starting = null; });
             return starting;
         },

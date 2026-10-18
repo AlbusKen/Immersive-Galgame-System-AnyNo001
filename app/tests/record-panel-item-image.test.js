@@ -97,3 +97,38 @@ test('record-panel-item-image:no-image-options-keeps-original-svg-behavior', () 
     assert.match(root.innerHTML, /igs-record-slot-icon" aria-hidden="true"><svg/);
     panel.close();
 });
+
+test('资料和地图读表恢复：连续读取失败后自动显示原资料，无需更新回调或再次打开', { timeout: 3000 }, async t => {
+    const { createMapPanelController } = await import('../src/visual/igs-ui/map-panel.js');
+    const { createMediaRuntime } = await import('../src/media/media-runtime.js');
+    const { fakeMediaServer } = await import('./helpers/fake-media-server.js');
+    for (const kind of ['inventory', 'map']) {
+        const doc = fakeDocument(), global = fakeMediaServer().host(), media = createMediaRuntime(global);
+        global.localStorage.setItem('igs-map-basemap-source', 'custom');
+        let reads = 0, recovered;
+        const readDone = new Promise(resolve => { recovered = resolve; });
+        global.AutoCardUpdaterAPI = { ...API, exportTableAsJson() {
+            if (++reads < 5) throw new Error('temporary-table-read');
+            queueMicrotask(recovered);
+            return kind === 'inventory' ? API.exportTableAsJson() : {
+                sheet_map: { uid: 'sheet_map', name: '世界地图', content: [
+                    ['地点ID', '上级地点ID', '名称', 'x', 'y', '说明', '角色', '排序'],
+                    ['home', '', '我家', '0.25', '0.75', '', '', ''],
+                ] },
+            };
+        } };
+        const overlay = doc.createElement('div');
+        doc.body.appendChild(overlay);
+        const panel = kind === 'map' ? createMapPanelController(doc, global, null, { mediaCache: media.cache })
+            : createRecordPanelController(doc, global, null);
+        t.after(async () => { panel.dispose?.(); panel.close(); await media.destroy(); });
+        assert.equal(panel.open(overlay, {}, kind).ok, true);
+        await readDone;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(panel.getState().model.status, 'ready');
+        assert.equal(reads, 5);
+        if (kind === 'inventory') assert.equal(panel.getState().model.entries[0].title, '旧钥匙');
+        else assert.equal(panel.getState().model.tables[0].locations[0].name, '我家');
+        panel.dispose?.(); panel.close(); await media.destroy();
+    }
+});

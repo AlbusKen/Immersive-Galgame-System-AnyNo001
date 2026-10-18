@@ -1,19 +1,18 @@
+import { recoverOperation, linkRecoverySignals, wakeRecoveringOperations } from '../../storage/automatic-recovery.js';
+import { applyOperationEdits } from '../../storage/operation-edits.js';
+import { appendInputDraft } from '../../host/input-channel.js';
 import { createMediaLeaseScope } from '../../media/media-lease-scope.js';
 import { bindImageCacheDocument } from '../../media/tavern-image-cache.js';
-import {
-    buildIgsTextPayload,
-    getMessagePrimaryText,
-    getVisibleMessageTextFromElement,
-    normalizeSourceFilter,
-    normalizeVirtualRegex,
-} from '../../scene/message-source.js';
+import { buildIgsTextPayload, getMessagePrimaryText, getVisibleMessageTextFromElement, normalizeSourceFilter, normalizeVirtualRegex } from '../../scene/message-source.js';
 import { applyVoiceBark, canonicalName, noteFormGender, setActiveFormGenders } from './voice-bark.js';
 import { createSettingsHost } from './settings-host.js';
+import { handleSettingsAction } from './settings-actions.js';
 import { normalizeBridgeConfig, normalizeReaderSettings } from './settings-host-normalize.js';
-import { stripIllustrationMarkers } from '../../scene/scene-directives.js';
-import { resolveCharacterKey, setCharacterNameFallback } from '../../scene/scene-directives.js';
-import { recordOutfitReview, dropConfirmedOutfitReview, removeOutfitReview } from '../../scene/outfit-review-store.js';
-import { assetOwnerKey, draftAssetLibrary, ensureCardLibrary, relocateLegacyCard, rememberAssetScope, resolveAssetScope, sceneAssetsForContext } from '../../scene/asset-scope.js';
+import { extractSceneDirectives, resolveSceneAtSourceOffset, resolveIllustrationForPage, resolveHeldSourceOffsets, locateNarrativeOffset, stripIllustrationMarkers, classifySceneKey, resolveCharacterKey, setCharacterNameFallback } from '../../scene/scene-directives.js';
+
+import { recordOutfitReview, dropConfirmedOutfitReview, removeOutfitReview, storyOutfitSourceHash } from '../../scene/outfit-review-store.js';
+import { assetOwnerKey, draftAssetLibrary, effectiveSceneAssets, ensureCardLibrary, relocateLegacyCard, rememberAssetScope, resolveAssetScope, sceneAssetsForContext } from '../../scene/asset-scope.js';
+import { createStoryOutfitService } from '../../generated-images/illustration/story-outfit-service.js';
 import { getSillyTavernContext } from '../../host/tavern-helper-adapter.js';
 
 import { isMarkerDirectiveLine, stripMarkerDirectives } from '../../scene/directive-tags.js';
@@ -31,7 +30,7 @@ import { cancelStageDirection } from './stage-direction-runtime.js';
 import { cancelSceneGrade } from './scene-grade.js';
 import { closeRomanceFx } from './romance-runtime.js';
 import { closeMetaFx } from './meta-runtime.js';
-import { normalizeRomanceFxSettings } from './romance-settings.js';
+import { normalizeRomanceFxSettings, resolveRomanceRivalTarget } from './romance-settings.js';
 import { mergeItemEvents, normalizeItemFxSettings } from './fx-item-model.js';
 import { applyEatToItems } from './fx-eat-model.js';
 import { normalizeDailyFxSettings } from './fx-daily-model.js';
@@ -47,100 +46,31 @@ import { playUiSfx } from './ui-sfx.js';
 import { parseHtmlCardMarker } from '../../scene/html-cards.js';
 import { isGeneratedAssetUrl, bindGeneratedBackground, bindGeneratedSprite } from '../../scene/asset-match.js';
 import { STAGE_CAST_MAX_SEATS, pickCastMembers } from '../../scene/stage-cast.js';
+import { resolveReaderSpriteAsset } from './reader-sprite-asset.js';
 import { normalizeStageCastSettings } from './stage-direction-settings.js';
 import { SPRITE_BACK_MOOD } from './sprite-turn.js';
 import { isReactMoodHit } from '../../scene/react-mood.js';
-import { resolveRomanceRivalTarget } from './romance-settings.js';
+
 import { clearCastDom } from './stage-cast-render.js';
 import { createOutfitResolver, fuzzyOutfitName, normalizeWardrobe } from '../../scene/character-outfits.js';
-import { isStrictBackgroundMatch } from '../../generated-images/illustration/auto-illustration-settings.js';
+import { isStrictBackgroundMatch, normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
 import { clearCurrentCg } from '../../generated-images/illustration/clear-current-cg.js';
 import { floorKeyOf } from '../../media/illustration-store.js';
 import { normalizeMoodGroups, resolveMoodGroup } from '../../scene/mood-groups.js';
-import { normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
-import {
-    getOriginalReaderHtml,
-    getOriginalReaderSource,
-    getOriginalReaderStyleText,
-    ORIGINAL_READER_REQUIRED_SELECTORS,
-    ORIGINAL_READER_STYLE_CONTRACT,
-} from './original-reader-source.js';
+
+import { getOriginalReaderHtml, getOriginalReaderSource, getOriginalReaderStyleText, ORIGINAL_READER_REQUIRED_SELECTORS, ORIGINAL_READER_STYLE_CONTRACT } from './original-reader-source.js';
 import { SETTINGS_CATEGORIES, categoryOfPage, currentSettingsPage, openSettingsPage } from './settings-pages.js';
 import { normalizeSettingsTheme } from './settings-theme.js';
-import {
-    DEFAULT_IMAGE_API,
-    DIALOG_FONT_OPTIONS,
-    DEFAULT_PINNED_TOOLBAR_BUTTONS,
-    DEFAULT_SCENE_PROMPT_RULE,
-    normalizeScenePromptRule,
-    PROMPT_RULE_OUTFIT_HINT,
-    scenePromptRuleOutfitHint,
-    READER_SETTINGS_SCHEMA_VERSION,
-    SETTINGS_PANEL_REQUIRED_SELECTORS,
-    SETTINGS_PANEL_TAB_CONTRACT,
-    TOOLBAR_ACTIONS,
-    VN_THEME_PRESETS,
-} from './reader-host-constants.js';
+import { DEFAULT_IMAGE_API, DIALOG_FONT_OPTIONS, DEFAULT_PINNED_TOOLBAR_BUTTONS, DEFAULT_SCENE_PROMPT_RULE, normalizeScenePromptRule, PROMPT_RULE_OUTFIT_HINT, scenePromptRuleOutfitHint, READER_SETTINGS_SCHEMA_VERSION, SETTINGS_PANEL_REQUIRED_SELECTORS, SETTINGS_PANEL_TAB_CONTRACT, TOOLBAR_ACTIONS, VN_THEME_PRESETS } from './reader-host-constants.js';
 import { eventToShortcut, findShortcutAction, resolveShortcuts } from './reader-shortcuts.js';
 import { isEmbeddedReaderMode } from '../../schemas/reader-mode.js';
 import { buildWaitStageModel, createWaitStageRuntime } from './wait-stage-runtime.js';
 import { onDlcSkinsChange } from './dlc-skin-registry.js';
 import { onDlcFxChange } from '../../scene/fx-registry.js';
-import {
-    cloneData,
-    esc,
-    firstDefined,
-    firstNonEmptyString,
-    firstRenderableText,
-    clampNumber,
-    normalizeBoolean,
-    normalizeFiniteIndex,
-    normalizeFiniteNumber,
-    normalizeNullableNumber,
-    normalizeOpacity,
-    toHex,
-} from './reader-value-utils.js';
-import {
-    checkbox,
-    colorInput,
-    field,
-    renderCharacterAssetList,
-    renderMoodGroupList,
-    renderMoodReviewList,
-    renderPinnedButtons,
-    renderSceneAssetList,
-    renderGeneratedAssetPane,
-    countGeneratedWaiting,
-    renderStageShakeSettings,
-    renderChatShowSettings,
-    renderSystemRoleSettings,
-    renderWeatherFxSettings,
-    renderTemplate,
-    rangeInput,
-    secretInput,
-    segmentedInput,
-    selectInput,
-    textInput,
-    textareaInput,
-    numberInput,
-    disabledAttr,
-    hiddenAttr,
-    modelPicker,
-    tableMultiSelect,
-} from './settings-fields.js';
+import { cloneData, esc, firstDefined, firstNonEmptyString, firstRenderableText, clampNumber, normalizeBoolean, normalizeFiniteIndex, normalizeFiniteNumber, normalizeNullableNumber, normalizeOpacity, toHex } from './reader-value-utils.js';
+import { checkbox, colorInput, field, renderCharacterAssetList, renderMoodGroupList, renderMoodReviewList, renderPinnedButtons, renderSceneAssetList, renderGeneratedAssetPane, countGeneratedWaiting, renderStageShakeSettings, renderChatShowSettings, renderSystemRoleSettings, renderWeatherFxSettings, renderTemplate, rangeInput, secretInput, segmentedInput, selectInput, textInput, textareaInput, numberInput, disabledAttr, hiddenAttr, modelPicker, tableMultiSelect } from './settings-fields.js';
 import { renderAssetReviewPanel } from './asset-review-panel.js';
-import {
-    ensureEmbeddedHost,
-    findEmbeddedHost,
-    hideEmbeddedSourceText,
-    hideStorySpan,
-    isEmbeddedEditTrigger,
-    isStoryHidden,
-    resolveEmbeddedHostParent,
-    restoreEmbeddedSourceText,
-    restoreStorySpan,
-    storyLines,
-} from './embedded-reader-runtime.js';
+import { ensureEmbeddedHost, findEmbeddedHost, hideEmbeddedSourceText, hideStorySpan, isEmbeddedEditTrigger, isStoryHidden, resolveEmbeddedHostParent, restoreEmbeddedSourceText, restoreStorySpan, storyLines } from './embedded-reader-runtime.js';
 import { createReaderSourceCache } from './reader-source-cache.js';
 import { prepareReaderFloor, stripWrappingQuotes } from './reader-floor-plan.js';
 import { prepareReaderFloorAssets } from './reader-floor-assets.js';
@@ -153,47 +83,9 @@ import { buildResultFxPlan, normalizeResultFxSettings, resultDetailOf } from './
 import { cancelResultFx, playResultFx } from './fx-result.js';
 import { pickFxAccent } from './fx-symbols.js';
 import { prefersReducedMotion } from './reduced-motion.js';
-import {
-    applyImageCountOverride,
-    buildImageActionContext,
-    buildProgressText,
-    countBoundImageSlots,
-    normalizePollAttempts,
-    normalizePollInterval,
-    normalizeSnapshotImageState,
-    resolveSegmentImageIndex,
-    shouldPollReaderImages,
-    waitForReaderImagePoll,
-} from './reader-image-state.js';
-import {
-    attachSettingsViewportEvents,
-    clearChildren,
-    detachSettingsViewportEvents,
-    ensureImageLoadingSpinner,
-    ensureStyleTag,
-    getOwnerWindow,
-    getRootDocument,
-    removeImageLoadingSpinner,
-    setImageRetryState,
-    syncSettingsViewportVars,
-    unmountNode,
-} from './reader-dom-utils.js';
-import {
-    buildTextSegments,
-    getPath,
-    normalizeBtnOrder,
-    normalizeHiddenButtons,
-    normalizePerformanceSettings,
-    normalizePinnedButtons,
-    normalizeReaderMode,
-    normalizeSettingsTab,
-    normalizeSettingsValue,
-    normalizeSpriteDefaultScale,
-    normalizeSpriteDisplayScale,
-    normalizeSpriteGenderScale,
-    normalizeSpriteLayouts,
-    setPath,
-} from './settings-normalize.js';
+import { applyImageCountOverride, buildImageActionContext, buildProgressText, countBoundImageSlots, normalizePollAttempts, normalizePollInterval, normalizeSnapshotImageState, resolveSegmentImageIndex, shouldPollReaderImages, waitForReaderImagePoll } from './reader-image-state.js';
+import { attachSettingsViewportEvents, clearChildren, detachSettingsViewportEvents, ensureImageLoadingSpinner, ensureStyleTag, getOwnerWindow, getRootDocument, removeImageLoadingSpinner, setImageRetryState, syncSettingsViewportVars, unmountNode } from './reader-dom-utils.js';
+import { buildTextSegments, getPath, normalizeBtnOrder, normalizeHiddenButtons, normalizePerformanceSettings, normalizePinnedButtons, normalizeReaderMode, normalizeSettingsTab, normalizeSettingsValue, normalizeSpriteDefaultScale, normalizeSpriteDisplayScale, normalizeSpriteGenderScale, normalizeSpriteLayouts, setPath } from './settings-normalize.js';
 import { clearReaderModeRuntime, exitDocumentFullscreen } from './reader-runtime.js';
 import { enterSpriteEditMode } from './sprite-edit.js';
 import { enterCgPortraitEdit } from './cg-portrait.js';
@@ -208,48 +100,17 @@ import { readOptionItems } from '../../choices/option-table.js';
 import { buildItemActionText, extractBodyChoices, listPresentNames, normalizeOptionSources, splitQuickActions } from '../../choices/option-sources.js';
 import { buildItemCatalog } from '../../data/shujuku/item-catalog.js';
 import { createIgsModal } from './igs-modal.js';
+import { runCgConsistencyAction } from './cg-consistency-action.js';
 import { createOnboardingController } from './onboarding-guide-controller.js';
 import { applyPerformanceProfile, applyProfileDetails } from './performance-profile.js';
 import { applyFxWorldview } from '../../scene/fx-era.js';
 import { applyWorldview, resolveWorldview } from '../../scene/worldview.js';
 import { effectiveDialogSkin, sceneDialogSkin } from './worldview-skins.js';
-import {
-    applyTitleSkin,
-    buildTitleScreenModel,
-    createTitleGate,
-    playOpeningCard,
-    playTitleBgm,
-    reduceTitleAction,
-    removeTitleScreen,
-    renderTitleScreen,
-    shouldGateTitleScreen,
-    titleCardOf,
-} from './title-screen.js';
+import { applyTitleSkin, buildTitleScreenModel, createTitleGate, playOpeningCard, playTitleBgm, reduceTitleAction, removeTitleScreen, renderTitleScreen, shouldGateTitleScreen, titleCardOf } from './title-screen.js';
 import { loadMoodReview, recordMoodReview, removeMoodReview } from '../../scene/mood-review-store.js';
 import { applyMoodAssignments, buildMoodClassificationRequest, parseMoodClassification, resolveSecondaryLlm } from '../../scene/mood-classify.js';
-import {
-    CLASSIC_DIALOG_HEIGHT,
-    CLASSIC_DIALOG_WIDTH_PERCENT_DEFAULT,
-    CLASSIC_DIALOG_THEME_DEFAULTS,
-    DIALOG_SKIN_ADVENTURE_JOURNEY,
-    DIALOG_SKIN_BLACK_WHITE_MANGA,
-    DIALOG_SKIN_CUTE_PINK,
-    DIALOG_SKIN_DAY_MINIMAL,
-    DIALOG_SKIN_ELEGANT_EUROPEAN,
-    DIALOG_SKIN_GRADIENT_VEIL,
-    DIALOG_SKIN_PLANT_COFFEE,
-    DIALOG_SKIN_RETRO_JAPANESE,
-    DIALOG_SKIN_WARM_PICTUREBOOK,
-    DIALOG_SKIN_WESTERN_CLASSIC,
-    isIllustratedDialogSkin,
-    normalizeClassicDialogWidthPercent,
-    normalizeDialogSkin,
-} from './classic-dialog-skin.js';
-import {
-    TYPEWRITER_DEFAULTS,
-    cancelTypewriter,
-    normalizeTypewriterSettings,
-} from './typewriter-runtime.js';
+import { CLASSIC_DIALOG_HEIGHT, CLASSIC_DIALOG_WIDTH_PERCENT_DEFAULT, CLASSIC_DIALOG_THEME_DEFAULTS, DIALOG_SKIN_ADVENTURE_JOURNEY, DIALOG_SKIN_BLACK_WHITE_MANGA, DIALOG_SKIN_CUTE_PINK, DIALOG_SKIN_DAY_MINIMAL, DIALOG_SKIN_ELEGANT_EUROPEAN, DIALOG_SKIN_GRADIENT_VEIL, DIALOG_SKIN_PLANT_COFFEE, DIALOG_SKIN_RETRO_JAPANESE, DIALOG_SKIN_WARM_PICTUREBOOK, DIALOG_SKIN_WESTERN_CLASSIC, isIllustratedDialogSkin, normalizeClassicDialogWidthPercent, normalizeDialogSkin } from './classic-dialog-skin.js';
+import { TYPEWRITER_DEFAULTS, cancelTypewriter, normalizeTypewriterSettings } from './typewriter-runtime.js';
 import { cancelStageShakeEffect } from './stage-shake-runtime.js';
 import { advanceChatReveal, cancelChatShow, getChatRevealState } from './chat-layer.js';
 import { buildChatPageModel, normalizeChatShowSettings } from './chat-show-runtime.js';
@@ -259,14 +120,7 @@ import { formatChatBlockAsText, parseChatMarker } from '../../scene/chat-blocks.
 import { comicContentKey, isComicModeActive } from './comic-settings.js';
 import { nextBilingualDisplay, normalizeBilingualSettings, resolveBilingualDisplay } from './bilingual-text.js';
 
-import {
-    applyReaderSnapshotToDom,
-    applyToolbarState,
-    buildFallbackReaderOverlay,
-    buildFallbackSettingsOverlay,
-    normalizeReaderStableLayers,
-    pinEmbeddedHostFrame,
-} from './reader-dom-render.js';
+import { applyReaderSnapshotToDom, applyToolbarState, buildFallbackReaderOverlay, buildFallbackSettingsOverlay, normalizeReaderStableLayers, pinEmbeddedHostFrame } from './reader-dom-render.js';
 
 const CHARACTER_COLLECTIONS = ['characters', 'characterOutfits', 'characterDna', 'characterAliases', 'statusAvatars'];
 
@@ -561,7 +415,7 @@ export function createIgsReaderHost(options = {}) {
 
     const {
         settingsInteracting, openSettings, syncSettingsStagePause, rerenderSettings, closeSettings,
-        persistSettingsDraft, reportSettingsFailure, renderImageJobLogList,
+        persistSettingsDraft, reportSettingsFailure, renderImageJobLogList, withCharacterDnaDraftSync,
     } = createSettingsHost({
         flushDeferredImageRefresh, normalizeUnifiedSettings, onboarding, openCgGallery, options, pageModal,
         playReaderUiSfx, rerenderActiveReader, resolveBridgeConfigSnapshot, scheduleMoodAutoClassify, sourceCache,
@@ -578,6 +432,7 @@ export function createIgsReaderHost(options = {}) {
         openReader,
         replaceReader,
         openSettings,
+        withCharacterDnaDraftSync,
         closeReader,
         closeSettings,
         getState,
@@ -615,11 +470,25 @@ export function createIgsReaderHost(options = {}) {
 
     // 翻页配置缓存（见 resolveRenderConfig）；闭包变量必须写在 return 之前。
     let renderConfigCache = null;
+    const reviewRecoveries = new Map();
+    const readerRecoveryController = new AbortController();
     // 正文出现衣柜没有的新衣服：排队到本楼最后一页，和新素材入库同一个面板里问。
     const pendingOutfitAsks = [];
+    const storyOutfits = options.generatedAssets?.writeWardrobePrompt && (options.global || globalThis).localStorage
+        ? createStoryOutfitService({
+            storage: (options.global || globalThis).localStorage,
+            assets: options.generatedAssets,
+            getContext: storyOutfitContext,
+            commit: commitStoryOutfit,
+            onChanged() {
+                const current = state.activeReader;
+                if (current) syncAssetReviewAfterRender(current, current.snapshot);
+            },
+        }) : null;
     return host;
 
     function openReader(payload = {}, openOptions = {}) {
+        storyOutfits?.resume();
         closeReader({ keepFullscreen: true });
         payload = cloneReaderPayload(payload);
         unparkAudioBus();
@@ -897,6 +766,20 @@ export function createIgsReaderHost(options = {}) {
             : '';
     }
 
+    // 选图只使用已知资源状态；缓存未命中先加载，不伪装成图片丢失或换衣许可。
+    function readerSpriteAvailability(url) {
+        const current = state.activeReader;
+        const service = options.generatedAssets;
+        const stored = isGeneratedAssetUrl(url) ? service?.imageAvailability?.(url) : null;
+        if (stored && ['missing', 'read-error'].includes(stored.status)) return stored;
+        const concrete = concreteReaderAssetUrl(url);
+        if (!concrete) return { status: stored?.status === 'unverified' ? 'loading' : stored?.status || 'unverified' };
+        const status = imageResourceCache.inspect(concrete);
+        if (status.status !== 'unverified' || imageResourceCache.get(concrete)) return status;
+        if (current) resolveReaderAssetUrl(concrete, current);
+        return imageResourceCache.inspect(concrete);
+    }
+
     // 状态栏头像存在图库（igs-gen:）时换成已读回的图；还没读回先空着，读回后 image-loaded 会重绘。
     function withConcreteAvatar(model) {
         if (model && isGeneratedAssetUrl(model.avatar)) model.avatar = concreteReaderAssetUrl(model.avatar);
@@ -979,6 +862,7 @@ export function createIgsReaderHost(options = {}) {
     function closeReader(closeOptions = {}) {
         const current = state.activeReader;
         if (!current) return { ok: true, reason: 'reader-not-open' };
+        current.replyRecoveryController?.abort();
         if (closeOptions.keepSettings !== true) {
             const closed = closeSettings();
             if (closed.ok === false) {
@@ -987,6 +871,8 @@ export function createIgsReaderHost(options = {}) {
             }
         }
         if (turnIndexPanel) turnIndexPanel.close();
+        current.consistencyTask?.controller.abort();
+        if (current.consistencyTask) pageModal.cancel();
         // 真正关闭（不是切轮重开）时把阅读进度同步进聊天元数据，换设备也能续读。
         if (closeOptions.keepFullscreen !== true) pushProgressToMetadata();
         teardownStatusHudSubscription();
@@ -1034,6 +920,7 @@ export function createIgsReaderHost(options = {}) {
         }
         unmountNode(current.dom && current.dom.root);
         state.activeReader = null;
+        wakeRecoveringOperations(options.global || globalThis);
         return { ok: true };
     }
 
@@ -1061,6 +948,8 @@ export function createIgsReaderHost(options = {}) {
     }
 
     function destroy() {
+        readerRecoveryController.abort();
+        state.activeSettings?.recoveryController?.abort();
         moodAutoDisposed = true;
         if (moodAutoTimer) moodAutoTimers().clearTimeout(moodAutoTimer);
         moodAutoTimer = 0;
@@ -1075,6 +964,7 @@ export function createIgsReaderHost(options = {}) {
         generationStrip.dispose();
         offGeneratedAssetUpdated();
         offSettingsUpdated();
+        storyOutfits?.dispose();
         offItemImageUpdated();
         offImageJobLog();
         teardownStatusHudSubscription();
@@ -1211,11 +1101,11 @@ export function createIgsReaderHost(options = {}) {
         if (typeof options.getCurrentMessage !== 'function'
             || typeof options.openViewerFromMessage !== 'function') {
             showReplyFailure(current, 'read');
-            return true;
+            return false;
         }
         if (settled.reason === 'stopped' || settled.reason === 'failed') {
             showReplyFailure(current, settled.reason);
-            return true;
+            return settled.reason === 'stopped';
         }
         let message;
         try {
@@ -1231,7 +1121,7 @@ export function createIgsReaderHost(options = {}) {
         if (!message || message.id == null || message.isUser || message.isSystem
             || message.is_user || message.is_system || isUserFloorId(message.id)) {
             showReplyFailure(current, 'empty');
-            return true;
+            return false;
         }
         const nextRaw = getMessagePrimaryText(message.raw || message);
         const nextVisible = String(message.visibleText || '');
@@ -1246,7 +1136,7 @@ export function createIgsReaderHost(options = {}) {
         });
         if (!changed || !(parsed.textSegments.length || parsed.htmlCards.length || parsed.chats.length)) {
             showReplyFailure(current, 'empty');
-            return true;
+            return false;
         }
         // 回复已写完：当前游戏只结算这一局，之后由过场回调继续换楼。
         if (!waitStage.replyArrived()) {
@@ -1267,13 +1157,14 @@ export function createIgsReaderHost(options = {}) {
         current.mountMessageId = message.id;
         if (embedded) syncEmbeddedReaderMount(current, message);
         try {
-            const result = await options.openViewerFromMessage(message.id, current.mode, {
+            const result = await recoverOperation(() => options.openViewerFromMessage(message.id, current.mode, {
                 replaceActive: true,
                 turnOffset: 0,
                 mountMessageId: message.id,
                 message,
                 canReplace,
-            });
+            }), { signal: readerRecoveryController.signal, isActive: canReplace,
+                global: options.global || globalThis, repair: () => sourceCache.invalidate() });
             if (!canReplace()) return;
             if (result && result.ok === false) {
                 current.turnOffset = previous.turnOffset;
@@ -1315,9 +1206,30 @@ export function createIgsReaderHost(options = {}) {
 
     function showReplyFailure(current, kind) {
         if (state.activeReader !== current) return;
+        if (kind !== 'stopped') {
+            current.streamPhase = 'streaming';
+            current.awaitingReply = true;
+            mountWaitStage(current, { embedded: isEmbeddedReaderMode(current.mode) });
+            waitStage.showSlow();
+            if (kind === 'read') return; // 稳定观察器自动续读现有回复，不重发故事请求。
+            if (current.replyRecovery) return;
+            const controller = new AbortController();
+            const chatId = options.getCurrentChatId?.();
+            current.replyRecoveryController = controller;
+            const linked = linkRecoverySignals([controller.signal, readerRecoveryController.signal]), signal = linked.signal;
+            current.replyRecovery = recoverOperation(async () => {
+                streamObserver.prepareForReply();
+                return await options.resumeReply?.() || { ok: false, reason: 'reply-host-not-ready' };
+            }, { signal, global: options.global || globalThis, initialDelayMs: 1000,
+                isActive: () => state.activeReader === current && options.getCurrentChatId?.() === chatId,
+            }).finally(() => { linked.release(); current.replyRecovery = null; current.replyRecoveryController = null; });
+            return;
+        }
+        current.replyRecoveryController?.abort();
         pendingReplyMessage = null;
         streamObserver.cancelPending();
         current.streamPhase = 'error';
+        wakeRecoveringOperations(options.global || globalThis);
         current.awaitingReply = false;
         const overlay = current.dom && current.dom.overlay;
         if (overlay && overlay.classList) overlay.classList.remove('igs-awaiting-reply');
@@ -1423,6 +1335,7 @@ export function createIgsReaderHost(options = {}) {
         current.streamBaselineRaw = '';
         current.replyBaselineMessageId = null;
         current.streamPhase = 'idle';
+        wakeRecoveringOperations(options.global || globalThis);
         current.awaitingReply = false;
         const waitingOverlay = current.dom && current.dom.overlay;
         if (waitingOverlay && waitingOverlay.classList) waitingOverlay.classList.remove('igs-awaiting-reply');
@@ -1557,7 +1470,14 @@ export function createIgsReaderHost(options = {}) {
 
     async function submitReaderInput(text) {
         if (!state.activeReader) return { ok: false, reason: 'reader-not-open' };
-        if (state.activeReader.streamPhase === 'streaming') return { ok: false, reason: 'reply-pending' };
+        if (state.activeReader.streamPhase === 'streaming') {
+            text = firstDefined(text, state.activeReader.inputValue, '');
+            await recoverOperation(() => ({ ok: state.activeReader?.streamPhase !== 'streaming' }), {
+                signal: readerRecoveryController.signal, global: options.global || globalThis,
+                isActive: () => Boolean(state.activeReader),
+            });
+            if (!state.activeReader) return { ok: true, cancelled: true };
+        }
         // 停在旧楼时发送：剧情会接在最新楼后面，先确认，免得以为是在旧楼的语境里接着写。
         if (Number(state.activeReader.turnOffset) > 0) {
             const floorId = currentTurnMessageId(state.activeReader);
@@ -1590,8 +1510,10 @@ export function createIgsReaderHost(options = {}) {
             ? options.typeAndSend
             : async () => ({ ok: false, reason: 'missing-send-handler' });
         let result;
-        try { result = await send(nextText) || { ok: true }; }
-        catch (error) { result = { ok: false, reason: 'send-failed' }; }
+        result = await recoverOperation(async () => await send(nextText) || { ok: true }, {
+            signal: readerRecoveryController.signal,
+            isActive: () => state.activeReader === current, global: options.global || globalThis,
+        });
         if (state.activeReader !== current) return { ok: result.ok !== false, sent: result.ok !== false, text: nextText, result };
         if (result.ok === false) {
             showReplyFailure(current, 'send');
@@ -1973,6 +1895,7 @@ export function createIgsReaderHost(options = {}) {
     // 插图服务的楼层进度（含写词阶段）：任何楼都点亮生成细线，不再只认当前楼、不弹提示。
     function showIllustrationProgress(payload) {
         if (!payload || payload.messageId == null) return;
+        if (payload.kind === 'consistency') return; // 当前任务由阅读器身份绑定的回调展示。
         generationStrip.floor(payload.messageId, payload.phase === 'done');
     }
 
@@ -2094,6 +2017,9 @@ export function createIgsReaderHost(options = {}) {
         }
         if (normalizedAction === 'retry-failed-cg') {
             return rerollCurrentIllustration({ skipConfirm: true });
+        }
+        if (normalizedAction === 'consistency-cg') {
+            return redrawCurrentConsistency();
         }
         if (normalizedAction === 'cg-gallery') {
             return openCgGallery();
@@ -2289,9 +2215,11 @@ export function createIgsReaderHost(options = {}) {
         progressRuntime.navigating = true;
         let result;
         try {
-            result = await options.openViewerFromMessage(target.id, current.mode, embedded
+            result = await recoverOperation(() => options.openViewerFromMessage(target.id, current.mode, embedded
                 ? { startAtEnd: false, message: target, replaceActive: true, skipImageCollection: nextOffset > 0, turnOffset: nextOffset, skipTitle: true }
-                : { startAtEnd: false, message: target, turnOffset: nextOffset, skipTitle: true });
+                : { startAtEnd: false, message: target, turnOffset: nextOffset, skipTitle: true }), {
+                    signal: readerRecoveryController.signal,
+                    isActive: () => Boolean(state.activeReader), global: options.global || globalThis });
         } finally {
             progressRuntime.navigating = false;
         }
@@ -2744,7 +2672,7 @@ export function createIgsReaderHost(options = {}) {
             writeGenerating();
             return { ok: true, reason: 'busy' };
         }
-        current.illustrationPending = true;
+        setIllustrationPending(current, true);
         writeGenerating();
         paintRetryPlaceholder(current, { busy: true });
         try {
@@ -2766,7 +2694,7 @@ export function createIgsReaderHost(options = {}) {
             if (state.activeReader === current) imageNotice('error', `重画异常：${(error && error.message) || error || '未知错误'}`);
             return { ok: false, reason: 'error' };
         } finally {
-            current.illustrationPending = false;
+            setIllustrationPending(current, false);
             if (state.activeReader === current) paintRetryPlaceholder(current, { busy: false, reason: current.imageFailureReason });
         }
     }
@@ -2780,6 +2708,68 @@ export function createIgsReaderHost(options = {}) {
         const overlay = current && current.dom && current.dom.overlay;
         const bg = overlay && overlay.querySelector ? overlay.querySelector('#igs-bg') : null;
         setImageRetryState(bg, retry);
+    }
+
+    function setIllustrationPending(current, pending) {
+        current.illustrationPending = pending;
+        if (current.snapshot?.content) current.snapshot.content.imageRetrying = pending;
+        if (state.activeReader === current) applyToolbarState(current.dom?.overlay, current);
+    }
+
+    async function redrawCurrentConsistency() {
+        const current = state.activeReader;
+        if (!current) return { ok: false, reason: 'reader-not-open' };
+        const content = current.snapshot?.content || {};
+        const service = options.illustrations;
+        if (!content.illustrationSlot || !content.illustrationActive || !content.illustrationUrl)
+            return { ok: false, reason: 'no-current-cg', error: '当前页没有已保存的 IGS CG' };
+        if (!service?.redrawConsistency || !service?.acceptConsistency || !service?.cancelConsistency) {
+            imageNotice('warn', '当前未接入角色一致性重绘。');
+            return { ok: false, reason: 'consistency-unavailable' };
+        }
+        if (current.consistencyTask) {
+            current.consistencyTask.controller.abort();
+            return { ok: true, reason: 'cancelled' };
+        }
+        if (current.illustrationPending) return { ok: false, reason: 'consistency-busy' };
+        const identity = current.illustrationIdentity || {};
+        const query = { chatId: identity.chatId,
+            messageId: current.contentMessageId ?? current.payload.messageId,
+            swipeId: identity.swipeId, slot: content.illustrationSlot };
+        const controller = new AbortController();
+        const stillCurrent = () => state.activeReader === current
+            && String(current.illustrationIdentity?.chatId) === String(query.chatId)
+            && Number(current.illustrationIdentity?.swipeId) === Number(query.swipeId)
+            && Number(current.contentMessageId ?? current.payload.messageId) === Number(query.messageId)
+            && Number(current.snapshot?.content?.illustrationSlot) === Number(query.slot);
+        const task = { controller, stillCurrent };
+        current.consistencyTask = task;
+        setIllustrationPending(current, true);
+        rerenderActiveReader();
+        try {
+            const result = await runCgConsistencyAction({ service, query, modal: pageModal,
+                signal: controller.signal, stillCurrent,
+                onProgress: (detail) => {
+                    if (current.consistencyTask === task && stillCurrent())
+                        generationStrip.progress(task, detail);
+                } });
+            if (state.activeReader === current && !controller.signal.aborted) {
+                if (result?.ok && result.reason === 'accepted') {
+                    rerenderActiveReader();
+                    imageNotice(result.warning ? 'warn' : 'success', result.warning
+                        ? 'CG 已保存，目录或显示同步需刷新重试。' : '角色一致性候选已接受。');
+                } else if (result?.reason !== 'cancelled') {
+                    imageNotice('warn', result?.error || `一致性重绘未保存：${result?.reason || '未知原因'}`);
+                }
+            }
+            return result;
+        } finally {
+            controller.abort();
+            generationStrip.progress(task, { phase: 'done' });
+            if (current.consistencyTask === task) current.consistencyTask = null;
+            setIllustrationPending(current, false);
+            if (state.activeReader === current) rerenderActiveReader();
+        }
     }
 
     async function clearFloorIllustrations() {
@@ -2852,7 +2842,7 @@ export function createIgsReaderHost(options = {}) {
             feedback('info', '插图处理中，请等待当前任务完成', true);
             return { ok: true, reason: 'busy' };
         }
-        current.illustrationPending = true;
+        setIllustrationPending(current, true);
         feedback('info', reroll
             ? `第 ${target.messageId} 楼正在重写提示词并重画…`
             : `第 ${target.messageId} 楼插图：正在检查过场 / NSFW 插图…`, true);
@@ -2878,7 +2868,7 @@ export function createIgsReaderHost(options = {}) {
             feedback('error', `插图异常：${(error && error.message) || error || '未知错误'}`);
             return { ok: false, reason: 'error' };
         } finally {
-            current.illustrationPending = false;
+            setIllustrationPending(current, false);
         }
     }
 
@@ -3013,6 +3003,10 @@ export function createIgsReaderHost(options = {}) {
     async function reloadActiveReader() {
         const current = state.activeReader;
         if (!current) return { ok: false, reason: 'reader-not-open' };
+        // 只在用户显式刷新时重试失败资源；普通翻页/重绘不清失败状态。
+        imageResourceCache.clearFailures();
+        options.generatedAssets?.clearImageReadFailures?.();
+        floorAssetPlan = { key: '', urls: [] };
         if (typeof options.openViewerFromMessage !== 'function') return rescanCurrentImages();
         const messageId = isEmbeddedReaderMode(current.mode)
             ? current.mountMessageId
@@ -3502,12 +3496,14 @@ export function createIgsReaderHost(options = {}) {
             chatId,
             sceneAssets,
             generatedAssets: sceneAssets && sceneAssets.generated,
+            imageAvailability: readerSpriteAvailability,
             strict: readerSettings._strictBackgroundMatch === true,
             tempBackground: generatedAssets ? generatedAssets.tempBackground : null,
             tempSceneTime: generatedAssets ? generatedAssets.tempSceneTime : null,
             tempSprite: generatedAssets ? generatedAssets.tempSprite : null,
             isMissingImage: missingImageProbe(generatedAssets),
             isUnavailableImage: unavailableImageProbe(generatedAssets),
+            tempSpriteForOutfit: generatedAssets ? generatedAssets.tempSpriteForOutfit : null,
         };
         const floorAssets = prepareReaderFloorAssets(prepared, { payload, readerSettings, assetMatchCtx, tableData });
         const page = prepared.pages[normalizedIndex];
@@ -3686,7 +3682,7 @@ export function createIgsReaderHost(options = {}) {
                 if (!spriteImage && spriteChar && isGeneratedAssetUrl(spriteHit.url)) pendingSpriteRef = spriteHit.url;
                 if (spriteImage) {
                     spriteCharacter = spriteHit.character || spriteChar;
-                    spriteOutfit = spriteHit.outfit || '';
+                    spriteOutfit = withFormGender(spriteCharacter, spriteHit.outfit || '');
                     // Position keys follow the resolved image slot (exact mood / group /
                     // 默认), not the raw mood word, so every mood that maps to the same
                     // sprite image shares one position across pages.
@@ -4062,20 +4058,19 @@ export function createIgsReaderHost(options = {}) {
             doc.addEventListener('click', hostEditHandler, true);
         }
         const dbController = createDbPanelController(doc, options.global);
-        // 资料页只填空草稿：「前往 / 使用」共用同一条非覆盖、不发送的输入框路径。
+        // 「前往 / 使用」保留原草稿并追加命令，不发送消息。
         const fillRecordDraft = async text => {
             const current = state.activeReader;
             if (!current) return { ok: false, reason: 'reader-not-open' };
             if (isEmbeddedReaderMode(current.mode)) {
                 return typeof options.fillEmptyInputText === 'function'
-                    ? options.fillEmptyInputText(text)
+                    ? options.fillEmptyInputText(text, { append: true })
                     : { ok: false, reason: 'missing-readable-input' };
             }
             const input = current.dom?.input;
             if (!input) return { ok: false, reason: 'missing-reader-input' };
-            if (String(input.value ?? '') !== '') return { ok: false, reason: 'draft-not-empty' };
-            input.value = text;
-            current.inputValue = text;
+            input.value = appendInputDraft(input.value, text);
+            current.inputValue = input.value;
             input.focus?.();
             return { ok: true };
         };
@@ -4293,8 +4288,8 @@ export function createIgsReaderHost(options = {}) {
         if (backfillTried.has(key)) return;
         backfillTried.add(key);
         backfillBusy = true;
-        current.illustrationPending = true;
-        Promise.resolve(service.processMessage(Number(target.messageId), { backfill: true }))
+        setIllustrationPending(current, true);
+        Promise.resolve().then(() => service.processMessage(Number(target.messageId), { backfill: true }))
             .then((result) => {
                 if (result && result.ok && result.count) imageNotice('success', `第 ${target.messageId} 楼已补全 ${result.count} 张插图`);
                 else if (result && !result.ok) imageNotice('error', `第 ${target.messageId} 楼插图补全失败：${result.error || '未返回具体原因'}`);
@@ -4302,7 +4297,7 @@ export function createIgsReaderHost(options = {}) {
             .catch(() => {})
             .finally(() => {
                 backfillBusy = false;
-                current.illustrationPending = false;
+                setIllustrationPending(current, false);
             });
     }
 
@@ -4317,6 +4312,7 @@ export function createIgsReaderHost(options = {}) {
                 : options.media?.cache?.sourceId?.(url) || imageResourceCache.keyOf(url);
             leases?.use(key);
         }
+        if (current.consistencyTask && !current.consistencyTask.stillCurrent()) current.consistencyTask.controller.abort();
         warmActiveFloorImages(snapshot);
         current.autoPlayer?.setSpeed(snapshot.readerSettings?.typewriter?.speed);
         noteReadingProgress(current, snapshot);
@@ -4561,7 +4557,12 @@ export function createIgsReaderHost(options = {}) {
     function syncAssetReviewAfterRender(current, snapshot) {
         const overlay = current && current.dom && current.dom.overlay;
         const service = options.generatedAssets;
-        if (!overlay || !overlay.querySelector || !service || typeof service.listReview !== 'function') return;
+        if (!overlay || !overlay.querySelector || !service) return;
+        const context = storyOutfitContext();
+        if (storyOutfits && context && snapshot.readerSettings?._sceneAssets) {
+            const assets = effectiveSceneAssets(context.root, context.scopeKey);
+            storyOutfits.observe(extractSceneDirectives(context.text, { outfitResolver: createOutfitResolver(assets) }).directives);
+        }
         let container = overlay.querySelector('#igs-asset-review');
         const floorKey = currentFloorKey(current);
         // 没读完就重 roll：流式期间不弹，记下旧楼，等新回复载入完在最后一页一并补问。
@@ -4580,7 +4581,12 @@ export function createIgsReaderHost(options = {}) {
             if (!deferred.length) current.deferredReviewKey = '';
             else if (lastPage) items = deferred.concat(items);
         } else if (deferredKey) current.deferredReviewKey = '';
-        const outfitAsks = lastPage ? pendingOutfitAsks : [];
+        const storyAsks = lastPage ? storyOutfits?.list() || [] : [];
+        const allStoryAsks = storyOutfits?.list({ includeDeferred: true }) || [];
+        const outfitAsks = lastPage ? [...storyAsks, ...pendingOutfitAsks.filter(ask =>
+            !createOutfitResolver(snapshot.readerSettings?._sceneAssets || {})(ask.character, ask.word)
+            && !service.tempSpriteForOutfit?.(ask.character, ask.word)
+            && !allStoryAsks.some(row => row.character === ask.character && row.word === ask.word))] : [];
         if (!items.length && !outfitAsks.length) {
             if (container) container.setAttribute('hidden', '');
             return;
@@ -4595,14 +4601,66 @@ export function createIgsReaderHost(options = {}) {
             ...item,
             previewUrl: typeof service.resolveUrl === 'function' ? service.resolveUrl(item.url) : item.url,
         })), {
-            onResolve: (item, status, name) => { void resolveGeneratedReview(item, status, name); },
+            onResolve: completeGeneratedReview,
             outfitAsks,
             onOutfit: (ask, picked) => resolveOutfitAsk(ask, picked),
         });
     }
 
+    function storyOutfitContext() {
+        const current = state.activeReader;
+        if (!current) return null;
+        const { floor } = readManualFloor(current);
+        if (!floor) return null;
+        const scope = resolveAssetScope(getSillyTavernContext(options.global || globalThis));
+        const root = cloneData(resolveBridgeConfigSnapshot({ mode: current.mode }).bridge.sceneAssets || {});
+        relocateLegacyCard(root, scope.key, scope.legacyKey);
+        return { root, scopeKey: scope.key, floorKey: floorKeyOf(floor), messageId: Number(floor.messageId),
+            sourceHash: storyOutfitSourceHash(floor.text), text: floor.text };
+    }
+
+    function commitStoryOutfit(next, expected, guard) {
+        const context = storyOutfitContext();
+        if (!guard() || !context)
+            return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT' };
+        if (state.activeSettings) {
+            const draft = state.activeSettings.draft.bridge;
+            const previous = draft.sceneAssets;
+            draft.sceneAssets = applyOperationEdits(expected, draft.sceneAssets, next);
+            const result = persistSettingsDraft();
+            if (!result?.ok) draft.sceneAssets = previous;
+            else rerenderSettings();
+            return result;
+        }
+        return saveBridgePatch(bridge => guard() ? { sceneAssets: applyOperationEdits(expected, bridge.sceneAssets, next) } : null);
+    }
+
+    async function resolveStoryOutfit(ask, picked) {
+        if (!picked) {
+            storyOutfits.defer(ask.id);
+            return;
+        }
+        // adopt 同步登记在途选择并通知面板收起，随后等待后台处理。
+        const pending = picked === 'retry' ? storyOutfits.retry(ask.id) : storyOutfits.adopt(ask.id, picked);
+        const current = state.activeReader;
+        if (current) syncAssetReviewAfterRender(current, current.snapshot);
+        const result = await pending;
+        if (result?.saved || (result?.ok && picked !== 'retry')) {
+            for (let i = pendingOutfitAsks.length - 1; i >= 0; i--)
+                if (pendingOutfitAsks[i].character === ask.character && pendingOutfitAsks[i].word === ask.word)
+                    pendingOutfitAsks.splice(i, 1);
+            if (state.activeReader) rerenderActiveReader();
+        }
+        if (result?.ok && !result.alreadyHandled && picked !== 'retry') {
+            imageNotice('success', picked === 'sprite' ? '衣装和对应立绘已入库' : '衣装已入库衣柜');
+        }
+        if (state.activeReader) syncAssetReviewAfterRender(state.activeReader, state.activeReader.snapshot);
+        return result;
+    }
+
     // 段末新衣服面板的确认：加别名原地完成；用衣柜 / 生成新衣服要出图，交给素材页的自动衣柜流程（带上已选项，不再二次询问）。
     function resolveOutfitAsk(ask, picked) {
+        if (ask.id && storyOutfits) return resolveStoryOutfit(ask, picked);
         const at = pendingOutfitAsks.indexOf(ask);
         if (at >= 0) pendingOutfitAsks.splice(at, 1);
         if (picked && picked.startsWith('o:')) {
@@ -4667,61 +4725,100 @@ export function createIgsReaderHost(options = {}) {
             || { ok: false, reason: 'save-failed' };
     }
 
+    function completeGeneratedReview(item, status, name) {
+        if (reviewRecoveries.has(item.key)) return reviewRecoveries.get(item.key);
+        const scope = resolveAssetScope(getSillyTavernContext(options.global || globalThis)).key;
+        const chatId = options.getCurrentChatId?.();
+        const job = recoverOperation(async () => {
+            const latest = await options.generatedAssets?.readRecord?.(item.key);
+            return resolveGeneratedReview(latest || item, status, name);
+        }, { global: options.global || globalThis, signal: readerRecoveryController.signal,
+            isActive: () => Boolean(state.activeReader)
+                && options.getCurrentChatId?.() === chatId
+                && resolveAssetScope(getSillyTavernContext(options.global || globalThis)).key === scope,
+            onRecover: ({ attempt }) => { if (attempt === 1) writeToastSafe('正在自动完成素材入库'); },
+        }).finally(() => reviewRecoveries.delete(item.key));
+        reviewRecoveries.set(item.key, job);
+        return job;
+    }
+
     async function resolveGeneratedReview(item, status, name) {
         const service = options.generatedAssets;
         if (!service || !item) return;
-        // 「加入素材库并编辑 DNA」= 先按普通入库处理，成功后再打开 DNA 候选确认；候选不自动写入。
         const withDna = status === 'library-dna' && item.type === 'sprite';
         if (status === 'library-dna') status = 'library';
-        let addedName = '';
-        let previous = null;
-        if (status === 'library') {
-            const background = item.type === 'background';
-            const added = mutateSceneLibrary((assets) => {
-                previous = background
-                    ? { scenes: assets.scenes }
-                    : { characters: assets.characters, characterAliases: assets.characterAliases };
-                if (background) {
-                    const bound = bindGeneratedBackground(assets, item, name || item.name);
-                    if (bound.ok) assets.scenes = bound.scenes;
-                    return bound;
-                }
-                const bound = bindGeneratedSprite(assets, name || item.name, item.imageId ? `igs-gen:${item.imageId}` : '', { replace: true });
-                if (bound.ok) {
-                    assets.characters = bound.characters;
-                    assets.characterAliases = bound.characterAliases;
-                }
-                return bound;
-            }, background ? {} : { character: name || item.name });
-            if (!added || added.ok === false) {
-                // 设置草稿可能已被改写但保存失败；恢复该条操作前的映射，不保留未保存的假成功。
-                if (previous && state.activeSettings) {
-                    const assets = draftAssetLibrary(state.activeSettings, background ? undefined : { collections: CHARACTER_COLLECTIONS, name: name || item.name });
-                    Object.assign(assets, previous);
-                }
-                writeToastSafe('素材入库失败，请检查名称与保存状态后重试');
-                return;
+        if (status === 'library' && item.type === 'sprite') {
+            const activeSettings = state.activeSettings;
+            const scope = () => resolveAssetScope(getSillyTavernContext(options.global || globalThis)).key;
+            const sourceScope = scope();
+            const snapshot = resolveBridgeConfigSnapshot({ mode: 'default' });
+            const settingsState = activeSettings || { draft: cloneData(snapshot), asyncState: {} };
+            let committedAssets = cloneData(snapshot.bridge.sceneAssets);
+            const save = () => {
+                if (state.activeSettings !== activeSettings || scope() !== sourceScope)
+                    return { ok: false, reason: 'DNA_ADOPTION_CONFLICT', writeAttempted: false };
+                if (activeSettings) return persistSettingsDraft();
+                const current = resolveBridgeConfigSnapshot({ mode: 'default' });
+                if (typeof options.saveUnifiedSettings !== 'function') return { ok: false, reason: 'missing-save-handler', writeAttempted: false };
+                const merged = applyOperationEdits(committedAssets, current.bridge.sceneAssets,
+                    settingsState.draft.bridge.sceneAssets);
+                let saved;
+                try { saved = options.saveUnifiedSettings({ bridge: { ...current.bridge,
+                    sceneAssets: merged }, readerMode: 'default', readerSettings: current.readerSettings }); }
+                catch { return { ok: false, reason: 'save-failed' }; }
+                if (!saved || saved.ok === false) return saved || { ok: false, reason: 'save-failed' };
+                committedAssets = cloneData(merged);
+                settingsState.draft.bridge.sceneAssets = merged;
+                return saved;
+            };
+            let adoptionError = '';
+            const result = await handleSettingsAction(`gen-temp-accept:${encodeURIComponent(item.key)}`, {
+                state: { activeSettings: settingsState },
+                options: { ...options, generatedAssets: service },
+                dialogs: { prompt: async () => String(name || item.name || '').trim(),
+                    alert: (message) => { adoptionError = String(message || ''); } },
+                persistSettingsDraft: save, rerenderSettings: () => ({ ok: true }),
+            });
+            if (!result?.ok || service.getRecord?.(item.key)?.status !== 'library') {
+                const failure = result?.ok === false ? result
+                    : { ok: false, reason: 'DNA_ADOPTION_CONFLICT' };
+                return failure;
             }
-            addedName = added.name;
+            if (activeSettings) rerenderSettings();
+            if (state.activeReader) rerenderActiveReader();
+            const assets = sceneAssetsForContext(settingsState.draft.bridge.sceneAssets,
+                getSillyTavernContext(options.global || globalThis));
+            const known = { ...assets.characterDna, ...assets.characters };
+            const addedName = resolveCharacterKey(known, assets.characterAliases, name || item.name) || name || item.name;
+            writeToastSafe(`已放入角色立绘「${addedName}」`);
+            if (withDna) {
+                if (!state.activeSettings) openSettings({ tab: 'scene', mode: state.activeReader?.mode || 'pc' });
+                await state.activeSettings?.controller?.invoke('open-character-dna');
+                const settings = state.activeSettings;
+                if (!settings?.asyncState?.advancedOpen?.[`char-dna:${addedName}`]) {
+                    await settings?.controller?.invoke(`scene-toggle-dna:${encodeURIComponent(addedName)}`);
+                }
+            }
+            return result;
+        }
+        if (status === 'library' && item.type === 'background') {
+            const added = mutateSceneLibrary((assets) => {
+                const bound = bindGeneratedBackground(assets, item, name || item.name);
+                if (!bound.ok) return bound;
+                assets.scenes = bound.scenes;
+                return bound;
+            });
+            if (!added || added.ok === false) return added || { ok: false, reason: 'save-failed' };
+            writeToastSafe(`已放入场景素材「${added.name}」`);
         }
         let updated;
         try { updated = typeof service.setStatus === 'function' ? await service.setStatus(item.key, status) : { ok: false }; }
         catch (error) { updated = { ok: false }; }
         if (!updated || updated.ok === false) {
-            if (previous && addedName) {
-                const rolled = mutateSceneLibrary((assets) => {
-                    Object.assign(assets, previous);
-                    return { ok: true };
-                }, item.type === 'background' ? {} : { character: name || item.name });
-                writeToastSafe(rolled && rolled.ok !== false
-                    ? '审核状态更新失败，素材库已恢复，请重试'
-                    : '审核状态更新失败，素材库无法恢复，请检查素材库后重试');
-            } else writeToastSafe('审核状态更新失败，请重试');
-            return;
+            return updated || { ok: false, reason: 'generated-asset-status-failed' };
         }
-        if (addedName) writeToastSafe(`已放入${item.type === 'background' ? '场景素材' : '角色立绘'}「${addedName}」`);
         if (state.activeReader) rerenderActiveReader();
-        if (withDna && addedName) openDnaCandidate(addedName, item.tags);
+        return { ok: true };
     }
 
     function openDnaCandidate(characterName, tags) {

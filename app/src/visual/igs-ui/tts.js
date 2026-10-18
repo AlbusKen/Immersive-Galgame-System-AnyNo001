@@ -4,6 +4,7 @@
 // 或 Fish Audio 原生的 /v1/tts（text + reference_id，模型放请求头）。
 // 系统语音不经过 Web Audio，只能调音量、语速、音高；接口返回的音频走总线，声像、听筒、贴耳与语气音一致。
 import { audioMasterVolume, busInput, resumeAudioBus, watchPageAway } from './audio-bus.js';
+import { cacheLowWater, trimCacheEntries } from '../../media/cache-eviction.js';
 import { duckSceneAudio } from './scene-audio.js';
 import { stripTextFxMarkup } from './text-fx.js';
 import { yieldTypewriterAudio } from './typewriter-audio.js';
@@ -315,6 +316,7 @@ let queued = null;
 let lastPlayed = null;
 const apiCache = new Map();
 const inflight = new Map();
+let persistentWrites = Promise.resolve(), cacheEpoch = 0;
 let lastError = '';
 let errorHandler = null;
 let lastReported = { message: '', at: 0 };
@@ -519,6 +521,7 @@ const persistUrl = (key) => `https://igs-tts.invalid/?k=${encodeURIComponent(key
 
 async function persistentGet(key, rate) {
     try {
+        await persistentWrites;
         const cache = await persistentStore();
         const res = cache ? await cache.match(persistUrl(key)) : null;
         if (!res || !closeRate(Number(res.headers.get('x-igs-rate')) || 1, rate)) return null;
@@ -528,26 +531,32 @@ async function persistentGet(key, rate) {
     }
 }
 
-async function persistentPut(key, bytes, rate) {
-    try {
+function persistentPut(key, bytes, rate, epoch) {
+    const work = persistentWrites.then(async () => {
+        if (epoch !== cacheEpoch) return;
         const cache = await persistentStore();
         if (!cache || typeof Response !== 'function') return;
         await cache.put(persistUrl(key), new Response(bytes.slice(0), { headers: { 'Content-Type': 'audio/mpeg', 'x-igs-rate': String(rate) } }));
         const keys = await cache.keys();
-        for (const old of keys.slice(0, Math.max(0, keys.length - PERSIST_MAX))) await cache.delete(old);
-    } catch { /* 存不下就算了 */ }
+        if (keys.length > PERSIST_MAX) await Promise.all(keys.slice(0, keys.length - cacheLowWater(PERSIST_MAX)).map(old => cache.delete(old)));
+    });
+    persistentWrites = work.catch(() => {});
+    return persistentWrites;
 }
 
 export async function clearTtsCache() {
-    apiCache.clear();
-    try {
+    cacheEpoch++; apiCache.clear(); inflight.clear();
+    const work = persistentWrites.then(async () => {
         if (globalThis.caches && typeof globalThis.caches.delete === 'function') await globalThis.caches.delete(PERSIST_NAME);
-    } catch { /* ignore */ }
+    });
+    persistentWrites = work.catch(() => {});
+    return persistentWrites;
 }
 
 function remember(key, bytes, rate) {
+    apiCache.delete(key);
     apiCache.set(key, { bytes, rate });
-    while (apiCache.size > API_CACHE_MAX) apiCache.delete(apiCache.keys().next().value);
+    trimCacheEntries(apiCache, API_CACHE_MAX);
 }
 
 // 同一句只请求一次：缓存里有就直接用，正在生成就等那一条（翻页、提前生成共用），不跟着页面取消。
@@ -556,6 +565,7 @@ function requestSpeech(api, plan) {
     const url = ttsSpeechUrl(api.endpoint, api.transport, api.format);
     if (!url) return Promise.reject(new Error('还没有填写接口地址'));
     const key = ttsCacheKey(url, api, plan.voice, plan.text);
+    const epoch = cacheEpoch;
     const hit = apiCache.get(key);
     if (hit && closeRate(hit.rate, plan.rate)) {
         apiCache.delete(key);
@@ -566,12 +576,14 @@ function requestSpeech(api, plan) {
     if (pending && closeRate(pending.rate, plan.rate)) return pending.promise.then((bytes) => bytes.slice(0));
     const promise = persistentGet(key, plan.rate).then((stored) => {
         if (stored) {
-            remember(key, stored, plan.rate);
+            if (epoch === cacheEpoch) remember(key, stored, plan.rate);
             return stored;
         }
         return postSpeech(url, api, plan).then((bytes) => {
-            remember(key, bytes, plan.rate);
-            persistentPut(key, bytes, plan.rate);
+            if (epoch === cacheEpoch) {
+                remember(key, bytes, plan.rate);
+                void persistentPut(key, bytes, plan.rate, epoch);
+            }
             return bytes;
         });
     }).finally(() => {

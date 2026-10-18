@@ -112,7 +112,7 @@ if (releaseArgIndex !== -1) {
 // 不传 --pin 时只更新自动更新版 + debug 版，不生成任何 pinned（避免每次升号堆文件）。
 const pinArgIndex = process.argv.indexOf('--pin');
 if (pinArgIndex !== -1) {
-    const refs = process.argv.slice(pinArgIndex + 1).filter((arg) => /^(?:\d+\.\d+\.\d+-test|(?:test-)?v\d+\.\d+\.\d+)$/.test(arg));
+    const refs = process.argv.slice(pinArgIndex + 1).filter((arg) => /^(?:v?\d+\.\d+\.\d+-test|(?:test-)?v\d+\.\d+\.\d+)$/.test(arg));
     if (!refs.length) {
         throw new Error('--pin requires at least one X.Y.Z-test or historical vX.Y.Z ref.');
     }

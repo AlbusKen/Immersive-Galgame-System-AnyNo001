@@ -10,6 +10,7 @@ import { createMapBasemapGenerator } from '../src/visual/map-gen/index.js';
 import { createCgLibraryView } from '../src/visual/igs-ui/cg-library-view.js';
 import { peekSpriteHead, probeSpriteHead } from '../src/visual/igs-ui/fx-anchor.js';
 import { describeMediaUsage } from '../src/storage/storage-usage.js';
+import { createMediaCacheRegistry } from '../src/media/media-cache-registry.js';
 import { pixel, settleMedia } from './helpers/fake-media-server.js';
 
 const urls = () => {
@@ -18,6 +19,45 @@ const urls = () => {
     return { Blob, atob, btoa, revoked, URL: { createObjectURL: () => `blob:test-${++next}`, revokeObjectURL: url => revoked.push(url) } };
 };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+
+test('辅助缓存按最近访问顺序批量清理，预留后续写入余量，字节和回调整批结算', () => {
+    const removed = [], registry = createMediaCacheRegistry();
+    const cache = registry.createMap('messages', { maxEntries: 10, onRemove: (_value, key, reason) => removed.push([key, reason]) });
+    for (let index = 0; index < 10; index++) cache.set(index, `record-${index}`);
+    cache.get(0); cache.set(10, 'new');
+    assert.equal(cache.size, 8); assert.deepEqual(removed.map(([key]) => key), [1, 2, 3]);
+    cache.set(11, 'next'); cache.set(12, 'next'); assert.equal(cache.size, 10); assert.equal(removed.length, 3);
+    assert.equal(cache.get(0), 'record-0'); assert.ok(removed.every(([, reason]) => reason === 'capacity'));
+    cache.clear(); assert.equal(registry.stats().estimatedBytes, 0);
+    const maps = registry.createMap('maps');
+    for (let index = 0; index < 5; index++) maps.set(index, { status: 'ready' });
+    assert.equal(maps.size, 3); assert.equal(maps.has(0), false); assert.equal(maps.has(1), false); assert.equal(maps.has(4), true);
+    registry.destroy();
+    const byteRegistry = createMediaCacheRegistry(), byteRemoved = [];
+    const bytes = byteRegistry.createMap('messages', { onRemove: (_value, key) => byteRemoved.push(key) });
+    for (let index = 0; index < 5; index++) bytes.set(index, 'x'.repeat(60000));
+    assert.equal(bytes.size, 3); assert.equal(byteRemoved.length, 2);
+    assert.ok(byteRegistry.stats().estimatedBytes <= 512 * 1024 * 0.8);
+    bytes.set(5, 'x'.repeat(60000)); assert.equal(bytes.size, 4); assert.equal(byteRemoved.length, 2);
+    byteRegistry.destroy(); assert.equal(byteRegistry.stats().estimatedBytes, 0);
+});
+
+test('元数据总预算超限也整批腾出余量，保留最近查询和不可淘汰视图', () => {
+    const registry = createMediaCacheRegistry({ memoryBudget: 10000 }), removed = [];
+    const old = registry.createMap('messages', { onRemove: (_value, key) => removed.push(key) });
+    const current = registry.createMap('item-records');
+    for (let index = 0; index < 3; index++) old.set(`old-${index}`, 'x'.repeat(750));
+    for (let index = 0; index < 3; index++) current.set(`new-${index}`, 'y'.repeat(750));
+    old.get('old-0'); current.set('new-3', 'y'.repeat(750));
+    assert.equal(old.size, 1); assert.equal(current.size, 4); assert.deepEqual(removed, ['old-1', 'old-2']);
+    assert.ok(registry.stats().estimatedBytes <= 8000);
+    registry.destroy(); assert.equal(registry.stats().estimatedBytes, 0);
+    const occupied = createMediaCacheRegistry({ memoryBudget: 10000 });
+    const view = occupied.register('cg-catalogue'); assert.equal(view.reserve(9800), true);
+    const limited = occupied.createMap('messages'); limited.set('kept', 'small'); limited.set('large', 'x'.repeat(120));
+    assert.equal(limited.get('kept'), 'small'); assert.equal(limited.has('large'), false);
+    assert.ok(occupied.stats().estimatedBytes <= 10000); occupied.destroy();
+});
 
 test('no IndexedDB means one memory layer; evicted bytes cannot return from a disguised disk', async () => {
     const host = urls(), cache = createLocalImageCache(host, { maxCount: 1 });

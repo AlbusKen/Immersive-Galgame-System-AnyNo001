@@ -61,6 +61,8 @@ const BACKUP_TEMPLATE = `
   <div class="igs-source-filter">
     <div class="igs-source-filter-title">本地缓存</div>
     <div class="igs-source-filter-grid">{{imageCacheCountField}}</div>
+    {{imageCompressionField}}
+    <div class="igs-source-filter-note">默认关闭。开启后，图片从服务端读取到浏览器再压缩缓存，降低日常显示占用；下载、导出和编辑仍使用原图。保存后生效，切换时重新加载当前图片。</div>
     <div class="igs-settings-row"><button class="igs-settings-action" data-action="purge-asset-cache" type="button" title="清空浏览器里缓存的图片和设置页缩略图，酒馆上的原图不动">清素材缓存</button></div>
     <div class="igs-settings-row"><button class="igs-settings-action" data-action="image-cache-status" type="button">查看占用</button><button class="igs-settings-action" data-action="image-records-retry-backup" type="button">重试待备份记录</button><button class="igs-settings-action" data-action="image-files-retry-delete" type="button">重试待删除文件</button></div>
     <div class="igs-source-filter-note">{{imageCacheStatus}}</div>
@@ -74,12 +76,18 @@ const IMAGE_SOURCE_TEMPLATE = `
     <div class="igs-source-filter-title">图像来源</div>
     {{imageSourceField}}
     <div class="igs-source-filter-note">{{imageSourceNote}}</div>
+    {{globalArtistField}}
+    <div class="igs-settings-sub" data-image-feature="external-sprite-dna"{{sourceExternalHidden}}>
+      {{externalSpriteDnaField}}
+      <div class="igs-source-filter-note">开启后，自动立绘先用「备用模型」补齐缺失的三景别 DNA 并保存；手动生成会先提示补齐。已有旧格式 DNA 继续复用。DNA 仅供外部插件参考，提示词和出图仍由原来源处理。</div>
+    </div>
     <div class="igs-settings-sub" data-image-source="nai"{{sourceNaiHidden}}>
       <div class="igs-source-filter-grid">
         {{autoNaiKeyField}}
         {{autoNaiModelField}}{{autoNaiSizeField}}
-        <div class="igs-settings-full">{{autoNaiArtistField}}</div>
-        <div class="igs-settings-full">{{autoNaiNegativeField}}</div>
+      </div>
+      <div class="igs-settings-sub" data-image-feature="nai-transparency"{{sourceBuiltinHidden}}>
+        {{naiSpriteTransparentField}}
       </div>
       <div class="igs-settings-result" data-result="nai-models">{{autoNaiModelsMessage}}</div>
       <details class="igs-settings-sub igs-settings-advanced" data-advanced="nai"{{advancedNaiOpen}}>
@@ -100,8 +108,16 @@ const IMAGE_SOURCE_TEMPLATE = `
     <div class="igs-settings-sub" data-image-source="dbgen"{{sourceDbgenHidden}}>
       {{dbgenSpriteTransparentField}}
     </div>
+    <div class="igs-settings-sub" data-image-feature="consistency"{{sourceConsistencyHidden}}>
+      <div class="igs-source-filter-grid">{{consistencyStrengthField}}{{consistencyModelField}}</div>
+    </div>
     <div class="igs-settings-row"><button class="igs-settings-action" data-action="test-image" type="button">{{imageTestActionLabel}}</button><button class="igs-settings-action" data-action="open-dbgen-settings" type="button"{{sourceDbgenHidden}}>插件设置</button></div>
     <div class="igs-settings-result" data-result="image">{{imageTestHelp}}</div>
+  </div>
+  <div class="igs-source-filter" data-image-prompt-entry{{sourceBuiltinHidden}}>
+    <div class="igs-source-filter-title">固定提示词组预设</div>
+    <div class="igs-source-filter-note">在现有管理器中新建、导入、编辑、保存与激活生图提示词组；未激活的草稿不参与写词。</div>
+    <button type="button" class="igs-settings-action" data-setting-go="image-prompt-presets">导入 / 编辑固定提示词组预设</button>
   </div>
 </div>
 `.trim();
@@ -123,9 +139,10 @@ const IMAGE_LLM_TEMPLATE = `
       <div class="igs-settings-result" data-result="llm-models">{{autoLlmModelsMessage}}</div>
     </div>
   </div>
+  {{imagePromptPanel}}
   <div class="igs-source-filter igs-perf-group" data-image-feature="llm-prompts">
     <details data-advanced="llm-prompts"{{autoLlmPromptsOpen}}>
-      <summary><b>提示词</b><span class="igs-perf-brief">系统提示词 · 头尾附加词，清空即恢复内置</span></summary>
+      <summary><b>旧版写词要求与附加词</b><span class="igs-perf-brief">保留原配置；完整生图框架在上方编辑</span></summary>
       <div class="igs-perf-group-body">
         <div class="igs-settings-full">{{autoLlmPromptIllustrationField}}</div>
         <div class="igs-settings-full">{{autoLlmPromptIllustrationSoftField}}</div>
@@ -183,6 +200,7 @@ const IMAGE_CG_TEMPLATE = `
 // 生图内容按类别分卡片（角色 / 表情差分 / Q 版 / 场景与物品 / CG / NSFW），开关、模型、画师串都在卡片里，见 settings-prompt-kinds.js。
 const IMAGE_AUTO_TEMPLATE = `
 <div class="igs-settings-grid" data-image-pane="auto">
+  {{artistLibraryPanel}}
   <div class="igs-source-filter-note">{{imageContentNote}}</div>
   <div class="igs-source-filter-note" data-image-feature="llm-warn"{{autoLlmWarnHidden}}>{{autoLlmWarn}}</div>
   {{promptKindsPanel}}

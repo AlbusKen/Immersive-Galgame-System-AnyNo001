@@ -231,9 +231,9 @@ test('gate:outfits:binding-lists-merged-wardrobe-and-jumps-to-rules', () => {
     assert.match(html, /aria-label="使用衣柜" data-outfit-wardrobe-char="小林" data-outfit-wardrobe="校服">/);
     assert.match(html, /<option value="晚礼服" selected>晚礼服<\/option>/);
     assert.equal(html.match(/<option value="校服"/g).length, 1);
-    assert.match(html, /data-action="wardrobe-for-outfit:%E5%B0%8F%E6%9E%97:%E6%A0%A1%E6%9C%8D">编辑提示词</);
+    assert.match(html, /data-action="scene-outfit-dna:%E5%B0%8F%E6%9E%97:%E6%A0%A1%E6%9C%8D"/);
     const missing = render({}, { moods: {} });
-    assert.match(missing, /data-action="wardrobe-for-outfit:%E5%B0%8F%E6%9E%97:%E6%A0%A1%E6%9C%8D">写提示词</);
+    assert.match(missing, /data-action="scene-outfit-dna:%E5%B0%8F%E6%9E%97:%E6%A0%A1%E6%9C%8D"/);
 });
 
 
@@ -251,6 +251,46 @@ test('gate:outfits:wardrobe-prompt-editor-saves-and-cancel-keeps-text', async ()
     await handleOutfitAction(action, ctx);
     assert.equal(t.sa().wardrobe.校服.prompt, 'sailor fuku');
     assert.equal(t.sa().wardrobe.校服.nsfwBoost, true);
+});
+
+test('outfit-description: 角色和衣柜入口双向编辑同一条记录，不复制或改绑', async () => {
+    const t = createCtx();
+    const linked = '小林海斗·初始衣装';
+    t.sa().characterOutfits = { 小林海斗: { 初始衣装: { words: [], moods: {}, wardrobe: linked } } };
+    t.sa().wardrobe = { [linked]: { prompt: 'red dress', nsfwBoost: true, reference: 'igs-gen:ref' } };
+    const ctx = { ...t.ctx, settingsState: t.state.activeSettings };
+    const role = `scene-outfit-dna:${enc('小林海斗', '初始衣装')}`;
+    const wardrobe = `wardrobe-prompt:${enc(linked)}`;
+    let opened;
+    ctx.dialogs = { edit: async (_title, value) => { opened = value; return 'blue dress'; } };
+    await handleOutfitAction(role, ctx);
+    assert.equal(opened, 'red dress');
+    assert.equal(t.sa().wardrobe[linked].prompt, 'blue dress');
+    ctx.dialogs.edit = async (_title, value) => { opened = value; return 'green dress'; };
+    await handleOutfitAction(wardrobe, ctx);
+    assert.equal(opened, 'blue dress');
+    ctx.dialogs.edit = async (_title, value) => { opened = value; return null; };
+    await handleOutfitAction(role, ctx);
+    assert.equal(opened, 'green dress');
+    assert.equal(t.sa().characterOutfits.小林海斗.初始衣装.wardrobe, linked);
+    assert.deepEqual(Object.keys(t.sa().wardrobe), [linked]);
+    assert.equal(t.sa().wardrobe[linked].reference, 'igs-gen:ref');
+    assert.equal(t.sa().wardrobe[linked].nsfwBoost, true);
+});
+
+test('outfit-description: 首次填写沿当前引用建档，取消或保存失败不留副本', async () => {
+    for (const scenario of ['cancel', 'save-failed', 'saved']) {
+        const t = createCtx();
+        const linked = '小林海斗·初始衣装';
+        t.sa().characterOutfits = { 小林海斗: { 初始衣装: { words: [], moods: {}, wardrobe: linked } } };
+        t.sa().wardrobe = {};
+        const ctx = { ...t.ctx, settingsState: t.state.activeSettings,
+            dialogs: { edit: async () => scenario === 'cancel' ? null : 'red dress' } };
+        if (scenario === 'save-failed') ctx.persistSettingsDraft = () => ({ ok: false, reason: 'save-failed' });
+        await handleOutfitAction(`scene-outfit-dna:${enc('小林海斗', '初始衣装')}`, ctx);
+        assert.deepEqual(Object.keys(t.sa().wardrobe), scenario === 'saved' ? [linked] : []);
+        assert.equal(t.sa().characterOutfits.小林海斗.初始衣装.wardrobe, linked);
+    }
 });
 
 test('gate:outfits:reference-replacement-preserves-old-image-until-save-and-reports-delete-failure', async () => {
@@ -392,4 +432,42 @@ test('gate:outfits:wardrobe-review-prompt-continues-with-known-character', async
     assert.equal(t.sa().wardrobe.校服.prompt, 'school uniform');
     assert.equal(t.sa().characterOutfits.雪乃.校服.wardrobe, '校服');
     assert.deepEqual(loadOutfitReview(t.ctx.options.global.localStorage), []);
+});
+
+for (const command of ['wardrobe-prompt', 'wardrobe-rename', 'scene-outfit-dna'])
+test(`无关资料并行保存：${command} 等待输入时其它衣装和图片更新仍合并`, async () => {
+    const f = createCtx(), assets = f.sa();
+    assets.wardrobe = { A: { prompt: 'blue dress', reference: 'igs-gen:old-reference' } };
+    assets.characterOutfits.小林海斗 = { 礼服: { wardrobe: 'A', words: [], moods: {} } };
+    const change = () => {
+        assets.wardrobe = { ...assets.wardrobe, B: { prompt: 'yellow raincoat' } };
+        assets.wardrobe.A = { ...assets.wardrobe.A, reference: 'igs-gen:new-reference' };
+        assets.characterOutfits.小林海斗.礼服.moods.喜悦 = 'arriving-sprite.png';
+    };
+    f.ctx.dialogs = {
+        async edit() { change(); return 'red dress'; },
+        async prompt() { change(); return '新名字'; }, alert() {},
+    };
+    const action = command === 'scene-outfit-dna' ? `${command}:${enc('小林海斗', '礼服')}` : `${command}:A`;
+    const result = await handleSettingsAction(action, f.ctx);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(assets.wardrobe.B.prompt, 'yellow raincoat');
+    const name = command === 'wardrobe-rename' ? '新名字' : 'A';
+    assert.equal(assets.wardrobe[name].reference, 'igs-gen:new-reference');
+    assert.equal(assets.wardrobe[name].prompt, command === 'wardrobe-rename' ? 'blue dress' : 'red dress');
+    assert.equal(assets.characterOutfits.小林海斗.礼服.moods.喜悦, 'arriving-sprite.png');
+    assert.equal(assets.characterOutfits.小林海斗.礼服.wardrobe, name);
+});
+
+test('无关资料并行保存：角色改名等待输入时其它角色保存，改名合并最新资料', async () => {
+    const f = createCtx(), assets = f.sa();
+    f.ctx.dialogs = { async prompt() {
+        assets.characters.雪乃.平和 = 'new-y.png';
+        assets.characters.小林海斗.平和 = 'arriving-sprite.png';
+        return '海斗';
+    }, alert() {} };
+    const result = await handleSettingsAction(`scene-rename-char:${enc('小林海斗')}`, f.ctx);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(assets.characters.雪乃.平和, 'new-y.png');
+    assert.equal(assets.characters.海斗.平和, 'arriving-sprite.png');
 });

@@ -22,6 +22,15 @@ test('map draft fills only an empty host input and never sends', async () => {
   assert.equal(input.value, '前往房间');
 });
 
+test('资料命令恢复：追加命令保留原草稿，重复续接不重复追加且不发送', async () => {
+  const { adapter, input, counts } = host('我先问一句');
+  assert.equal((await adapter.fillEmptyInputText('前往庭院地点', { append: true })).ok, true);
+  assert.equal(input.value, '我先问一句\n前往庭院地点');
+  assert.equal((await adapter.fillEmptyInputText('前往庭院地点', { append: true })).ok, true);
+  assert.equal(input.value, '我先问一句\n前往庭院地点');
+  assert.deepEqual(counts(), { writes: 0, sends: 0 });
+});
+
 test('map draft keeps special location names as literal text without sending', async () => {
   const { adapter, input, counts } = host('');
   const draft = '前往<楼层 & "房间">地点';

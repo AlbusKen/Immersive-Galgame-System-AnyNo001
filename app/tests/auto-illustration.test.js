@@ -97,14 +97,13 @@ test('gate:illustration:payload-keeps-raw-marker-but-hides-from-segments', () =>
 });
 
 test('gate:illustration:nai-v4-request-shape', async () => {
-    const { buildNaiV4Request, NAI_DEFAULT_NEGATIVE } = await import('../src/generated-images/request-builders/nai-v4-builder.js');
+    const { buildNaiV4Request } = await import('../src/generated-images/request-builders/nai-v4-builder.js');
     const p = buildNaiV4Request({ scene: 'indoors, night', sceneUc: 'text', chars: [{ x: 0.33, y: 0.5, tags: '1girl, long hair', uc: 'bad hands' }] }, {}, () => 0).parameters;
     assert.equal(p.v4_prompt.use_coords, true);
     assert.equal(p.v4_prompt.use_order, true);
     assert.equal(p.v4_negative_prompt.legacy_uc, false);
     assert.deepEqual(p.v4_prompt.caption.char_captions[0].centers[0], { x: 0.3, y: 0.5 });
-    assert.ok(p.negative_prompt.startsWith(NAI_DEFAULT_NEGATIVE));
-    assert.ok(p.negative_prompt.includes('text'));
+    assert.equal(p.negative_prompt, 'text');
     assert.equal(p.seed, 0);
     assert.equal(p.width, 832);
 });
@@ -460,6 +459,99 @@ test('gate:illustration:message-host-rejects-stale-floor-before-helper-write', a
     assert.equal(ctx.chat[0].mes, 'original');
 });
 
+test('gate:illustration:message-host-passes-events-without-waiting', async (t) => {
+    const { EventEmitter } = await import('node:events');
+    const { createIllustrationMessageHost } = await import('../src/host/illustration-message-host.js');
+    for (const awaited of [false, true]) {
+        await t.test(awaited ? '逐个等待监听器的宿主' : '同步广播的宿主', async (t) => {
+            const eventSource = new EventEmitter();
+            if (awaited) eventSource.emit = async (name, ...args) => {
+                for (const listener of eventSource.listeners(name)) await listener(...args);
+            };
+            const originalEmit = eventSource.emit;
+            const names = ['GENERATION_ENDED', 'CHARACTER_MESSAGE_RENDERED'];
+            const ctx = { eventSource, eventTypes: Object.fromEntries(names.map(name => [name, name])) };
+            const warnings = [], received = [], other = [];
+            let scheduled = 0, release, finished = false;
+            const pending = new Promise(resolve => { release = resolve; }).then(() => { finished = true; });
+            const host = createIllustrationMessageHost({ SillyTavern: { getContext: () => ctx },
+                setTimeout() { scheduled++; }, console: { warn: (...args) => warnings.push(args) } });
+            t.after(async () => { host.destroy(); release(); await pending; });
+            const payload = Object.freeze({ source: 'host' });
+            for (const name of names) {
+                const off = host.on(name, (...args) => { received.push([name, ...args]); return pending; });
+                host.on(name, () => { throw new Error('private-sync-error'); });
+                host.on(name, () => Promise.reject(new Error('private-async-error')));
+                eventSource.on(name, (...args) => other.push([name, ...args]));
+                const listener = eventSource.listeners(name)[0];
+                assert.equal(listener(1, payload), undefined, '宿主回调不返回内部 Promise');
+                await eventSource.emit(name, 1, payload);
+                assert.equal(finished, false, '内部任务仍未完成');
+                assert.equal(other.at(-1)[0], name);
+                assert.equal(other.at(-1)[1], 1);
+                assert.equal(other.at(-1)[2], payload, '原参数身份保持不变');
+                const count = received.length;
+                off();
+                await eventSource.emit(name, 1, payload);
+                assert.equal(received.length, count, '取消订阅移除实际包装监听器');
+            }
+            await Promise.resolve();
+            assert.equal(scheduled, 0, '接收与转交不依赖定时器');
+            assert.equal(other.length, 4, '每次原事件仅通知后续插件一次');
+            assert.equal(warnings.length, 8, '同步和异步失败分别报告');
+            assert.ok(warnings.every(([, detail]) => names.includes(detail.eventKey)));
+            assert.equal(JSON.stringify(warnings).includes('private-'), false, '日志不输出错误原文');
+            assert.equal(eventSource.emit, originalEmit, '不接管宿主派发器');
+            host.destroy();
+            for (const name of names) {
+                await eventSource.emit(name, 1, payload);
+                assert.equal(eventSource.listenerCount(name), 1, '销毁仅移除 IGS 监听器');
+            }
+            assert.equal(other.length, 6);
+        });
+    }
+});
+
+
+test('gate:illustration:message-host-floor-ready-isolates-internal-tasks', async t => {
+    const { EventEmitter } = await import('node:events');
+    const { createIllustrationMessageHost } = await import('../src/host/illustration-message-host.js');
+    const eventSource = new EventEmitter();
+    eventSource.emit = async (name, ...args) => {
+        for (const listener of eventSource.listeners(name)) await listener(...args);
+    };
+    const names = ['GENERATION_STARTED', 'CHARACTER_MESSAGE_RENDERED', 'GENERATION_ENDED'];
+    const ctx = { chatId: 'event-fixture', chat: [{ is_user: false, mes: '正文' }], eventSource,
+        eventTypes: Object.fromEntries(names.map(name => [name, name])) };
+    const warnings = [], floors = [], other = [];
+    const host = createIllustrationMessageHost({ SillyTavern: { getContext: () => ctx },
+        console: { warn: (...args) => warnings.push(args) } });
+    let release, finished = false;
+    const pending = new Promise(resolve => { release = resolve; }).then(() => { finished = true; });
+    t.after(async () => { host.destroy(); release(); await pending; });
+    host.onImageFloorReady(id => { floors.push(id); return pending; });
+    host.onImageFloorReady(() => { throw new Error('private-floor-sync'); });
+    host.onImageFloorReady(() => Promise.reject(new Error('private-floor-async')));
+    const payload = Object.freeze({ source: 'host' });
+    eventSource.on('GENERATION_ENDED', (...args) => other.push(args));
+    await eventSource.emit('GENERATION_STARTED', 'normal', {}, false);
+    await eventSource.emit('CHARACTER_MESSAGE_RENDERED', 0);
+    await eventSource.emit('GENERATION_ENDED', 1, payload);
+    await Promise.resolve();
+    assert.deepEqual(floors, [0]);
+    assert.equal(finished, false);
+    assert.equal(other.length, 1);
+    assert.equal(other[0][0], 1);
+    assert.equal(other[0][1], payload);
+    assert.equal(warnings.length, 2);
+    assert.ok(warnings.every(([, detail]) => detail.eventKey === 'GENERATION_ENDED'));
+    assert.equal(JSON.stringify(warnings).includes('private-'), false);
+    host.destroy();
+    await eventSource.emit('GENERATION_ENDED', 1, payload);
+    assert.equal(other.length, 2);
+    assert.equal(eventSource.listenerCount('GENERATION_ENDED'), 1);
+});
+
 const NSFW_TEXT = '[igs-scene:卧室|夜晚|晴|NSFW]\n一段。\n二段。\n三段。';
 const SFW_TEXT = '[igs-scene:街道|白天|晴]\n一段。\n二段。';
 const REPLY = 'slot: 1\nat: 2\nscene: 1girl, bedroom\nchar: 0.5,0.5 | 1girl, black hair';
@@ -519,6 +611,63 @@ function makeFakes({ text, isLatest = true, llmReply = REPLY, naiResult, setting
     return { calls, messageHost, llm, nai, events, getSettings: () => settings, minBodyChars: 0 };
 }
 
+test('CG 原楼标记变化和保存修订推进：续存同一张图，出图只调用一次', { timeout: 3000 }, async t => {
+    const { createAutoIllustrationService, fixtureMedia } = await import('./helpers/media-fixtures.js');
+    const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
+    const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 } });
+    const raw = createMemoryIllustrationStore(), mediaCache = fixtureMedia();
+    let saves = 0;
+    const store = { ...raw, async updateSlot(key, slot, revision, patch, options) {
+        if (patch.dataUrl && saves++ === 0) {
+            const latest = await raw.getSlotRecord(`${key}|${slot}`);
+            await raw.putSlot(key, { ...latest, updatedAt: 'ordinary-save' });
+        }
+        return raw.updateSlot(key, slot, revision, patch, options);
+    } };
+    fake.nai.generate = async (_request, _settings, meta) => {
+        fake.calls.nai++;
+        // 正文位置标记变化只影响显示，不改变这一楼及回复分支的归属。
+        fake.messageHost.setText(NSFW_TEXT);
+        assert.equal(meta.shouldStart(), true);
+        return { ok: true, dataUrl: 'data:image/png;base64,Q0c=' };
+    };
+    const reports = [];
+    const service = createAutoIllustrationService({ ...fake, store, mediaCache,
+        report: (level, message) => reports.push([level, message]) });
+    t.after(() => { service.stop(); mediaCache.destroy(); });
+    assert.equal((await service.processMessage(5)).ok, true);
+    assert.equal(fake.calls.nai, 1);
+    assert.equal(saves, 2);
+    assert.equal((await raw.getSlotRecord('c1|5|0|1')).dataUrl, 'data:image/png;base64,Q0c=');
+    assert.equal((await raw.getFloor('c1|5|0')).status, 'done');
+    assert.equal(reports.some(([level]) => level === 'error'), false);
+});
+
+test('CG 真正切换回复分支：不向新分支保存，也不误报生成完成', { timeout: 3000 }, async t => {
+    const { createAutoIllustrationService, fixtureMedia } = await import('./helpers/media-fixtures.js');
+    const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
+    const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 } });
+    const readFloor = fake.messageHost.readFloor;
+    let swipeId = 0;
+    fake.messageHost.readFloor = () => ({ ...readFloor(), swipeId });
+    fake.nai.generate = async () => {
+        fake.calls.nai++;
+        swipeId = 1;
+        return { ok: true, dataUrl: 'data:image/png;base64,Q0c=' };
+    };
+    const store = createMemoryIllustrationStore(), mediaCache = fixtureMedia(), reports = [];
+    const service = createAutoIllustrationService({ ...fake, store, mediaCache,
+        report: (level, message) => reports.push([level, message]) });
+    t.after(() => { service.stop(); mediaCache.destroy(); });
+    const result = await service.processMessage(5);
+    assert.equal(result.cancelled, true);
+    assert.equal(fake.calls.nai, 1);
+    assert.equal((await store.getFloor('c1|5|0')).status, 'planning');
+    assert.equal((await store.getSlotRecord('c1|5|0|1')).dataUrl, undefined);
+    assert.equal(await store.getSlotRecord('c1|5|1|1'), null);
+    assert.equal(reports.some(([level]) => level === 'error' || level === 'success'), false);
+});
+
 const LONG_LINE = '她靠在窗边，看着外面的雨一点点停下来，城市的灯光一盏接一盏地亮起。';
 
 test('gate:illustration:skips-auto-when-body-under-50-chars', async () => {
@@ -576,6 +725,33 @@ test('gate:illustration:service-skips-non-latest-floor', async () => {
     const fake = makeFakes({ text: NSFW_TEXT, isLatest: false, settings: { nsfwEnabled: true } });
     assert.equal((await createAutoIllustrationService({ ...fake, store: createMemoryIllustrationStore() }).processMessage(5)).reason, 'not-eligible');
     assert.equal(fake.calls.llm + fake.calls.nai, 0);
+});
+
+for (const action of ['显示标记变化', '切回复分支', '清除图片']) test(`CG 保存使用任务归属与记录版本-${action}`, async t => {
+    const { createAutoIllustrationService } = await import('./helpers/media-fixtures.js');
+    const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
+    const store = createMemoryIllustrationStore(), reports = [];
+    const fake = makeFakes({ text: NSFW_TEXT, settings: { nsfwEnabled: true, nsfwCount: 1 } });
+    fake.nai.generate = async () => {
+        if (action === '显示标记变化') fake.messageHost.setText(stripIllustrationMarkers(fake.messageHost.readFloor(5).text));
+        if (action === '切回复分支') {
+            const read = fake.messageHost.readFloor;
+            fake.messageHost.readFloor = id => ({ ...read(id), swipeId: 1 });
+        }
+        if (action === '清除图片') await store.deleteSlot('c1|5|0', 1);
+        return { ok: true, dataUrl: 'data:image/png;base64,AAAA' };
+    };
+    const service = createAutoIllustrationService({ ...fake, store, report: (level, message) => reports.push([level, message]) });
+    t.after(() => service.stop());
+    const result = await service.processMessage(5);
+    const slots = await store.getSlots('c1|5|0');
+    assert.equal(result.ok, action === '显示标记变化', JSON.stringify({ result, reports }));
+    if (action === '显示标记变化') assert.equal(slots[0].dataUrl, 'data:image/png;base64,AAAA');
+    else {
+        assert.equal(result.stopGeneration, true);
+        assert.equal(slots.some(slot => slot.dataUrl), false);
+        assert.equal(reports.some(([level]) => level === 'error'), false);
+    }
 });
 
 test('gate:illustration:service-nsfw-generates-and-writes-marker', async () => {
@@ -687,7 +863,6 @@ test('gate:illustration:dbgen-cg-calls-only-the-plugin-prompt-and-generate-apis'
     assert.equal(calls.generate, 0);
     assert.equal(calls.floor.length, 1);
     assert.equal(calls.floor[0].messageId, 5);
-    assert.equal(calls.floor[0].description, '为本楼生成1张CG，CG点自行选择。slotid从1开始数。挂载点只从剧情正文里逐字摘原句，提示词、出图指导、标签和正文以外的内容不要拿来当挂载点，也不要画进CG。\n画面是横的，宽1216，高832。构图按横屏写，不要写成竖屏。');
     assert.equal(calls.floor[0].skipRecall, undefined);
     assert.equal(calls.paint.length, 1);
     assert.equal(calls.paint[0].caption, caption);

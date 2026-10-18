@@ -1,9 +1,18 @@
 // 场景、角色、衣柜、生成库按角色卡分开。根上的同名字段是全局兜底：
 // 当前角色卡里没有这个名字时才用全局，卡里有同名条目时以卡为准。不借用别的卡。
 
+import { normalizeCharacterDefaultOutfits } from './character-appearance.js';
+import { normalizeCharacterSeeds } from './generation-seeds.js';
+import { expressionNoteBelongsTo } from './expression-note-keys.js';
 const plain = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
 
-const LIBRARY_FIELDS = ['scenes', 'characters', 'characterAliases', 'characterDna', 'characterOutfits', 'wardrobe', 'eventCgs', 'statusAvatars'];
+export const ASSET_LIBRARY_MAP_FIELDS = ['scenes', 'characters', 'characterAliases', 'characterDna', 'characterOutfits', 'characterDefaultOutfits', 'characterSeeds', 'characterSpriteNotes', 'characterMoodNotes', 'characterMoodTiers', 'wardrobe', 'eventCgs', 'statusAvatars'];
+const LIBRARY_FIELDS = ASSET_LIBRARY_MAP_FIELDS;
+
+export function snapshotAssetLibrary(source = {}) {
+    const fields = LIBRARY_FIELDS.filter(field => !['characterDefaultOutfits', 'characterSeeds'].includes(field) || Object.hasOwn(source, field));
+    return JSON.parse(JSON.stringify({ ...Object.fromEntries(fields.map(field => [field, plain(source[field])])), generated: plain(source.generated) }));
+}
 
 export function resolveAssetScope(ctx) {
     if (!ctx || typeof ctx !== 'object') return { key: '', legacyKey: '', kind: 'global', label: '全局' };
@@ -153,24 +162,41 @@ export function effectiveSceneAssets(sceneAssets, scopeKey) {
     const over = (field) => stack([rest[field], card[field]]);
     const generated = plain(rest.generated);
     const cardGenerated = plain(card.generated);
+    const names = new Set(['characters', 'characterDna', 'characterOutfits', 'characterDefaultOutfits']
+        .flatMap(field => Object.keys(plain(card[field]))).concat(Object.keys(plain(cardGenerated.characters))));
+    const characterField = (field, global = rest, local = card) => {
+        const value = stack([global[field], local[field]]);
+        for (const name of names) if (!Object.hasOwn(plain(local[field]), name)) delete value[name];
+        return value;
+    };
+    const expressionNotes = stack([generated.expressionNotes, cardGenerated.expressionNotes]);
+    for (const key of Object.keys(expressionNotes)) {
+        if (!Object.hasOwn(plain(cardGenerated.expressionNotes), key)
+            && names.has(key.split('\\u0001')[0])) delete expressionNotes[key];
+    }
     return {
         ...rest,
         ...(ownedWorldview(card) || {}),
         ...(ownedDialogSkin(card) || {}),
         ...(ownedUserCharacter(card) || {}),
         scenes: over('scenes'),
-        characters: over('characters'),
-        characterAliases: over('characterAliases'),
-        characterDna: over('characterDna'),
-        characterOutfits: over('characterOutfits'),
+        characters: characterField('characters'),
+        characterAliases: characterField('characterAliases'),
+        characterDna: characterField('characterDna'),
+        characterOutfits: characterField('characterOutfits'),
+        characterDefaultOutfits: characterField('characterDefaultOutfits'),
+        characterSeeds: characterField('characterSeeds'),
         wardrobe: over('wardrobe'),
         eventCgs: over('eventCgs'),
-        statusAvatars: over('statusAvatars'),
+        statusAvatars: characterField('statusAvatars'),
+        characterSpriteNotes: characterField('characterSpriteNotes'),
+        characterMoodNotes: characterField('characterMoodNotes'),
+        characterMoodTiers: characterField('characterMoodTiers'),
         generated: {
             scenes: stack([generated.scenes, cardGenerated.scenes]),
-            characters: stack([generated.characters, cardGenerated.characters]),
-            characterAliases: stack([generated.characterAliases, cardGenerated.characterAliases]),
-            expressionNotes: stack([generated.expressionNotes, cardGenerated.expressionNotes]),
+            characters: characterField('characters', generated, cardGenerated),
+            characterAliases: characterField('characterAliases', generated, cardGenerated),
+            expressionNotes,
         },
     };
 }
@@ -189,6 +215,11 @@ export function normalizeAssetCards(sceneAssets) {
             characterAliases: plain(card.characterAliases),
             characterDna: plain(card.characterDna),
             characterOutfits: plain(card.characterOutfits),
+            ...Object.fromEntries(['characterSpriteNotes', 'characterMoodNotes', 'characterMoodTiers']
+                .filter(field => Object.hasOwn(card, field)).map(field => [field, plain(card[field])])),
+            ...(Object.hasOwn(card, 'characterSeeds') && { characterSeeds: normalizeCharacterSeeds(card.characterSeeds) }),
+            ...(Object.hasOwn(card, 'characterDefaultOutfits') && {
+                characterDefaultOutfits: normalizeCharacterDefaultOutfits(card.characterDefaultOutfits) }),
             wardrobe: plain(card.wardrobe),
             eventCgs: plain(card.eventCgs),
             generated: {
@@ -247,12 +278,14 @@ export function moveLibraryEntry(sceneAssets, fromKey, toKey, collection, name, 
     if (!Object.prototype.hasOwnProperty.call(plain(from[collection]), label)) return { ok: false, reason: 'missing' };
     moveKey(from, to, collection, label, copy);
     if (collection === 'characters') {
-        for (const extra of ['characterAliases', 'characterDna', 'characterOutfits', 'statusAvatars']) {
+        for (const extra of ['characterAliases', 'characterDna', 'characterOutfits', 'characterDefaultOutfits', 'characterSeeds', 'statusAvatars']) {
             moveKey(from, to, extra, label, copy);
         }
         moveGeneratedName(from, to, 'characters', label, copy);
         moveGeneratedName(from, to, 'characterAliases', label, copy);
-        moveGeneratedName(from, to, 'expressionNotes', label, copy);
+        for (const key of Object.keys(plain(plain(from.generated).expressionNotes))) {
+            if (expressionNoteBelongsTo(key, label)) moveGeneratedName(from, to, 'expressionNotes', key, copy);
+        }
     }
     if (collection === 'scenes') moveGeneratedName(from, to, 'scenes', label, copy);
     return { ok: true };

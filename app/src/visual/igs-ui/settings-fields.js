@@ -493,8 +493,8 @@ export function renderCharacterAssetList(characters, options = {}) {
             const c = encSeg(charName);
             const m = encSeg(mood);
             const acts = slotActions([
-                mood !== '默认' && (imageId || (note && note.error)) ? [`char-expression-retry:${c}:${m}`, '重新生成', 'retry'] : null,
-                mood === '默认' && rawUrl ? [`char-generate-sprite:${c}`, '重新生成', 'retry'] : null,
+                mood !== '默认' && (!rawUrl || imageId || (note && note.error)) ? [`char-expression-retry:${c}:${m}`, rawUrl ? '重新生成' : '生成立绘', 'retry'] : null,
+                mood === '默认' && rawUrl ? [`char-redraw-sprite:${c}`, '重新生成', 'retry'] : null,
             ]);
             const slotMenu = renderRowMenu([
                 canPrompt ? menuItem(`char-expression-prompt:${c}:${m}`, '提示词') : '',
@@ -517,6 +517,7 @@ export function renderCharacterAssetList(characters, options = {}) {
         }).join('');
         const slotArea = renderCharacterSlotTabs({
             charName,
+            builtinImageSource: options.imageSourceMode === undefined || options.imageSourceMode === 'nai',
             baseMoods: moodEntries.map(([mood]) => mood),
             baseListHtml: `<div class="igs-outfit-panel"><div class="igs-btn-mgr-list">${moodRows || '<div class="igs-scene-empty">暂无情绪，可点击页签上的「添加情绪」图标</div>'}</div></div>`,
             outfits: outfitForChar,
@@ -648,21 +649,40 @@ const CHARACTER_DNA_FIELD_LABELS = [
     ['defaultAppearance', '默认外观', '默认发型、服装、饰品；剧情明确换装时可被覆盖'],
     ['negative', '负面词', '防漂移与禁止增加的特征'],
     ['triggerWords', '触发词', 'LoRA触发词等纯文本'],
+    ['personality', '性格特点 DNA', '只描述该角色稳定的性格特点，不含外貌、衣装、当次表情、动作或场景；生图时与所选景别身份一起使用'],
+    ...[['full_body', '全身'], ['half_body', '半身'], ['portrait', '头像']].flatMap(([view, label]) => [
+        [`views.${view}.subject`, `${label}身份（含年龄感）`, '英文身份主语片段；核对有依据的年龄感、角、尾巴、非人耳及标志饰品。全身保留已知身体特征，头像保留头颈锚点；三景别同一身份，不含普通服装、动作或临时表情'],
+        [`views.${view}.negative`, `${label}身份负面词`, '该景别固定身份的排除词，可留空'],
+    ]),
 ];
 
 // 角色 DNA 折叠编辑器：角色名只进 data 属性，不拼入点号路径；输入只更新草稿。
-const dnaValue = (dna, field) => (dna && typeof dna === 'object' && !Array.isArray(dna) && typeof dna[field] === 'string' ? dna[field] : '');
+const dnaValue = (dna, field) => {
+    const value = field.split('.').reduce((node, key) => node?.[key], dna);
+    return typeof value === 'string' ? value : '';
+};
 
 function characterDnaFilled(dna) {
-    return CHARACTER_DNA_FIELD_LABELS.some(([field]) => dnaValue(dna, field).trim());
+    return characterDnaEditFields(dna).some(([field]) => dnaValue(dna, field).trim());
+}
+
+function characterDnaEditFields(dna) {
+    const legacy = dna?.version !== 2 && (dna?.identityInitialized === true
+        || ['identity', 'defaultAppearance', 'negative', 'triggerWords'].some(field => dnaValue(dna, field).trim()));
+    return CHARACTER_DNA_FIELD_LABELS.filter(([field]) => legacy
+        ? !field.startsWith('views.') : field === 'personality' || field.startsWith('views.'));
 }
 
 function renderCharacterDnaFields(charName, dna) {
-    const rows = CHARACTER_DNA_FIELD_LABELS.map(([field, label, hint]) => (
-        `<label class="igs-dna-field"><span class="igs-btn-mgr-label">${esc(label)}</span>`
+    const fields = characterDnaEditFields(dna);
+    const legacy = fields.some(([field]) => field === 'identity');
+    const rows = fields.map(([field, label, hint]) => (
+        `<label class="igs-dna-field${field === 'personality' ? ' is-wide' : ''}"><span class="igs-btn-mgr-label">${esc(label)}</span>`
         + `<textarea class="igs-scene-url-input igs-dna-input" rows="2" data-dna-char="${esc(charName)}" data-dna-field="${field}" placeholder="${esc(hint)}">${esc(dnaValue(dna, field))}</textarea></label>`
     )).join('');
-    return `<div class="igs-dna-fields" data-dna-editor="${esc(charName)}">${rows}</div>`;
+    const protocol = `<div class="igs-dna-protocol"><span class="igs-outfit-muted">${legacy ? '旧版外貌资料' : '三景别外貌资料'}</span>`
+        + (legacy ? `<button type="button" class="igs-review-link" data-action="char-upgrade-dna:${encSeg(charName)}">使用三景别外貌</button>` : '') + '</div>';
+    return `${protocol}<div class="igs-dna-fields" data-dna-editor="${esc(charName)}">${rows}</div>`;
 }
 
 // 「角色立绘」标题旁的 ＋：和场景页一样是个下拉，新增角色或只有 DNA 的角色。
@@ -682,7 +702,7 @@ export function renderCharacterDnaEditor(charName, dna) {
     return `<details class="igs-dna-editor"><summary class="igs-dna-summary">外貌（DNA）${characterDnaFilled(dna) ? '' : '（未填写）'}</summary>${renderCharacterDnaFields(charName, dna)}</details>`;
 }
 
-// 审核卡带来的 DNA 候选：只展示，用户点「采用」才写入 defaultAppearance（不覆盖已填内容）。
+// 历史审核候选可能混合人物、衣装和动作，只供查看，不写入人物或服装 DNA。
 export function renderDnaCandidateBar(candidate) {
     const name = candidate && typeof candidate.name === 'string' ? candidate.name.trim() : '';
     if (!name) return '';
@@ -938,7 +958,7 @@ export function renderGeneratedAssetPane({ library = {}, temp = [], tempPage, re
         + `<span>${tempPage.loading ? '正在读取素材…' : `临时素材共 ${tempPage.total || 0} 项，每页 24 项`}</span>`
         + `<button type="button" class="igs-review-link" data-action="gen-temp-page:next"${tempPage.hasNext ? '' : ' disabled'}>下一页</button>`
         + `<button type="button" class="igs-review-link" data-action="gen-records-retry">重新读取</button></div>`
-        + (error ? '<p role="alert">素材或物品记录读取失败，请点“重新读取”。本机数据保留，失败不会当作缺图重新生成。</p>' : '') : '';
+        + (error ? '<p role="alert">素材或物品记录正在自动恢复，读取完成后继续原操作。</p>' : '') : '';
     return renderReviewCard({
         key: 'generated',
         title: '刚生成的图',

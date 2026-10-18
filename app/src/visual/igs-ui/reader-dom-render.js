@@ -3,32 +3,14 @@ import { mermaidToneVars } from './dialog-theme-mermaid.js';
 import { resolveSpeakerMagicHouse } from './magic-house.js';
 import { normalizeSkinDialogScale } from './dialog-skin-frame.js';
 import { RECORD_ICONS } from './record-icons.js';
-import {
-    ORIGINAL_READER_ICONS,
-    ORIGINAL_READER_TOOLBAR_BUTTONS,
-} from './original-reader-source.js';
+import { ORIGINAL_READER_ICONS, ORIGINAL_READER_TOOLBAR_BUTTONS } from './original-reader-source.js';
 import { DIALOG_ONLY_BUTTONS, TOOLBAR_ACTIONS } from './reader-host-constants.js';
-import { normalizeDialogBarAlign, normalizeDialogBarButtons, normalizeToolbarSplit } from './settings-normalize.js';
-import {
-    ensureImageLoadingSpinner,
-    ensureImageEmptyPlaceholder,
-    isImageRetryTap,
-    getOwnerWindow,
-    readElementHeight,
-    readElementWidth,
-    removeImageEmptyPlaceholder,
-    removeImageLoadingSpinner,
-} from './reader-dom-utils.js';
+import { normalizeDialogBarAlign, normalizeDialogBarButtons, normalizeToolbarSplit, applySpriteDisplayScale, renderDialogueHtml, resolveActiveTheme, resolveSpriteLayout, spriteHeightLayoutKey } from './settings-normalize.js';
+import { ensureImageLoadingSpinner, ensureImageEmptyPlaceholder, isImageRetryTap, getOwnerWindow, readElementHeight, readElementWidth, removeImageEmptyPlaceholder, removeImageLoadingSpinner } from './reader-dom-utils.js';
 import { applyTransparentGlassMaterial } from '../../styles/glass-material.js';
 import { resolveStatusHudScale, resolveStatusHudLocationScale, NSFW_VEIL_LEVEL_STYLE, normalizeStatusHudPosition, normalizeStatusHudSettings } from '../../data/shujuku/status-hud-model.js';
 import { computeLineHeight, igsDebug } from './reader-value-utils.js';
-import {
-    applySpriteDisplayScale,
-    renderDialogueHtml,
-    resolveActiveTheme,
-    resolveSpriteLayout,
-    spriteHeightLayoutKey,
-} from './settings-normalize.js';
+
 import { applyReaderModeRuntime } from './reader-runtime.js';
 import { applyTypewriterEffect, cancelTypewriter } from './typewriter-runtime.js';
 import { applyVoiceBark } from './voice-bark.js';
@@ -81,14 +63,7 @@ import { applyMangaBack } from './manga-back.js';
 import { applyCrowdFx } from './crowd-fx.js';
 import { applyComicToDom, finishComicReveal, isComicGhostTarget, relayoutComic } from './comic-bubble.js';
 import { normalizeSystemRoleSettings } from './system-role.js';
-import {
-    applyDialogSkinAssets,
-    isClassicDialogSkin,
-    isGradientVeilDialogSkin,
-    isMaterialDialogSkin,
-    supportsDialogAutoHeight,
-    normalizeClassicDialogWidthPercent,
-} from './classic-dialog-skin.js';
+import { applyDialogSkinAssets, isClassicDialogSkin, isGradientVeilDialogSkin, isMaterialDialogSkin, supportsDialogAutoHeight, normalizeClassicDialogWidthPercent } from './classic-dialog-skin.js';
 import { syncDialogSkinStyle } from './dialog-skin-style.js';
 import { gradientVeilColorToRgba, normalizeGradientVeil } from './gradient-veil-dialog-skin.js';
 
@@ -542,11 +517,16 @@ export function applyToolbarState(root, current) {
     }
     const currentCgShown = Boolean(contentForCg.illustrationActive && contentForCg.illustrationUrl);
     const currentCgSlot = Boolean(contentForCg.illustrationSlot);
-    for (const id of ['clear-cg', 'reroll-cg']) {
+    for (const id of ['clear-cg', 'reroll-cg', 'consistency-cg']) {
         const button = root.querySelector(`#igs-btn-${id}`);
         if (!button) continue;
         // 没画出来的 CG 点没有图，清扫仍不可用；重画只认挂载点，失败的那张也能点。
-        const enabled = id === 'reroll-cg' ? currentCgSlot : currentCgShown;
+        const enabled = id === 'reroll-cg' ? currentCgSlot
+            : id === 'consistency-cg' ? Boolean(current.consistencyTask) || currentCgSlot && currentCgShown && !current.illustrationPending : currentCgShown;
+        if (id === 'consistency-cg') {
+            button.title = current.consistencyTask ? '停止一致性重绘' : '角色一致性重绘';
+            button.setAttribute('aria-label', button.title);
+        }
         button.disabled = !enabled;
         button.setAttribute('aria-disabled', String(!enabled));
     }

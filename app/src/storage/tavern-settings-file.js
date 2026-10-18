@@ -116,7 +116,8 @@ export function createTavernSettingsSync(globalObject, { storage, onRestored, on
         clearTimeout(timer);
         timer = null;
         const h = headers();
-        if (stopped || !h) return false;
+        if (stopped) return false;
+        if (!h) { queueUpload(); return false; }
         let file;
         try { file = await fetchFile(); } catch { queueUpload(); return false; }
         if (stopped) return false;

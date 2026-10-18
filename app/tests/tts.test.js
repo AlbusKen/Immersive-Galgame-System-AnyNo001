@@ -287,6 +287,74 @@ test('gate: tts prefetches the next page once over the api and reuses it', async
     }
 });
 
+test('TTS 内存超限后批量淘汰，最近听过的台词继续命中', async () => {
+    const oldFetch = globalThis.fetch, oldCaches = globalThis.caches;
+    let calls = 0;
+    globalThis.caches = undefined;
+    globalThis.fetch = async () => { calls++; return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) }; };
+    const settings = { enabled: true, provider: 'api', api: { endpoint: 'https://tts.test/v1', female: 'anna' } };
+    const sa = assets({ 艾莉: GIRL }), read = index => prefetchTts(`[艾莉]：内存缓存${index}。`, settings, sa);
+    try {
+        await clearTtsCache();
+        for (let index = 0; index < 60; index++) await read(index);
+        await read(0); assert.equal(calls, 60);
+        await read(60); assert.equal(calls, 61);
+        await read(0); await read(60); assert.equal(calls, 61);
+        await read(2); assert.equal(calls, 62, '超限时释放一批旧台词');
+    } finally {
+        await clearTtsCache(); globalThis.fetch = oldFetch; globalThis.caches = oldCaches;
+    }
+});
+
+test('TTS 磁盘超限批量清至低水位，随后写入不重复清理', async () => {
+    const oldFetch = globalThis.fetch, oldCaches = globalThis.caches;
+    const records = new Map(), removed = [];
+    let calls = 0;
+    const keyOf = value => typeof value === 'string' ? value : value.url;
+    const disk = {
+        async match(key) { return records.get(keyOf(key))?.clone() || null; },
+        async put(key, response) { records.set(keyOf(key), response.clone()); },
+        async keys() { return [...records.keys()].map(url => ({ url })); },
+        async delete(key) { removed.push(keyOf(key)); return records.delete(keyOf(key)); },
+    };
+    globalThis.caches = { open: async () => disk, delete: async () => { records.clear(); return true; } };
+    globalThis.fetch = async () => { calls++; return { ok: true, arrayBuffer: async () => new ArrayBuffer(8) }; };
+    const settings = { enabled: true, provider: 'api', api: { endpoint: 'https://tts.test/v1', female: 'anna' } };
+    const sa = assets({ 艾莉: GIRL }), read = index => prefetchTts(`[艾莉]：磁盘缓存${index}。`, settings, sa);
+    try {
+        await clearTtsCache();
+        for (let index = 0; index < 301; index++) await read(index);
+        await read(299);
+        for (let index = 0; index < 30 && records.size !== 240; index++) await new Promise(resolve => setImmediate(resolve));
+        assert.equal(records.size, 240); assert.equal(removed.length, 61);
+        await read(100); assert.equal(calls, 301, '内存已淘汰的台词仍可从持久缓存读取');
+        await read(301);
+        await read(101); assert.equal(calls, 302); assert.equal(records.size, 241); assert.equal(removed.length, 61);
+    } finally {
+        await clearTtsCache(); globalThis.fetch = oldFetch; globalThis.caches = oldCaches;
+    }
+});
+
+test('清 TTS 缓存后旧生成不回填，也不删除新一轮的去重任务', async () => {
+    const oldFetch = globalThis.fetch, oldCaches = globalThis.caches, replies = [];
+    globalThis.caches = undefined;
+    globalThis.fetch = () => new Promise(resolve => replies.push(() => resolve({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) })));
+    const settings = { enabled: true, provider: 'api', api: { endpoint: 'https://tts.test/v1', female: 'anna' } };
+    const sa = assets({ 艾莉: GIRL }), read = () => prefetchTts('[艾莉]：清缓存中的台词。', settings, sa);
+    try {
+        await clearTtsCache(); const old = read();
+        for (let index = 0; index < 20 && replies.length < 1; index++) await new Promise(resolve => setImmediate(resolve));
+        assert.equal(replies.length, 1); await clearTtsCache(); const fresh = read();
+        for (let index = 0; index < 20 && replies.length < 2; index++) await new Promise(resolve => setImmediate(resolve));
+        assert.equal(replies.length, 2); replies[0](); await old;
+        const same = read(); assert.equal(replies.length, 2); replies[1](); await Promise.all([fresh, same]);
+        await read(); assert.equal(replies.length, 2);
+    } finally {
+        for (const resolve of replies) resolve();
+        await clearTtsCache(); globalThis.fetch = oldFetch; globalThis.caches = oldCaches;
+    }
+});
+
 test('gate: tts never reads the speaker name prefix', () => {
     assert.equal(stripSpeakerPrefix('*[艾莉]：他怎么在这*'), '*他怎么在这*');
     assert.equal(stripSpeakerPrefix('艾莉: 你好', '艾莉'), '你好');

@@ -193,13 +193,22 @@ test('gate:map-gen:generator-slices-work-caches-and-revokes', async () => {
     await other.promise;
     assert.equal(generator.peek(input.key), null, 'LRU evicts the oldest finished entry');
 
-    const broken = createMapBasemapGenerator({ doc: { defaultView: view }, schedule: fn => queue.push(fn), createCanvas: () => null });
+    let canvasAvailable = false, missingCanvas = 0;
+    const broken = createMapBasemapGenerator({ doc: { defaultView: view }, schedule: fn => queue.push(fn),
+        createCanvas: (w, h) => { if (!canvasAvailable) { missingCanvas++; return null; } return fakeCanvas(w, h); } });
     const failed = broken.request(input);
     while (queue.length) queue.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    canvasAvailable = true;
+    const until = Date.now() + 3000;
+    while (failed.status === 'pending' && Date.now() < until) {
+        while (queue.length) queue.shift()();
+        await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(failed.status, 'ready');
+    assert.ok(missingCanvas > 0);
     await failed.promise;
-    assert.equal(failed.status, 'failed');
-    assert.equal(failed.error, 'canvas-unavailable');
-    generator.dispose();
+    broken.dispose(); generator.dispose();
 });
 
 test('gate:map-gen:clear-cancels-encoding-and-a-late-callback-cannot-drop-the-replacement', async () => {

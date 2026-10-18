@@ -1143,6 +1143,7 @@ test('gate:character-sprite:one-click-user-protagonist-from-tavern-persona', asy
                 SillyTavern: { getContext: () => ({ name1: '阿澈', powerUserSettings: { persona_description: '  银发蓝眼，\n二十岁，{{user}}是个怕生的大学生  ' } }) },
             },
             generatedAssets: {
+                getImagePrompt: async () => ({ positive: 'persona portrait', negative: '' }),
                 generateCharacterSprite: async (input) => { seen.push(input); return { ok: true, imageId: 'made-me' }; },
             },
         },

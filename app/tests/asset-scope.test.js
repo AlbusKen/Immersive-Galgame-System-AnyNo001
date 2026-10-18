@@ -46,6 +46,33 @@ test('角色卡同名资料盖住全局，卡里没有的名字仍用全局', ()
     assert.equal(assets.scenes.教室.url, 'global-room');
 });
 
+test('本卡拥有角色时按角色整体遮蔽全局身份、衣装、别名与续画资料', async () => {
+    const { createCharacterDnaStore } = await import('../src/core/character-dna-store.js');
+    const root = { characters: { Alice: { 默认: 'global.png' }, Bob: { 默认: 'bob.png' } },
+        characterDna: { Alice: { identity: 'global identity' } },
+        characterAliases: { Alice: ['global-alias'] },
+        characterOutfits: { Alice: { 全局服装: { moods: { 平和: 'global-outfit.png' } } } },
+        characterSpriteNotes: { Alice: 'global note' },
+        generated: { characters: { Alice: { 默认: 'global-generated.png' } },
+            expressionNotes: { Alice: { 喜悦: {} }, 'Alice\\u0001全局服装': { 平和: {} }, Bob: { 平和: {} } } },
+        cards: { 'card:Current': { characters: { Alice: {} }, characterSpriteNotes: { Alice: 'my note' } } } };
+    const before = structuredClone(root);
+    const effective = effectiveSceneAssets(root, 'card:Current');
+    assert.deepEqual(effective.characters.Alice, {});
+    for (const field of ['characterDna', 'characterAliases', 'characterOutfits']) assert.equal(effective[field].Alice, undefined);
+    assert.equal(effective.generated.characters.Alice, undefined);
+    assert.deepEqual(effective.generated.expressionNotes, { Bob: { 平和: {} } });
+    assert.equal(effective.characterSpriteNotes.Alice, 'my note');
+    assert.equal(effective.characters.Bob.默认, 'bob.png');
+    const target = createCharacterDnaStore({ readAssets: () => root,
+        readContext: () => ({ name2: 'Current' }), saveAssets: () => ({ ok: true }) }).capture('Alice');
+    assert.equal(target.owner, 'card:Current');
+    assert.equal(target.dna.identity, '');
+    assert.deepEqual(root, before, '读取不能复制全局资料到本卡或改变原库');
+    normalizeAssetCards(root);
+    assert.equal(root.cards['card:Current'].characterSpriteNotes.Alice, 'my note');
+});
+
 test('把角色从全局收进角色卡后，素材跟着进卡，别的卡看不到', () => {
     const assets = {
         characters: { 小雪: { 默认: 'snow' } },

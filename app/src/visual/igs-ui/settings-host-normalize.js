@@ -13,6 +13,8 @@ import { normalizeSpriteHeads } from './fx-anchor.js';
 import { normalizeGeneratedLibrary } from '../../scene/asset-match.js';
 import { normalizeCharacterDnaMap } from '../../scene/character-dna.js';
 import { normalizeCharacterOutfits, normalizeWardrobe } from '../../scene/character-outfits.js';
+import { normalizeCharacterDefaultOutfits } from '../../scene/character-appearance.js';
+import { normalizeCharacterSeeds } from '../../scene/generation-seeds.js';
 import { normalizeMoodGroups } from '../../scene/mood-groups.js';
 import { normalizeAutoIllustrationSettings } from '../../generated-images/illustration/auto-illustration-settings.js';
 import { normalizeSettingsTheme } from './settings-theme.js';
@@ -36,6 +38,7 @@ import { TYPEWRITER_DEFAULTS, normalizeTypewriterSettings } from './typewriter-r
 import { normalizeChatShowSettings } from './chat-show-runtime.js';
 import { normalizeSystemRoleSettings } from './system-role.js';
 import { normalizePromptPlacement } from './tag-grammar.js';
+import { normalizeImageCacheCount } from '../../media/tavern-image-cache.js';
 
 export function normalizeBridgeConfig(bridge) {
     // 不改入参、不深拷：入参可能是存储里共享的只读配置。改到哪层就浅拷哪层，没动的子树（素材库）原样共享。
@@ -49,6 +52,9 @@ export function normalizeBridgeConfig(bridge) {
     normalized.sentencePaging = normalizeBoolean(normalized.sentencePaging, false);
     normalized.dialogueSentencePaging = normalizeBoolean(normalized.dialogueSentencePaging, false);
     normalized.imageApi = normalizeImageApi(normalized.imageApi);
+    normalized.imageCache = { ...normalized.imageCache,
+        maxCount: normalizeImageCacheCount(normalized.imageCache?.maxCount),
+        compressDisplay: normalized.imageCache?.compressDisplay === true };
     normalized.sceneAssets = normalizeSceneAssets(normalized.sceneAssets);
     normalized.vnTheme = normalizeVnTheme(normalized.vnTheme);
     normalized.entry = normalizeEntryConfig(normalized.entry);
@@ -89,6 +95,8 @@ export function normalizeImageApi(value) {
         ? normalized.availableModels.filter(Boolean)
         : [];
     normalized.dbgenSpriteTransparent = normalized.dbgenSpriteTransparent !== false;
+    normalized.naiSpriteTransparent = normalized.naiSpriteTransparent !== false;
+    normalized.externalSpriteDna = normalized.externalSpriteDna === true;
     return normalized;
 }
 
@@ -147,7 +155,11 @@ export function normalizeSceneAssets(value) {
         normalized.characterAliases[characterName] = nextAliases;
     }
     normalized.characterDna = normalizeCharacterDnaMap(normalized.characterDna);
+    if (Object.hasOwn(normalized, 'characterSeeds')) normalized.characterSeeds = normalizeCharacterSeeds(normalized.characterSeeds);
     normalized.characterOutfits = normalizeCharacterOutfits(normalized.characterOutfits);
+    if (Object.hasOwn(normalized, 'characterDefaultOutfits')) {
+        normalized.characterDefaultOutfits = normalizeCharacterDefaultOutfits(normalized.characterDefaultOutfits);
+    }
     normalized.characterHouses = normalizeCharacterHouses(normalized.characterHouses);
     normalized.characterVoices = normalizeCharacterVoices(normalized.characterVoices);
     normalized.characterSpriteScales = normalizeCharacterSpriteScales(normalized.characterSpriteScales);

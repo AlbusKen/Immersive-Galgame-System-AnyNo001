@@ -45,8 +45,8 @@ test('immutable-store: 对外的配置是副本，改了不影响内部', () => 
     const vn = boot();
     try {
         const a = vn.getUnifiedSettings({ mode: 'pc' });
-        a.bridge.sceneAssets.characters.小雪.喜悦 = 'mutated';
-        assert.equal(vn.getUnifiedSettings({ mode: 'pc' }).bridge.sceneAssets.characters.小雪.喜悦, 'x.png');
+        a.bridge.sceneAssets.characterOutfits.小雪.初始衣装.moods.喜悦 = 'mutated';
+        assert.equal(vn.getUnifiedSettings({ mode: 'pc' }).bridge.sceneAssets.characterOutfits.小雪.初始衣装.moods.喜悦, 'x.png');
     } finally {
         vn.destroy();
     }

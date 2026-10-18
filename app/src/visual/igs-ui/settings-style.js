@@ -1,6 +1,4 @@
-import {
-    IGS_UI_FONT_SANS, IGS_UI_RADIUS, igsUiLiquidRule,
-} from '../../styles/ui-material.js';
+import { IGS_UI_FONT_SANS, IGS_UI_RADIUS, igsUiLiquidRule } from '../../styles/ui-material.js';
 import { SETTINGS_THEME_BASE, SETTINGS_THEME_OPTIONS, getSettingsThemePalette, settingsThemeVars } from './settings-theme.js';
 import { OUTFIT_SETTINGS_STYLE_TEXT } from './settings-outfit-fields.js';
 import { SETTINGS_NOTICE_STYLE_TEXT } from './settings-notice.js';
@@ -153,11 +151,22 @@ ${THEMED.map(([value, palette]) => `${themeSelector(value)}::before{opacity:${pa
 .igs-reader-text-effect-options>.igs-settings-field{min-width:0}
 .igs-settings-grid[data-reader-pane="dialog"] .igs-gradient-veil-settings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px;min-width:0}
 .igs-source-filter textarea{min-height:76px}
+[data-image-prompt-panel]{min-width:0}
+.igs-settings-actions,[data-image-prompt-panel] .igs-image-prompt-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.igs-settings-actions>.igs-settings-action{flex:0 0 auto;white-space:nowrap}
+[data-image-prompt-panel] .igs-settings-field input[type="checkbox"]{width:20px;min-height:20px;align-self:flex-start;accent-color:var(--igs-settings-accent);border:0}
+[data-image-prompt-panel] details>summary{overflow-wrap:anywhere}
+[data-image-prompt-panel] .igs-perf-group-body{padding:0 0 8px}
+[data-image-prompt-panel] textarea{min-height:132px}
+
 .igs-dna-editor{margin:6px 0;min-width:0}
 .igs-dna-summary{cursor:pointer;font-size:12px;color:var(--igs-settings-ink);opacity:.78;user-select:none}
-.igs-dna-fields{display:grid;gap:6px;margin-top:6px;min-width:0}
+.igs-dna-protocol{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;margin:4px 0;font-size:12px}
+.igs-dna-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:6px;min-width:0}
 .igs-dna-field{display:grid;gap:4px;min-width:0}
+.igs-dna-field.is-wide{grid-column:1/-1}
 .igs-dna-input{width:100%;box-sizing:border-box;min-height:44px;resize:vertical;line-height:1.5}
+@media (max-width:640px){.igs-dna-fields{grid-template-columns:minmax(0,1fr)}}
 details.igs-settings-sub>summary{cursor:pointer;font-size:12px;color:var(--igs-settings-ink);opacity:.78;user-select:none}
 details.igs-settings-sub[open]>summary{margin-bottom:4px}
 details[data-image-feature="llm-prompts"] textarea{min-height:220px}

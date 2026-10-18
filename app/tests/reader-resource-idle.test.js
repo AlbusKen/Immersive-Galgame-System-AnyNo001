@@ -188,12 +188,14 @@ test('gate:reader:generated-image-retained-by-cache-announces-ready-and-stops', 
 });
 
 test('gate:reader:ordinary-unpinned-images-still-follow-lru', async t => {
-    const cache = createLocalImageCache({}, { maxCount: 2 });
+    const cache = createLocalImageCache({}, { maxCount: 3 });
     t.after(() => cache.destroy());
     cache.remember('one', pixel('one')); cache.remember('two', pixel('two'));
+    cache.remember('older', pixel('older'));
     assert.equal(cache.peek('one'), pixel('one'));
     cache.remember('three', pixel('three'));
     assert.equal(cache.peek('two'), '');
+    assert.equal(cache.peek('older'), '');
     assert.equal(cache.peek('one'), pixel('one'));
     assert.equal(cache.peek('three'), pixel('three'));
 });

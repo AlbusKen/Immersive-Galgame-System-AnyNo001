@@ -7,6 +7,7 @@ import { STAGE_CAST_SCAN_LIMIT } from '../../scene/stage-cast.js';
 import { normalizeStageCastSettings } from './stage-direction-settings.js';
 import { isSystemRole } from './system-role.js';
 import { lastBefore } from './reader-floor-plan.js';
+import { resolveReaderSpriteAsset } from './reader-sprite-asset.js';
 
 // 页计划里的只有引用和命中结果。图像字节及 blob 生命周期仍属于中央媒体缓存。
 function createAssetLookup(initialContext) {
@@ -36,9 +37,10 @@ function createAssetLookup(initialContext) {
             isMissingImage: probe(context.isMissingImage, 30000),
             isUnavailableImage: probe(context.isUnavailableImage, 1500),
             tempSprite: temporary(context.tempSprite, 'sprite'),
+            tempSpriteForOutfit: temporary(context.tempSpriteForOutfit, 'sprite'),
             tempBackground: temporary(context.tempBackground, 'background'),
             tempSceneTime: temporary(context.tempSceneTime, 'background') };
-        const hit = kind === 'sprite' ? resolveSpriteAsset(args[0], args[1], ctx, args[2])
+        const hit = kind === 'sprite' ? resolveReaderSpriteAsset(args[0], args[1], ctx, args[2])
             : kind === 'nude' ? resolveNudeSpriteAsset(args[0], args[1], ctx)
                 : resolveBackgroundAsset(args[0], ctx);
         if (hit.url) dependencies.add(hit.url);

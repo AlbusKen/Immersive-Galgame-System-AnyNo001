@@ -28,8 +28,9 @@ async function setup(clearResult = { ok: true }) {
         illustrationStore: counted, photoStore, marksStore, indexStore, now: () => 't',
         clearIllustration: async (id) => {
             cleared.push(id);
-            if (clearResult.ok) await illustrationStore.deleteSlot(`${id.chatId}|${id.messageId}|${id.swipeId}`, id.slot);
-            return clearResult;
+            const result = typeof clearResult === 'function' ? clearResult() : clearResult;
+            if (result.ok) await illustrationStore.deleteSlot(`${id.chatId}|${id.messageId}|${id.swipeId}`, id.slot);
+            return result;
         },
     });
     return { library, raw, illustrationStore, indexStore, photoStore, marksStore, cleared, reads };
@@ -73,22 +74,25 @@ test('cg-library:sync-drops-vanished-slots-and-picks-up-ones-written-elsewhere',
     assert.equal(keys.includes('chat|4|1|1'), false);
 });
 
-test('cg-library:a-store-that-never-answers-ends-with-a-named-reason-not-a-hang', async () => {
+test('cg-library:slow-storage-keeps-the-original-read-and-delivers-its-late-result', { timeout: 3000 }, async () => {
     const { indexStore, photoStore } = await setup();
-    await indexStore.putMany([{ key: 'chat|3|0|1', kind: 'cg', chatId: 'chat', messageId: 3, swipeId: 0, slot: 1, updatedAt: at(3), ready: true, hidden: false, favorite: false }]);
-    const never = new Promise(() => {});
+    let release, reads = 0, finished = false;
+    const slow = new Promise(resolve => { release = resolve; });
     const library = createCgLibrary({
-        illustrationStore: { listSlotKeys: () => never, getSlotRecord: () => never },
-        photoStore, indexStore, timeouts: { keys: 30, batch: 30, index: 30, write: 30 },
+        illustrationStore: { listSlotKeys: async () => { await slow; return ['chat|3|0|1']; },
+            getSlotRecord: async () => { reads++; await slow; return { status: 'done', dataUrl: PNG('late') }; } },
+        photoStore, indexStore, timeouts: { keys: 5, batch: 5, index: 5, write: 5 },
     });
-    const started = Date.now();
-    const synced = await library.syncIndex();
-    assert.ok(Date.now() - started < 1000);
-    assert.equal(synced.ok, false);
-    assert.equal(synced.reason, 'keys-timeout');
-    assert.deepEqual(filterCgEntries(synced.entries, {}).map((e) => e.key), ['chat|3|0|1', 'photo|p1'], 'what the catalog already had stays visible');
-    const full = await library.readFull(synced.entries.find((e) => e.key === 'chat|3|0|1'));
-    assert.deepEqual(full, { ok: false, reason: 'batch-timeout' });
+    const pending = library.syncIndex().then(result => { finished = true; return result; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(finished, false);
+    release();
+    const synced = await pending;
+    assert.equal(synced.ok, true);
+    assert.equal(reads, 1);
+    const full = await library.readFull(synced.entries.find(e => e.key === 'chat|3|0|1'));
+    assert.deepEqual(full, { ok: true, dataUrl: PNG('late') });
+    assert.equal(reads, 2);
 });
 
 test('cg-library:a-broken-catalog-database-still-lists-every-cg', async () => {
@@ -120,8 +124,10 @@ test('cg-library:missing-record-and-unreadable-file-say-why', async () => {
     await raw.deleteSlot('chat|3|0', 1);
     assert.deepEqual(await library.readFull(entry), { ok: false, reason: 'missing' });
     await raw.putSlot('path|1|0', { slot: 1, status: 'done', dataUrl: 'user/images/igs-cg/x.png' });
-    const withFiles = createCgLibrary({ illustrationStore: { ...raw, hydrateSlot: async () => ({ dataUrl: '' }) } });
-    assert.deepEqual(await withFiles.readFull({ key: 'path|1|0|1', kind: 'cg' }), { ok: false, reason: 'file-unreadable' });
+    let hydrates = 0;
+    const withFiles = createCgLibrary({ illustrationStore: { ...raw, hydrateSlot: async () => ({ dataUrl: ++hydrates === 1 ? '' : PNG('restored') }) } });
+    assert.deepEqual(await withFiles.readFull({ key: 'path|1|0|1', kind: 'cg' }), { ok: true, dataUrl: PNG('restored') });
+    assert.equal(hydrates, 2);
 });
 
 test('cg-library:hide-and-favorite-write-their-own-store-and-survive-a-rebuild', async () => {
@@ -151,12 +157,14 @@ test('cg-library:remove-clears-the-floor-cg-and-its-catalog-entry', async () => 
     assert.deepEqual(batch, { ok: true, removed: 1, failed: 0, keys: ['photo|p1'] });
 });
 
-test('cg-library:failed-remove-keeps-the-entry', async () => {
-    const { library, indexStore } = await setup({ ok: false, reason: 'boom' });
+test('cg-library:failed-remove-resumes-and-finishes-without-another-click', async () => {
+    let attempts = 0;
+    const { library, indexStore } = await setup(() => ++attempts === 1 ? { ok: false, reason: 'boom' } : { ok: true });
     const synced = await library.syncIndex();
     const entry = synced.entries.find((e) => e.key === 'other|5|0|2');
-    assert.deepEqual(await library.remove(entry), { ok: false, reason: 'boom' });
-    assert.equal((await indexStore.getAll()).some((e) => e.key === 'other|5|0|2'), true);
+    assert.deepEqual(await library.remove(entry), { ok: true });
+    assert.equal((await indexStore.getAll()).some((e) => e.key === 'other|5|0|2'), false);
+    assert.equal(attempts, 2);
 });
 
 test('cg-library:remove-all-clears-every-ready-entry', async () => {
@@ -177,7 +185,9 @@ test('cg-library:capture-adds-the-photo-and-trims-without-downloading-images', a
     assert.equal((await library.capturePhoto({ caption: '合影', chatId: 'c', messageId: 3 })).ok, true);
     assert.ok((await indexStore.getAll()).some((e) => e.key === 'photo|q1' && e.ready));
     assert.deepEqual(listCalls, [{ deferImages: true }]);
-    assert.equal((await createCgLibrary({ photoStore, compose: async () => '' }).capturePhoto({})).ok, false);
+    let attempts = 0;
+    assert.equal((await createCgLibrary({ photoStore, compose: async () => ++attempts === 1 ? '' : 'data:image/jpeg;base64,AAAA' }).capturePhoto({})).ok, true);
+    assert.equal(attempts, 2);
 });
 
 test('cg-library:keys-parse-from-the-right-and-pages-slice', () => {

@@ -16,6 +16,19 @@ import {
 import { FX_SETTINGS_NORMALIZERS, FX_WORD_LIST_PATHS } from '../src/visual/igs-ui/fx-settings.js';
 import { measureClassicReveal, punctuationPauseAfter } from '../src/visual/igs-ui/typewriter-classic.js';
 
+test('解码标记超限后批量淘汰，最近显示的图片不重新解码', async () => {
+    const { decodeSpriteImage } = await import('../src/visual/igs-ui/stage-direction-runtime.js?batch-fixture');
+    let decoded = 0;
+    const doc = { defaultView: { Image: class { decode() { decoded++; return Promise.resolve(); } } } };
+    const timers = { schedule: () => 1, clear() {} };
+    for (let index = 0; index < 64; index++) await decodeSpriteImage(doc, `batch:${index}`, timers);
+    assert.equal(decodeSpriteImage(doc, 'batch:0', timers), null);
+    await decodeSpriteImage(doc, 'batch:64', timers); assert.equal(decoded, 65);
+    assert.equal(decodeSpriteImage(doc, 'batch:0', timers), null);
+    await decodeSpriteImage(doc, 'batch:2', timers); assert.equal(decoded, 66);
+    assert.equal(decodeSpriteImage(doc, 'batch:64', timers), null);
+});
+
 function makeStyle() {
     const vars = new Map();
     return {

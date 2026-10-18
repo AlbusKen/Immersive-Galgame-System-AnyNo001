@@ -1,6 +1,10 @@
 // 生图提示词公共模块：CG 插图与素材补全共用的 LLM 规则、防拦截重试、内置 NAI 模板与词典。
 // 只服务 NovelAI 结构化 caption，按契约放在 generated-images 而不是通用 prompts。
 import { BUILTIN_PROMPTS, SCENE_DICTIONARY } from '../prompt-registry.js';
+import { prepareImageWritingRequest } from '../image-prompt-runtime.js';
+import { SecondaryLlmError, secondaryLlmFailure } from '../../host/secondary-llm-result.js';
+import { recoverOperation } from '../../storage/automatic-recovery.js';
+import { imageTaskState } from '../image-task-runtime.js';
 
 export const TAG_WRITING_RULES = [
     'tag 用英文小写逗号分隔，遵循 danbooru 标签习惯，可用 NovelAI 权重语法（如 1.2::red hair::）。',
@@ -45,17 +49,127 @@ export const NSFW_NEGATIVE_GUARD = '';
 const describeError = (error) => (error && error.message) || String(error || '未知错误');
 const snippet = (text) => String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
 
-export async function requestWithSoftRetry(llm, { system, user, softSystem, softUser, parse }, llmSettings) {
+export async function requestWithSoftRetry(llm, options, llmSettings) {
+    const execute = (guarded, lease) => {
+        let recoveryFeedback = '', invalidOutput = null, preparedRequest = guarded.preparedRequest, dispatched = false;
+        let presetEpoch = lease?.state?.presetEpoch ?? llm.readImageTaskState?.()?.presetEpoch;
+        const settings = { ...(lease?.state?.config?.autoIllustration?.llm || llmSettings || {}) };
+        const refreshRejectedSettings = async result => {
+            const latestState = llm.readImageTaskState?.();
+            if ((invalidOutput || !dispatched) && latestState?.presetEpoch !== presetEpoch
+                && (guarded.imagePrompt || guarded.reprepare)) {
+                const held = imageTaskState(guarded);
+                if (held) {
+                    held.promptPreset = structuredClone(latestState.promptPreset);
+                    held.presetEpoch = latestState.presetEpoch;
+                }
+                const next = guarded.reprepare ? await guarded.reprepare() : null;
+                if (next && !next.ok) return false;
+                preparedRequest = next?.request;
+                presetEpoch = latestState?.presetEpoch;
+                recoveryFeedback = '';
+                correctedFailures.clear();
+                return true;
+            }
+            const unconfigured = result?.reason === 'llm-config-unset';
+            if (!invalidOutput && !unconfigured && !result?.diagnostic?.rejected
+                && ![400, 401, 402, 403, 404, 422].includes(result?.status)) return false;
+            const latest = latestState?.config?.autoIllustration?.llm;
+            if (!latest) return false;
+            const keys = ['apiKey', 'endpoint', 'transport', 'source'];
+            if (invalidOutput || unconfigured || result?.diagnostic?.field === 'model') keys.push('model');
+            const changed = keys.some(key => settings[key] !== latest[key]);
+            if (changed) {
+                const held = imageTaskState(guarded)?.config?.autoIllustration?.llm;
+                for (const key of keys) {
+                    settings[key] = latest[key];
+                    if (held) held[key] = latest[key];
+                }
+            }
+            return changed;
+        };
+        const correctedFailures = new Set();
+        return recoverOperation(() => {
+            invalidOutput = null;
+            dispatched = false;
+            return requestSoft(llm, { ...guarded, recoveryFeedback, preparedRequest,
+                onDispatch: () => { dispatched = true; },
+                onPrepared: request => { preparedRequest = structuredClone(request); },
+                onInvalidOutput: (text, parsed) => { invalidOutput = { text, parsed }; } },
+                settings);
+        }, {
+            signal: guarded.signal,
+            global: llm.recoveryGlobal || globalThis,
+            retryUnchanged: false,
+            shouldRecover: result => result?.reason !== 'llm-config-unset'
+                || typeof llm.readImageTaskState === 'function',
+            onRecover: event => guarded.onRecovery?.(event),
+            canResume: result => refreshRejectedSettings(result),
+            isActive: () => !guarded.shouldStart || guarded.shouldStart(),
+            repair: async result => {
+                if (!invalidOutput) return { changed: await refreshRejectedSettings(result) };
+                const diagnosis = invalidOutput.parsed?.diagnostic || invalidOutput.parsed?.diagnostics || {};
+                const failure = JSON.stringify([invalidOutput.parsed?.reason || 'invalid-output',
+                    diagnosis.field, diagnosis.issue, diagnosis.slotId, diagnosis.captionIndex]);
+                if (correctedFailures.has(failure)) return { changed: await refreshRejectedSettings(result) };
+                correctedFailures.add(failure);
+                const field = diagnosis.field;
+                recoveryFeedback = '请重新交付本次任务的完整结果，逐项采用原请求中的角色、槽号与输出格式。'
+                    + (typeof field === 'string' && /^[A-Za-z0-9_.[\]-]{1,100}$/.test(field)
+                        ? `本次补齐并核对字段 ${field}。` : '')
+                    + `\n上一份需要修正的输出：\n${invalidOutput.text}`;
+                return { changed: true };
+            },
+        });
+    };
+    return options.imagePrompt && typeof llm?.runImageTask === 'function'
+        ? llm.runImageTask(options, execute) : execute(options);
+}
+
+async function requestSoft(llm, { system, user, softSystem, softUser, parse, imagePrompt, signal, shouldStart, recoveryFeedback,
+    onInvalidOutput, preparedRequest, onPrepared, onRecovery, onDispatch, validateSettings }, llmSettings) {
+    const stale = () => signal?.aborted || (typeof shouldStart === 'function' && !shouldStart());
+    const cancelled = () => ({ ok: false, reason: 'request-stale', stopGeneration: true, error: '写词任务已取消或目标失效' });
+    if (stale()) return cancelled();
+    const ready = validateSettings?.(llmSettings);
+    if (ready?.ok === false) return { ...ready, reason: 'llm-config-unset' };
+    const prepared = preparedRequest ? { ok: true, request: structuredClone(preparedRequest) }
+        : imagePrompt ? await prepareImageWritingRequest(llm, imagePrompt.task,
+        { ...imagePrompt.input, ...(signal && { signal }), ...(shouldStart && { shouldStart }) },
+        { system, user }) : { ok: true, request: { system, user } };
+    if (!prepared.ok) return prepared;
+    if (!preparedRequest) onPrepared?.(prepared.request);
+    if (recoveryFeedback) {
+        if (Array.isArray(prepared.request.messages)) prepared.request.messages = [
+            ...prepared.request.messages, { role: 'user', content: recoveryFeedback }];
+        else prepared.request.user = `${prepared.request.user || ''}\n${recoveryFeedback}`;
+    }
+    if (stale()) return cancelled();
+    const settings = { ...llmSettings, ...(signal && { signal }), onSlow: () => onRecovery?.({ phase: 'slow' }) };
+    const ordered = Object.hasOwn(prepared.request, 'messages');
     let first = '';
     let firstError = '';
+    let parseFailure;
     try {
-        first = await llm.request({ system, user }, llmSettings);
+        onDispatch?.();
+        first = await llm.request(prepared.request, settings);
+        if (stale()) return cancelled();
         const parsed = parse(first);
         if (parsed.ok) return { ...parsed, soft: false };
+        parseFailure = parsed;
+        onInvalidOutput?.(first, parsed);
     } catch (error) {
+        if (error instanceof SecondaryLlmError || ['request-stale', 'request-timeout'].includes(error?.reason)) return {
+            ...secondaryLlmFailure(error), ...(ordered && { stopGeneration: true }), soft: false };
         first = '';
         firstError = describeError(error);
     }
+    if (stale()) return cancelled();
+    if (ordered) return {
+        ok: false, reason: parseFailure?.reason || 'image-prompt-write-failed', stopGeneration: true,
+        error: parseFailure?.error || (firstError ? '副 LLM 写词请求失败，未继续绘图' : '副 LLM 未返回合法图像字段，未继续绘图'),
+        ...(parseFailure?.diagnostic && { diagnostic: parseFailure.diagnostic }), soft: false,
+    };
     if (!softSystem || (!looksLikeRefusal(first) && first) || firstError) {
         const error = firstError
             ? `副 LLM 请求失败：${firstError}`
@@ -63,10 +177,13 @@ export async function requestWithSoftRetry(llm, { system, user, softSystem, soft
         return { ok: false, error, soft: false };
     }
     try {
-        const second = await llm.request({ system: softSystem, user: softUser || user }, llmSettings);
+        if (stale()) return cancelled();
+        const second = await llm.request({ system: softSystem, user: softUser || user }, settings);
+        if (stale()) return cancelled();
         const parsed = parse(second);
         return parsed.ok ? { ...parsed, soft: true } : { ok: false, error: `副 LLM 拒绝生成标签：${snippet(second) || '返回为空'}`, soft: true };
     } catch (error) {
+        if (error instanceof SecondaryLlmError || ['request-stale', 'request-timeout'].includes(error?.reason)) return { ...secondaryLlmFailure(error), soft: true };
         return { ok: false, error: `副 LLM 请求失败：${describeError(error)}`, soft: true };
     }
 }

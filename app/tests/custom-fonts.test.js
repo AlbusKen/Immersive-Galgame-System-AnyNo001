@@ -60,27 +60,32 @@ test('gate:fonts:upload-validates-and-posts-to-tavern-files', async () => {
     assert.match(ok.font.path, /^\/user\/files\/igs-font-/);
     assert.equal(ok.font.label, '圆圆体');
     assert.match(ok.font.family, /^IGSUserFont-/);
-    const offline = await uploadFontFile({}, file('a.ttf'));
-    assert.equal(offline.ok, false);
+    const controller = new AbortController();
+    const offline = uploadFontFile({}, file('a.ttf'), { signal: controller.signal });
+    controller.abort();
+    assert.equal((await offline).cancelled, true);
 });
 
-test('gate:fonts:register-once-per-document-and-retry-on-failure', async () => {
+test('gate:fonts:register-once-per-document-and-recover-without-render', async () => {
     const added = [];
     let fail = true;
+    let loaded;
+    const ready = new Promise(resolve => { loaded = resolve; });
     class FakeFace {
         constructor(family, src) { this.family = family; this.src = src; }
-        load() { return fail ? Promise.reject(new Error('404')) : Promise.resolve(this); }
+        load() { if (fail) return Promise.reject(new Error('temporary-network-error')); loaded(); return Promise.resolve(this); }
     }
     const doc = { defaultView: { FontFace: FakeFace }, fonts: { add: (f) => added.push(f), delete: () => {} } };
     const fonts = [{ id: 'a', label: 'A', family: 'IGSUserFont-A-a', path: '/user/files/igs-font-a.ttf', format: 'ttf' }];
     registerCustomFonts(doc, fonts);
     registerCustomFonts(doc, fonts);
-    assert.equal(added.length, 1, '加载中不重复注册');
+    assert.equal(added.length, 0, '先完成读取，加载中不注册失败的 FontFace');
     await new Promise((r) => setTimeout(r, 0));
     fail = false;
-    registerCustomFonts(doc, fonts);
-    assert.equal(added.length, 2, '加载失败后下次重试');
-    assert.equal(added[1].src, 'url("/user/files/igs-font-a.ttf")');
+    await ready;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(added.length, 1, '读取恢复后只注册成功的 FontFace，无需重绘');
+    assert.equal(added[0].src, 'url("/user/files/igs-font-a.ttf")');
 });
 
 test('gate:assets:purge-asset-cache-clears-thumbnails', async () => {
