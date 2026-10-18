@@ -1,4 +1,4 @@
-import { recoverOperation, linkRecoverySignals } from '../../storage/automatic-recovery.js';
+import { recoverOperation, linkRecoverySignals, RECOVERY_ATTEMPTS } from '../../storage/automatic-recovery.js';
 import { requireMediaCache } from '../../media/media-cache-owner.js';
 import { createAssetRecordCache } from '../../media/asset-record-cache.js';
 import { IMAGE_FIELDS, isImageData } from '../../media/image-identity.js';
@@ -220,7 +220,7 @@ export function createAssetGenerationService(deps) {
         if (cache.peek(imageKey(id))) { failedImages.delete(id); return null; }
         const failure = failedImages.get(id);
         if (failure && failure.token !== cache.token(imageKey(id))) { failedImages.delete(id); return null; }
-        return failure || null;
+        return failure?.retryReady ? null : failure || null;
     }
     const isMissingImage = url => imageFailure(url)?.missing === true;
     const hasMissingImages = () => [...failedImages.values()].some(value => value.missing);
@@ -228,18 +228,26 @@ export function createAssetGenerationService(deps) {
     const hasUnavailableImages = () => failedImages.size > 0;
     function noteImageFailure(id, error) {
         const missing = ['image-file-not-found', 'image-empty'].includes(error.message);
-        const existed = failedImages.has(id);
-        failedImages.set(id, { missing, reason: error.message || 'image-read-failed', token: cache.token(imageKey(id)) });
+        const previous = failedImages.get(id), token = cache.token(imageKey(id));
+        const existed = Boolean(previous);
+        const attempts = error?.result?.recoveryStopped ? RECOVERY_ATTEMPTS
+            : previous?.token === token ? (previous.attempts || 0) + 1 : 1;
+        failedImages.set(id, { missing, reason: error.message || 'image-read-failed', token, attempts, retryReady: false });
         if (!existed) emit({ imageId: id, reason: missing ? 'image-lost' : 'image-unavailable' });
-        if (!missing && !imageRecoveryTimer) {
-            imageRecoveryTimer = setTimeout(() => { imageRecoveryTimer = null; retryImageReads(); }, 1000);
+        if (!missing && attempts < RECOVERY_ATTEMPTS && !imageRecoveryTimer) {
+            imageRecoveryTimer = setTimeout(() => { imageRecoveryTimer = null; retryImageReads(false); }, 1000);
             imageRecoveryTimer?.unref?.();
         }
     }
-    function retryImageReads() {
+    function retryImageReads(reconnected = true) {
         if (stopped || !failedImages.size) return;
-        failedImages.clear();
-        emit({ reason: 'image-retry-ready' });
+        let ready = false;
+        for (const [id, failure] of [...failedImages]) {
+            if (failure.missing || (!reconnected && failure.attempts >= RECOVERY_ATTEMPTS)) continue;
+            failedImages.set(id, { ...failure, ...(reconnected && { attempts: 0 }), retryReady: true });
+            ready = true;
+        }
+        if (ready) emit({ reason: 'image-retry-ready' });
     }
 
     async function persistTempRecord(record) {

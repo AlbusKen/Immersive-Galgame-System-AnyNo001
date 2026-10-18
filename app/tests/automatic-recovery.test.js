@@ -233,14 +233,63 @@ test('保存持续失败时主动续存并显示原因，恢复后复用原图�
     let calls = 0;
     const result = await recoverOperation(() => {
         calls++;
-        if (calls < 4) throw Object.assign(new Error('浏览器存储空间不足'), { name: 'QuotaExceededError', code: 22 });
+        if (calls < 3) throw Object.assign(new Error('浏览器存储空间不足'), { name: 'QuotaExceededError', code: 22 });
         return { ok: true, image: 'original' };
     }, { global, repeatable: 'save', wait: async () => {} });
     assert.equal(result.image, 'original');
-    assert.equal(calls, 4);
+    assert.equal(calls, 3);
     assert.ok(snapshots.some(entries => entries.some(entry => entry.page === 'data' && /存储空间不足.*续存原结果/.test(entry.message))));
     assert.deepEqual(snapshots.at(-1), []);
     off();
+});
+
+for (const mode of ['repeatable', 'observe', 'repair']) test(`持续故障有界：${mode}共用三次预算，停止后不再执行`, { timeout: 2000 }, async () => {
+    let calls = 0;
+    const run = () => { calls++; return { ok: false, reason: 'same-failure' }; };
+    const options = { global: {}, wait: () => new Promise(resolve => setImmediate(resolve)),
+        ...(mode === 'repeatable' ? { repeatable: 'save' }
+            : mode === 'observe' ? { observe: async () => ({ completed: false, value: run() }) }
+                : { repair: () => ({ changed: true }) }) };
+    const result = await recoverOperation(run, options);
+    assert.equal(result.reason, 'recovery-exhausted');
+    assert.equal(result.recoveryStopped, true);
+    assert.equal(result.diagnostic.attempts, 3);
+    assert.equal(calls, 3);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 3);
+});
+
+test('嵌套恢复共用失败终态：底层读取耗尽后不会被包装错误再读一轮', { timeout: 2000 }, async () => {
+    let calls = 0;
+    const inner = () => recoverOperation(() => { calls++; throw new Error('read-failed'); },
+        { repeatable: 'read', wait: () => new Promise(resolve => setImmediate(resolve)) });
+    await assert.rejects(recoverOperation(async () => {
+        try { await inner(); } catch (cause) { throw new Error('wrapped-read', { cause }); }
+    }, { repeatable: 'read' }), error => error.cause.result.recoveryStopped === true);
+    assert.equal(calls, 3);
+});
+
+test('存储满后停止写入并保留原任务，真实清理后续存，无关通知不重试', { timeout: 2000 }, async t => {
+    const global = {}, controller = new AbortController();
+    t.after(() => controller.abort());
+    let calls = 0, writable = false, waiting;
+    const entered = new Promise(resolve => { waiting = resolve; });
+    const pending = recoverOperation(() => {
+        calls++;
+        if (!writable) throw Object.assign(new Error('存储空间不足'), { name: 'QuotaExceededError' });
+        return { ok: true, image: 'original-image' };
+    }, { global, signal: controller.signal, repeatable: 'save',
+        wait: () => new Promise(resolve => setImmediate(resolve)),
+        onRecover: event => { if (event.message.includes('已停止重复写入')) waiting(); } });
+    await entered;
+    assert.equal(calls, 3);
+    wakeRecoveringOperations(global);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 3);
+    writable = true;
+    wakeRecoveringOperations(global, { type: 'storage-capacity-changed' });
+    assert.equal((await pending).image, 'original-image');
+    assert.equal(calls, 4);
 });
 
 test('媒体请求：响应头错误及响应体损坏后原请求自动恢复', async () => {

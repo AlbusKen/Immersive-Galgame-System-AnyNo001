@@ -211,7 +211,7 @@ export function createTavernHelperAdapter(globalObject = globalThis.window || gl
                 const result = sendViaHostDom(globalObject, text);
                 dispatched = result.ok || result.reason === 'host-dom-send-failed';
                 return result;
-            }, { global: globalObject, initialDelayMs: 500, observe: observed,
+            }, { global: globalObject, initialDelayMs: 500, observe: observed, passiveObservation: true,
                 waitFor: () => ({ message: dispatched
                     ? '消息已交给酒馆，正在读取原消息的发送回执；确认后自动继续，本条消息保持单次发送。'
                     : '酒馆发送入口暂未就绪，正在读取输入框与发送按钮状态；就绪后自动发送已输入的内容。' }),

@@ -1,12 +1,22 @@
 // 原操作持有输入和已完成步骤；再次执行必须有修复进展或真实的环境变更。
 const recoverySignals = new WeakMap();
+export const RECOVERY_ATTEMPTS = 3;
+
+function failureFrom(error) {
+    const seen = new Set();
+    for (let current = error; current && !seen.has(current); current = current.cause) {
+        seen.add(current);
+        if (current.result?.recoveryStopped) return current.result;
+    }
+    return error?.result;
+}
 const recoverySignalFor = global => {
-    if (!recoverySignals.has(global)) recoverySignals.set(global, { revision: 0, listeners: new Set(), notices: new Map(), subscribers: new Set(), sequence: 0 });
+    if (!recoverySignals.has(global)) recoverySignals.set(global, { revision: 0, storageRevision: 0, listeners: new Set(), notices: new Map(), subscribers: new Set(), sequence: 0 });
     return recoverySignals.get(global);
 };
 
 export function recoveryFailureText(result) {
-    const reason = result?.error?.message || result?.error || result?.message || result?.reason;
+    const reason = result?.error?.message || result?.error || result?.saveError?.message || result?.message || result?.reason;
     return typeof reason === 'string' && reason.trim() ? reason.trim() : '操作没有完成';
 }
 
@@ -38,9 +48,10 @@ export function recoveryCancelled(value) {
     return value?.cancelled === true || /^(?:cancelled|canceled|user-cancelled|dna-cancelled|abort-by-user|request-stale|stale-target|stale-chat|stale-config)$/.test(value?.reason || '');
 }
 
-export function wakeRecoveringOperations(global = globalThis) {
+export function wakeRecoveringOperations(global = globalThis, change) {
     const state = recoverySignalFor(global);
     state.revision++;
+    if (change?.type === 'storage-capacity-changed') state.storageRevision++;
     for (const listener of [...state.listeners]) listener();
     if (typeof global.dispatchEvent !== 'function') return;
     const EventCtor = global.Event || globalThis.Event;
@@ -134,21 +145,35 @@ async function recoveryStep(execute, signal) {
 export async function recoverOperation(execute, { signal, isActive = () => true,
     shouldRecover = () => true, repair, onRecover, wait = waitForRecovery,
     retryUnchanged = true, canResume, observe, waitFor, repeatable,
+    maxAttempts = RECOVERY_ATTEMPTS, passiveObservation = false,
     initialDelayMs = 100, maxDelayMs = 30000, global = globalThis } = {}) {
-    let attempt = 0, retriedUnchanged = false;
+    const limit = Number.isSafeInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : RECOVERY_ATTEMPTS;
+    let attempt = 0, executions = 0, retriedUnchanged = false;
     const notice = trackRecovery(global);
     let failed = false;
+    const exhausted = (result, cause, condition) => {
+        failed = true;
+        const error = `自动处理共尝试 ${executions} 次，仍未完成：${recoveryFailureText(result)}`;
+        const failure = { ...(result || {}), ok: false, reason: 'recovery-exhausted', recoveryStopped: true, error,
+            diagnostic: { ...result?.diagnostic, attempts: executions, failureReason: result?.reason } };
+        notice.update({ ...condition, phase: 'failed', message: error });
+        if (cause) { cause.result = failure; throw cause; }
+        return failure;
+    };
     try {
     while (!signal?.aborted && isActive()) {
         const revision = recoverySignalFor(global).revision;
+        const storageRevision = recoverySignalFor(global).storageRevision;
         let result, cause;
         try {
+            executions++;
             result = await recoveryStep(execute, signal);
-        } catch (error) { cause = error; result = error?.result || { ok: false,
+        } catch (error) { cause = error; result = failureFrom(error) || { ok: false,
             reason: error?.code || error?.message || 'operation-pending', error: error?.message || String(error) }; }
         if (signal?.aborted || !isActive()) break;
         if (result !== false && result?.ok !== false) return result;
-        if (recoveryCancelled(result) || result?.recoveryStopped) return result;
+        if (recoveryCancelled(result)) return result;
+        if (result?.recoveryStopped) { if (cause) throw cause; return result; }
         if (result?.reason === 'recovery-exhausted') {
             failed = true;
             notice.update({ phase: 'failed', message: recoveryFailureText(result), result });
@@ -172,10 +197,27 @@ export async function recoverOperation(execute, { signal, isActive = () => true,
         }
         const retry = progressed || resumed || (retryUnchanged && !retriedUnchanged);
         if (retry) retriedUnchanged = true;
+        const quota = repeatable === 'save' && (cause?.name === 'QuotaExceededError'
+            || result?.saveError?.name === 'QuotaExceededError' || /quota|存储.*满|空间不足/i.test(recoveryFailureText(result)));
         const condition = (typeof waitFor === 'function' ? waitFor(result, cause) : waitFor)
-            || (repeatable === 'save' && (cause?.name === 'QuotaExceededError' || /quota|存储.*满|空间不足/i.test(recoveryFailureText(result)))
+            || (quota
                 ? { message: `保存尚未完成：${recoveryFailureText(result)}。请在备份中清理缓存或无用素材；释放空间后自动续存原结果。`,
                     page: 'data', actionLabel: '打开备份与缓存' } : null);
+        if (executions >= limit && quota) {
+            const detail = { ...condition, phase: 'waiting-condition', result,
+                message: `存储空间不足，${executions} 次保存仍未完成，已停止重复写入。原结果保留；在备份中清理缓存后自动续存。` };
+            notice.update(detail);
+            try { onRecover?.(detail); } catch {}
+            let observed = recoverySignalFor(global).revision;
+            while (!signal?.aborted && isActive() && recoverySignalFor(global).storageRevision === storageRevision) {
+                await waitForRecoveryChange({ signal, global, revision: observed });
+                observed = recoverySignalFor(global).revision;
+            }
+            if (signal?.aborted || !isActive()) break;
+            executions = 0; retriedUnchanged = false;
+            continue;
+        }
+        if (executions >= limit) return exhausted(result, cause, condition);
         // 条件等待必须显式声明等待对象及可验证的续接条件。observe 则实际重读来源。
         if (!retry && !observe && !repeatable && !(condition?.message && typeof canResume === 'function')) {
             failed = true;
@@ -203,8 +245,17 @@ export async function recoverOperation(execute, { signal, isActive = () => true,
                 observed = recoverySignalFor(global).revision;
                 if (signal?.aborted || !isActive()) break;
                 let ready = false;
-                try { ready = await recoveryStep(() => (observe || canResume)(result, cause), signal); } catch { /* 条件仍未解除。 */ }
+                if (observe && !passiveObservation) executions++;
+                try { ready = await recoveryStep(() => (observe || canResume)(result, cause), signal); }
+                catch (error) {
+                    cause = error;
+                    const held = failureFrom(error);
+                    if (held?.recoveryStopped) throw error;
+                    result = held || { ok: false, reason: error?.code || error?.message, error: error?.message || String(error) };
+                }
                 if (ready?.completed === true) return ready.value;
+                if (ready?.value?.ok === false) result = ready.value;
+                if (executions >= limit) return exhausted(result, cause, condition);
                 if (ready === true || ready?.changed === true) break;
             }
             continue;

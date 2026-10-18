@@ -24,6 +24,30 @@ const USER_ASSETS = {
     characterAliases: { 艾莉: ['小艾'] },
 };
 
+test('图片持续读取失败：只自动读取三次，网络恢复后重新读取', { timeout: 6000 }, async t => {
+    const target = new EventTarget();
+    let reads = 0, working = false, service;
+    const ref = 'igs-gen:failed-image', image = 'data:image/png;base64,QQ==';
+    const global = { addEventListener: target.addEventListener.bind(target), removeEventListener: target.removeEventListener.bind(target) };
+    service = createAssetGenerationService({ global,
+        messageHost: { getChatId: () => 'chat', readFloor: () => null, readPreviousAiTexts: () => [], on: () => () => {} },
+        llm: {}, nai: {},
+        store: { async getImage() { reads++; if (!working) throw new Error('network-unavailable'); return { dataUrl: image }; } },
+        getSettings: () => ({ autoIllustration: {}, sceneAssets: {} }),
+        events: { emit(_name, detail) { if (detail.reason === 'image-retry-ready') service.resolveUrl(ref); } },
+    });
+    t.after(() => service.stop());
+    service.start(); service.resolveUrl(ref);
+    await new Promise(resolve => setTimeout(resolve, 2400));
+    assert.equal(reads, 3);
+    await new Promise(resolve => setTimeout(resolve, 1100));
+    assert.equal(reads, 3);
+    working = true; target.dispatchEvent(new Event('online'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(service.resolveUrl(ref), image);
+    assert.equal(reads, 4);
+});
+
 test('gate:assets:scene-key-quality-grades', () => {
     assert.deepEqual(classifySceneKey(USER_ASSETS.scenes, '教室'), { key: '教室', quality: 'exact' });
     assert.equal(classifySceneKey(USER_ASSETS.scenes, '天台').quality, 'fuzzy-strong');

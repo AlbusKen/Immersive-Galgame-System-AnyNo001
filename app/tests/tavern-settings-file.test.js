@@ -13,6 +13,32 @@ class FakeStorage {
     removeItem(k) { this.map.delete(k); }
 }
 
+test('全局配置同步持续失败：三次后停止，保留本机配置，恢复后可完成同步', { timeout: 3000 }, async t => {
+    const storage = new FakeStorage({ igs_bridge_config: 'keep-local' });
+    let uploads = 0, fail = true;
+    const global = {
+        SillyTavern: { getContext: () => ({ getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }) },
+        fetch: async url => {
+            if (String(url).startsWith('/user/files/')) return { ok: false, status: 404 };
+            uploads++;
+            return { ok: !fail, status: fail ? 500 : 200 };
+        },
+    };
+    const sync = createTavernSettingsSync(global, { storage, debounceMs: 1 });
+    t.after(() => sync.stop());
+    assert.equal((await sync.start()).ok, false);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.equal(uploads, 3);
+    assert.equal(sync.diagnostics().retryPaused, true);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.equal(uploads, 3);
+    assert.equal(storage.getItem('igs_bridge_config'), 'keep-local');
+    fail = false;
+    assert.equal(await sync.flush(), true);
+    assert.equal(uploads, 4);
+    assert.equal(sync.diagnostics().retryPaused, false);
+});
+
 function fakeGlobal(fileJson) {
     const uploads = [];
     const global = {

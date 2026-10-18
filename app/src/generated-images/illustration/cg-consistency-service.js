@@ -497,6 +497,7 @@ export function createCgConsistencyService(deps) {
         task.state = 'accepting';
         task.phase = 'commit';
         report(task, 'info', '正在保存已接受的候选');
+        let committed = false;
         try {
             let attemptedRevision, attemptedToken;
             const result = await recoverOperation(async () => {
@@ -526,6 +527,7 @@ export function createCgConsistencyService(deps) {
                 },
                 onRecover: () => report(task, 'info', '正在自动续存同一候选') });
             if (result?.cancelled || result?.ok === false) return result;
+            committed = true;
             const notified = await recoverOperation(async () => {
                 await onAccepted?.(task.target, result.record);
                 if (result.warning) await deps.repairIndex?.(task.target, result.record);
@@ -534,8 +536,14 @@ export function createCgConsistencyService(deps) {
             if (notified?.ok === false) return notified;
             report(task, 'success', '已接受并保存');
             return { ok: true, reason: 'accepted' };
+        } catch (error) {
+            const result = error?.result || failure('candidate-save-failed', error?.message);
+            reportFailure(task, result);
+            return result;
+        } finally {
+            if (committed || !live(task)) release(task);
+            else { task.state = 'candidate'; task.phase = 'candidate'; }
         }
-        finally { release(task); }
     }
     function cancel(candidateId) {
         const task = active;

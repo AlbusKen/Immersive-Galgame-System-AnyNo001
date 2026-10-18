@@ -1104,3 +1104,19 @@ test('自动恢复：一致性一位角色出图失败后续画，完成的另�
     assert.equal(calls.get(3), 1);
     assert.equal((await f.service.acceptConsistency(candidate.candidateId)).ok, true);
 });
+
+test('候选保存持续失败：三次后保留同一候选，存储恢复后采用不重绘', async () => {
+    const f = await consistencyFixture();
+    const candidate = await f.service.redrawConsistency(f.query);
+    const paintings = f.calls.length, update = f.store.updateSlot.bind(f.store);
+    let attempts = 0;
+    f.store.updateSlot = async () => { attempts++; throw new Error('persistent-storage-error'); };
+    const result = await f.service.acceptConsistency(candidate.candidateId);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'recovery-exhausted');
+    assert.equal(attempts, 3);
+    f.store.updateSlot = update;
+    assert.equal((await f.service.acceptConsistency(candidate.candidateId)).ok, true);
+    assert.equal(f.calls.length, paintings);
+    assert.equal((await f.store.getSlotRecord(f.before.key)).dataUrl, candidate.dataUrl);
+});

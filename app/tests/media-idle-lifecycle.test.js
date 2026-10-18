@@ -153,6 +153,8 @@ test('gate:media:paused-deletion-does-not-restart-polling-when-runtime-reloads',
     f.server.images.set(path, pixel('paused')); f.server.failDelete = true;
     await f.gc.released({ dataUrl: path }, null); await f.advance(300000);
     await f.gc.stop();
+    const { mediaStateStoreFor } = await import('../src/media/media-state-store.js');
+    await mediaStateStoreFor(f.host).update(`gc:${path}`, row => ({ ...row, attempts: 100, paused: false }));
     const resumed = fixture(t, f.server, f.host.indexedDB);
     resumed.gc.start(); await settleMedia(); await resumed.advance(3600000);
     assert.equal(resumed.requests.length, 0);

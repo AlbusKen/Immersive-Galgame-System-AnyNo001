@@ -1,4 +1,4 @@
-import { recoverOperation, createOperationCheckpoint, checkpointService } from '../../storage/automatic-recovery.js';
+import { recoverOperation, createOperationCheckpoint, checkpointService, wakeRecoveringOperations } from '../../storage/automatic-recovery.js';
 // 设置器的打开 / 关闭、挂载、事件委托、草稿写入与保存。reader-host 只负责把阅读器侧的依赖交进来。
 import { updateCharCounts } from './prompt-entries-fields.js';
 import { withCharacterDnaDraftSync } from './settings-external-sprite-dna.js';
@@ -530,6 +530,10 @@ export function createSettingsHost(deps) {
             async repair() {
                 await Promise.allSettled([options.generatedAssets?.retryMetadata?.(), options.itemImages?.retryMetadata?.()]);
             },
+        }).then(result => {
+            if (result?.ok && !result.cancelled && ['image-cache-clear', 'purge-asset-cache'].includes(action))
+                wakeRecoveringOperations(options.global || globalThis, { type: 'storage-capacity-changed' });
+            return result;
         }).finally(() => {
             checkpoint.clear();
             recoveryProgress?.end();
