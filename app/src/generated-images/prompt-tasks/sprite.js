@@ -1,4 +1,4 @@
-import { SOURCE_RULE, IDENTITY_RULE, OUTFIT_RULE } from './common.js';
+import { SOURCE_RULE, IDENTITY_RULE, OUTFIT_RULE, OUTFIT_HALF_BODY_RULE } from './common.js';
 import { TEMPLATE_RULE, PICTURE_RULE } from './template.js';
 import { SPRITE_HALF_BODY_RULE } from '../prompt-registry.js';
 
@@ -8,6 +8,7 @@ const identity = [SOURCE_RULE, IDENTITY_RULE, OUTFIT_RULE,
     '资料格式不等于只摘录原文。首次候选保留角色资料的明确设定，在任务允许范围内具体化未限定的普通外貌；新衣装缺说明时一次完成详细设计。不同角色独立建模，不套用同一种脸、体态或范例衣装；正文的失忆、伤势及临时情绪不写进稳定身份。',
 ];
 export const SPRITE_DATA = [
+    OUTFIT_HALF_BODY_RULE,
     '【先交图头，再交资料】回复第一行必须直接写 slotid: 本轮实际槽号，第二行写 character: 该槽对应的规范角色键。先按 outputs.rows 或 promptTask.slots 找本槽编号与角色；即使本轮仅一人一份，slotid 仍必填，不能从 character 或 personality 开始。输入已有 slotId 不代表回复可以省略，示例编号不能代替本轮编号。', ...identity,
     '本轮只交 sprite-data：每份从 slotid: 本轮编号 开始，随后 character: 规范角色键、outfit_name、outfit_description；需补身份时交 dna_full_body、dna_half_body、dna_portrait，可附 dna_uc_对应景别。各身份主语非空，不超过4096字符；UC 可空，不能只有 UC 而缺主语。',
     '按本槽 slotId 查唯一 token，再取对应 characterKey 写入 character；不填 token、别名或译名。一行一个字段，无索引、竖线或 meta_ 前缀。完整写完一份才以独立行 --- 分隔下一份，不输出 scene、char、构图、背景、质量词或完整绘图词。',
@@ -15,6 +16,7 @@ export const SPRITE_DATA = [
     'slotid: 7', 'character: 林澄', 'personality: composed, attentive, patient',
     'outfit_name: 日常裙装',
     'outfit_description: 1.2::blue dress::, pleated dress, knee-length dress, short sleeves, 1.2::white cardigan::, open cardigan, long sleeves, hip-length cardigan, white socks, ankle socks, black footwear, mary janes, low heels',
+    'outfit_half_body: 1.2::blue dress::, pleated dress, knee-length dress, short sleeves, 1.2::white cardigan::, open cardigan, long sleeves, hip-length cardigan',
     'dna_full_body: 1girl, adult, 1.2::black hair::, medium hair, straight hair, swept bangs, brown eyes, thin eyebrows, light skin, hairclip, 1.2::star hair ornament::, earrings, 1.2::pearl earrings::, slim,',
     'dna_half_body: 1girl, adult, 1.2::black hair::, medium hair, straight hair, swept bangs, brown eyes, thin eyebrows, light skin, hairclip, 1.2::star hair ornament::, earrings, 1.2::pearl earrings::, slim,',
     'dna_portrait: 1girl, adult, 1.2::black hair::, medium hair, straight hair, swept bangs, brown eyes, thin eyebrows, light skin, hairclip, 1.2::star hair ornament::, earrings, 1.2::pearl earrings::,',

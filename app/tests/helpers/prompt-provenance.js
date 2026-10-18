@@ -100,10 +100,13 @@ export function spriteDataReply(request, options = {}) {
         const header = [`slotid: ${entry.slotId}`, `character: ${binding.characterKey}`];
         const outfit = entry.characterMeta.characters[0].outfit;
         const saved = source.outfits?.find(o => o.name === outfit.name);
+        const description = outfit.description || saved?.description || source.outfit?.description || '';
         const candidate = entry.dnaCandidates?.characters[0];
         return header.concat([
             `outfit_name: ${outfit.name}`,
-            `outfit_description: ${outfit.description || saved?.description || source.outfit?.description || ''}`,
+            `outfit_description: ${description}`,
+            `outfit_half_body: ${options.outfitHalfBody ?? saved?.descriptionHalfBody
+                ?? source.outfit?.descriptionHalfBody ?? description}`,
             ...(candidate ? Object.entries(candidate.views).flatMap(([frame, view]) => [
                 ...(view.subject !== undefined ? [`dna_${frame}: ${view.subject}`] : []),
                 `dna_uc_${frame}: ${view.negative || ''}`]) : []),

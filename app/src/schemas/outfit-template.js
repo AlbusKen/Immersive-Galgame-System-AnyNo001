@@ -30,7 +30,9 @@ export function checkOutfitTemplates(recipe, metadata, context, task) {
         const meta = metadata?.characters?.find(c => c.characterKey === b.characterKey && c.captionIndex === b.captionIndex);
         if (source.length !== 1 || !meta) return fail('outfit.binding', 'mismatch', b.captionIndex);
         const outfit = meta.outfit;
-        if (!outfit || !text(outfit.name, 128) || !text(outfit.description)) return fail('outfit.text', 'invalid', b.captionIndex);
+        if (!outfit || !text(outfit.name, 128) || !text(outfit.description)
+            || (outfit.descriptionHalfBody !== undefined && !text(outfit.descriptionHalfBody)))
+            return fail('outfit.text', 'invalid', b.captionIndex);
         if (recipe.outfitSelection === 'catalog') {
             if (task && task.purpose !== 'cg') return fail('outfitSelection', 'invalid', b.captionIndex);
             if (!outfit.name.trim() || !outfit.description.trim() || !b.outfit
@@ -68,8 +70,21 @@ export function checkOutfitTemplates(recipe, metadata, context, task) {
                 || /[|\]\r\n]/.test(outfit.name)))) return fail('outfit.text', 'missing', b.captionIndex);
         if (task?.purpose === 'consistency' && description !== (current.description || ''))
             return fail('outfit.description', 'preserved', b.captionIndex);
+        // 半身服装是同一完整母版的派生视图；CG 与一致性仍使用完整说明。
+        const sprite = ['sprite', 'derived'].includes(task?.purpose);
+        const savedHalf = selected?.descriptionHalfBody;
+        if (sprite && savedHalf && outfit.descriptionHalfBody && outfit.descriptionHalfBody !== savedHalf)
+            return fail('outfit.descriptionHalfBody', 'preserved', b.captionIndex);
+        if (sprite && saved[0]?.descriptionHalfBody && current?.descriptionHalfBody
+            && saved[0].descriptionHalfBody !== current.descriptionHalfBody)
+            return fail('outfit.descriptionHalfBody', 'preserved', b.captionIndex);
+        const half = sprite ? savedHalf || outfit.descriptionHalfBody : undefined;
+        if (half !== undefined && (!text(half) || !half.trim()))
+            return fail('outfit.descriptionHalfBody', 'invalid', b.captionIndex);
         characters.push({ characterKey: b.characterKey, captionIndex: b.captionIndex, token: b.token,
-            name: outfit.name, description, source: selected || task?.purpose === 'consistency' ? 'saved' : 'candidate' });
+            name: outfit.name, description,
+            ...(half !== undefined && { descriptionHalfBody: half }),
+            source: selected || task?.purpose === 'consistency' ? 'saved' : 'candidate' });
     }
     return { ok: true, value: { version: 1, characters } };
 }

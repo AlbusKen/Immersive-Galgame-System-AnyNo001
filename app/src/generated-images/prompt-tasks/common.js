@@ -59,3 +59,4 @@ export const outfitRule = ({ outfitSelection } = {}) => [
     '新说明只用 TAG，不含人物身份、动作、表情或占位；清理完全重复、语义重复及互斥词，保留更具体且有依据的标签。整套签名不随镜头删件，同套差分沿用同一完整说明。已有说明无论是 TAG 还是自然语言，即使简短也逐字复用，不自动转换或扩写；一致性任务使用冻结衣装，不重新设计。新默认仅取命名衣装，不从旧 defaultAppearance 推断。',
 ].join('\n');
 export const OUTFIT_RULE = outfitRule();
+export const OUTFIT_HALF_BODY_RULE = '【半身服装 DNA】完整服装仍写 outfit_description，另交 outfit_half_body。半身版必须从本次完整说明只删除腰胯以下画外衣物及细节的完整标签和分隔符，例如鞋靴、袜子、裤腿及画外裙摆；保留腰胯范围内可见的衣物结构。保留部分的措辞、顺序、颜色、标点与闭合权重逐字不变，不改写、不增添标签、不重新设计。没有画外标签时允许两份相同。已有 descriptionHalfBody 逐字复用；仅缺半身版时从已保存 description 删减，完整母版原样交付，不重新编写整套服装。';

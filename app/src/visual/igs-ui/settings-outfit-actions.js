@@ -362,18 +362,22 @@ async function handleWardrobe(command, segs, ctx, { editLibrary, resolveEditLibr
         for (const [key, value] of Object.entries(wardrobe)) renamed[key === name ? next : key] = value;
         sceneAssets.wardrobe = renamed;
         retargetLinks(next);
-    } else if (command === 'wardrobe-prompt') {
+    } else if (command === 'wardrobe-prompt' || command === 'wardrobe-half-prompt') {
         if (!hasOwn(wardrobe, name) && !createMissing) return rerenderSettings();
         const dialogs = ctx.dialogs || createSettingsDialogs({ global: globalObj });
         if (typeof dialogs.edit !== 'function') {
             warn(ctx, '提示词编辑当前不可用。');
             return rerenderSettings();
         }
-        const current = String((wardrobe[name] && wardrobe[name].prompt) || '');
-        const edited = await dialogs.edit(editTitle || `「${name}」的提示词`, current);
+        const field = command === 'wardrobe-half-prompt' ? 'promptHalfBody' : 'prompt';
+        const current = String(wardrobe[name]?.[field] || '');
+        const edited = await dialogs.edit(editTitle || `「${name}」的${field === 'promptHalfBody' ? '半身服装 DNA' : '提示词'}`, current);
         if (edited == null) return rerenderSettings();
         if (!unchanged()) return conflict();
-        wardrobe[name] = { ...wardrobe[name], prompt: String(edited).trim() };
+        const value = String(edited).trim();
+        wardrobe[name] = { ...wardrobe[name], [field]: value };
+        // 完整母版变更后不能继续套用旧半身视图；下次立绘生成按新母版补齐。
+        if (field === 'prompt' && value !== current) delete wardrobe[name].promptHalfBody;
     } else if (command === 'wardrobe-nsfw') {
         if (!hasOwn(wardrobe, name)) return rerenderSettings();
         if (wardrobe[name].nsfwBoost === true) delete wardrobe[name].nsfwBoost;
@@ -414,6 +418,7 @@ async function handleWardrobe(command, segs, ctx, { editLibrary, resolveEditLibr
             }
             if (!unchanged()) return { ...conflict(), candidatePrompt: String(written.prompt).trim() };
             wardrobe[name] = { ...wardrobe[name], prompt: String(written.prompt).trim() };
+            delete wardrobe[name].promptHalfBody;
             const persistedDirect = persistSettingsDraft();
             if (persistedDirect.ok === false) return persistedDirect;
             const renderedDirect = await rerenderSettings();
@@ -446,6 +451,7 @@ async function handleWardrobe(command, segs, ctx, { editLibrary, resolveEditLibr
         }
         if (!unchanged()) return { ...conflict(), candidatePrompt: String(written.prompt).trim() };
         wardrobe[word] = { ...(wardrobe[word] || {}), prompt: String(written.prompt).trim() };
+        delete wardrobe[word].promptHalfBody;
         removeOutfitReview(globalObj.localStorage, character, word);
         const persisted = persistSettingsDraft();
         if (persisted.ok === false) return persisted;
@@ -613,7 +619,7 @@ function handleOutfitReview(command, segs, ctx) {
     return rerenderSettings();
 }
 
-const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-promote-outfit|scene-set-default-outfit|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots|dna)|scene-migrate-outfit(?:-(?:cancel|apply|skip|run))?|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt))(?::(.*))?$/;
+const COMMAND_RE = /^(scene-(?:add|rename|remove)-outfit(?:-(?:mood|word|scene))?|scene-promote-outfit|scene-set-default-outfit|scene-set-outfit-(?:mood|avatar|wardrobe)-url|scene-set-outfit-(?:note|form)|scene-clear-outfit-avatar|scene-outfit-(?:tab|copy-slots|dna|half-dna)|scene-migrate-outfit(?:-(?:cancel|apply|skip|run))?|outfit-review-(?:assign|create|dismiss|clear|auto)|wardrobe-(?:add|rename|remove|generate-prompt|reference|nsfw|for-outfit|prompt|half-prompt))(?::(.*))?$/;
 
 // 服装区 action：返回 null 表示不归本模块处理。位置 / 头部标定 key 随改名迁移、随删除清理。
 // 地址编辑、槽删除和文件上传共用只读预检；调用方在真正写入前再次检查租约。
@@ -790,7 +796,8 @@ async function runOutfitAction(match, ctx) {
         Object.assign(sceneAssets, selected.patch);
         return done();
     }
-    case 'scene-outfit-dna': {
+    case 'scene-outfit-dna':
+    case 'scene-outfit-half-dna': {
         if (isBuiltinNudeOutfit(entry.wardrobe) || isBuiltinNudeOutfit(outfitName)) return rerenderSettings();
         const effective = draftEffectiveAssets(settingsState);
         const current = resolveWardrobePrompt(effective.wardrobe, entry, outfitName);
@@ -798,12 +805,13 @@ async function runOutfitAction(match, ctx) {
         if (!isValidOutfitName(linked)) return rerenderSettings();
         const scope = settingsState.asyncState?.assetScopeKey;
         // 两个入口编辑同一衣柜条目，保留当前绑定及参考图等附加资料。
-        return handleWardrobe('wardrobe-prompt', [encodeURIComponent(linked)], { ...ctx,
+        const half = command === 'scene-outfit-half-dna';
+        return handleWardrobe(half ? 'wardrobe-half-prompt' : 'wardrobe-prompt', [encodeURIComponent(linked)], { ...ctx,
             isCurrent: () => (!ctx.isCurrent || ctx.isCurrent()) && settingsState.draft === draft
                 && settingsState.asyncState?.assetScopeKey === scope,
         }, { createMissing: !current, ...(!current && { editLibrary: sceneAssets,
             resolveEditLibrary: () => draftAssetLibrary(settingsState, { collections: CHARACTER_FIELDS, name: charName }) }),
-            editTitle: `编辑服装描述 · ${charName} / ${outfitName}` });
+            editTitle: `编辑${half ? '半身服装 DNA' : '服装描述'} · ${charName} / ${outfitName}` });
     }
     case 'scene-rename-outfit': {
         const isCurrent = captureOutfitTarget(ctx, sceneAssets, charName, outfitName, true);

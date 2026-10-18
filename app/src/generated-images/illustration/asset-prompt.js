@@ -113,8 +113,9 @@ function joinTags(...parts) {
 }
 
 // 生成可直接交给 buildNaiV4Request 的 slot；transparent 为 true 时走 V5 原生透明底。
-export function buildAssetSlot(item, { transparent = false, whiteBackground = false, templates = {}, positiveContext = '' } = {}) {
+export function buildAssetSlot(item, { transparent = false, whiteBackground = false, templates = {}, positiveContext = '', fixedSpritePrompts = false } = {}) {
     const t = { ...DEFAULT_ASSET_TEMPLATES, ...templates };
+    const customSprite = fixedSpritePrompts && t.sprite !== DEFAULT_ASSET_TEMPLATES.sprite;
     if (item.need.type === 'background') {
         return {
             scene: applyTemplate(t.background, { tags: item.tags }),
@@ -127,9 +128,15 @@ export function buildAssetSlot(item, { transparent = false, whiteBackground = fa
     const tags = dnaParts ? dnaParts.positive : item.tags;
     const useWhite = whiteBackground && !transparent;
     const matte = transparent ? TRANSPARENT_BACKGROUND_TAGS : (useWhite ? WHITE_BACKGROUND_TAGS : MATTE_BACKGROUND_TAGS);
-    const sceneUc = joinTags(t.spriteNegative, dnaParts ? dnaParts.negative : '', NSFW_NEGATIVE_GUARD, item.uc);
+    // 资料式立绘的固定取景、底色及排除项属于程序模板；自定义词只追加，不替掉这些片段。
+    const positive = customSprite
+        ? joinTags(applyTemplate(t.sprite, { tags, matte: '' }), applyTemplate(DEFAULT_ASSET_TEMPLATES.sprite, { tags: '', matte }))
+        : applyTemplate(t.sprite, { tags, matte });
+    const fixedNegative = fixedSpritePrompts && t.spriteNegative !== DEFAULT_ASSET_TEMPLATES.spriteNegative
+        ? DEFAULT_ASSET_TEMPLATES.spriteNegative : '';
+    const sceneUc = joinTags(t.spriteNegative, fixedNegative, dnaParts ? dnaParts.negative : '', NSFW_NEGATIVE_GUARD, item.uc);
     return {
-        scene: dropMatteTagsWhenTransparent(applyTemplate(t.sprite, { tags, matte }), positiveContext),
+        scene: dropMatteTagsWhenTransparent(positive, positiveContext),
         sceneUc: useWhite ? dropWhiteBackgroundNegative(sceneUc) : sceneUc,
         chars: [],
         transparent,

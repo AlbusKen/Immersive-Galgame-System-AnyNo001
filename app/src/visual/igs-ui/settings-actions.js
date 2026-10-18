@@ -1723,7 +1723,8 @@ export async function handleSettingsAction(action, ctx) {
         const onOutfitDna = async clothing => {
             if (!targetUnchanged()) return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '目标已变化，未保存服装 DNA' };
             const prepared = prepareOutfitDnaSave(sceneAssets, name, clothing.name, clothing.description,
-                { readWardrobe: outfitAdoptionReadOptions(settingsState, target).readWardrobe });
+                { readWardrobe: outfitAdoptionReadOptions(settingsState, target).readWardrobe,
+                    descriptionHalfBody: clothing.descriptionHalfBody });
             if (!prepared.ok) return prepared;
             const previous = captureAdoptionFields(sceneAssets, ['characterOutfits', 'wardrobe']);
             Object.assign(sceneAssets, prepared.patch);
@@ -2048,7 +2049,7 @@ export async function handleSettingsAction(action, ctx) {
             if (!targetUnchanged() || clothing.name !== outfitName)
                 return { ok: false, reason: 'OUTFIT_ADOPTION_CONFLICT', error: '角色、衣装或作用域已变化，未保存服装 DNA' };
             const prepared = prepareOutfitDnaSave(sceneAssets, name, outfitName, clothing.description,
-                { readWardrobe: draftEffectiveAssets(settingsState).wardrobe });
+                { readWardrobe: draftEffectiveAssets(settingsState).wardrobe, descriptionHalfBody: clothing.descriptionHalfBody });
             if (!prepared.ok) return prepared;
             const previous = captureAdoptionFields(sceneAssets, ['characterOutfits', 'wardrobe']);
             Object.assign(sceneAssets, prepared.patch);
@@ -2059,9 +2060,11 @@ export async function handleSettingsAction(action, ctx) {
             }
             const saved = resolveWardrobePrompt(draftEffectiveAssets(settingsState).wardrobe,
                 sceneAssets.characterOutfits?.[name]?.[outfitName], outfitName);
-            if (!saved?.prompt)
+            if (!saved?.prompt || saved.prompt !== clothing.description
+                || (clothing.descriptionHalfBody !== undefined && saved.promptHalfBody !== clothing.descriptionHalfBody))
                 return { ok: false, reason: 'outfit-dna-save-failed', error: '服装 DNA 保存回读不一致，未发起绘图' };
             outfit.prompt = saved.prompt;
+            if (saved.promptHalfBody !== undefined) outfit.promptHalfBody = saved.promptHalfBody;
             return { ok: true };
         } : undefined;
         if (!progress) progress = startExpressionProgress(globalObj, subject);
@@ -2083,11 +2086,13 @@ export async function handleSettingsAction(action, ctx) {
             const paintOnly = !retry && !writeLabels.length;
             result = resume || paintOnly
                 ? await service.paintExpressionCaptions({ name, items: resumeItems, basePrompt, dna, outfit, nsfw, onProgress,
-                    signal: stopControl.signal, shouldStart: targetUnchanged })
+                    signal: stopControl.signal, shouldStart: targetUnchanged,
+                    ...(onOutfitDna && { onOutfitDna }) })
                 : retry && savedCaption && typeof service.generateExpressionImage === 'function'
                 ? await service.generateExpressionImage({ name, mood, caption: savedCaption, exact: savedExact,
                     ...characterPromptRecovery(savedHistory), ...(savedHistory && { history: savedHistory }),
-                    basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal, shouldStart: targetUnchanged })
+                    basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal, shouldStart: targetUnchanged,
+                    ...(onOutfitDna && { onOutfitDna }) })
                 : retry
                     ? await service.generateExpressionImage({ name, mood, basePrompt, dna, outfit, nsfw, onProgress, signal: stopControl.signal,
                         shouldStart: targetUnchanged, ...(onOutfitDna && { onOutfitDna }) })
