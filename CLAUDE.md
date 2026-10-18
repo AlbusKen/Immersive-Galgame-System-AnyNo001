@@ -37,14 +37,14 @@ npm.cmd run preview:records                      # 资料页预览
 1. `app/package.json` — `"version": "X.Y.Z"`
 2. `app/src/core/bootstrap.js` — `const IGS_VERSION = 'X.Y.Z'`
 3. `README.md` — 当前状态行和更新日志
-4. 升号后必须 `npm run build`（dist bundle 内 `IGS version` 注释随之更新）+ `npm run build:loader -- --release test-vX.Y.Z`（更新自动更新版并生成锁定测试标签的 `loader/沉浸式Galgame系统 test-vX.Y.Z.json`）
+4. 升号后必须 `npm run build`（dist bundle 内 `IGS version` 注释随之更新）+ `npm run build:loader -- --release vX.Y.Z`（更新自动更新版并生成锁定版本标签的 `loader/沉浸式Galgame系统 vX.Y.Z.json`）
 
 ## Loader 说明
 
 `loader/` 下有两类 loader：
 
 - **自动更新版** `igs-loader.json`（脚本名「沉浸式Galgame系统（自动更新）」）：拉取 `@main` 最新代码，push 到 main 后真机即可加载验证。这是开发/日常使用的 loader，固定一个文件、不带版本号。
-- **测试固定版** `沉浸式Galgame系统 test-vX.Y.Z.json`：在 loader 源前注入 `IGS_LOADER_REF='test-vX.Y.Z'`，锁定测试标签；使用 `build:loader -- --release test-vX.Y.Z` 生成并随提交推送同名标签。`--pin` 仍可锁定历史正式标签。
+- **版本固定版** `沉浸式Galgame系统 vX.Y.Z.json`：替换 loader 内部 `PINNED_REF` 常量，锁定同名版本标签；使用 `build:loader -- --release vX.Y.Z` 生成并随发布推送。固定版失败不回退其他版本，`--pin` 可生成指定历史版本。
 
 历史上曾每次升号生成一份「（自动更新） vX.Y.Z.json」副本，但它们内容全同且都指向 `@main`、不锁版本，纯属冗余，已于 v0.23.21 清理，并改为上述固定版机制。
 
@@ -53,16 +53,16 @@ npm.cmd run preview:records                      # 资料页预览
 ## 提交与推送规则
 
 - 每次更新提交前升 patch，并同步 package.json、bootstrap、README、dist 与 loader。
-- 2026-10-15 用户新规则：每次更新提交均推送 main，并为同一提交创建和推送 `test-vX.Y.Z` 测试标签；版本号与脚本一致。
-- 不自动创建 `vX.Y.Z` 正式版标签，正式发布须用户另行明确要求。
+- 2026-10-18 用户纠正：经用户授权发布时推送 main，版本标签统一使用 `vX.Y.Z`；禁止再沿用带 test 前缀的新标签。
+- 经用户授权发布时使用 `vX.Y.Z` 标签，与在线包和程序版本一致。
 - 禁止覆盖旧标签；只暂存本轮文件，保留无关工作区改动。
 
 ## Bug 修复闭环
 
 1. 复现并修复，执行能证明本问题行为的定向验证；不恢复已删除的检查项。
-2. 升 patch、同步文档，构建 bundle 与 `--release test-vX.Y.Z` loader，记录实际执行结果。
-3. 提交并推送 main；创建 `git tag -a test-vX.Y.Z` 并推送，核对分支和标签。
-4. 真实酒馆与手机未终验时明确记录边界；测试标签不代表设备验收。后续发现问题则升号提交新的测试标签，不覆盖旧标签。
+2. 升 patch、同步文档，构建 bundle 与 `--release vX.Y.Z` loader，记录实际执行结果。
+3. 提交并推送 main；创建 `git tag -a vX.Y.Z` 并推送，核对分支和标签。
+4. 真实酒馆与手机未终验时明确记录边界；版本标签不代表设备验收。后续发现问题则升号提交新的版本标签，不覆盖旧标签。
 
 
 ## 修改前必读
