@@ -542,22 +542,82 @@ test('首次手动外貌要求先进入 DNA 请求，再写入外部立绘参考
     assert.equal(f.bridge.sceneAssets.characterSpriteNotes.Alice, note);
 });
 
+for (const enabled of [false, true]) test(`自动新立绘按首次正文衣装名入库，同名衣装按角色独立保存-DNA=${enabled}`, async t => {
+    const f = fixture(t, { enabled, reply: batchDnaReply, spriteCount: 2,
+        text: '[igs-char:Alice|平和|红裙|Alice 穿着红裙走进房间。]\n'
+            + '[igs-char:Bob|平和|红裙|Bob 也穿着红裙。]\n'
+            + '[igs-char:Alice|喜悦|蓝裙|Alice 稍后换上蓝裙。]' });
+    f.bridge.sceneAssets.characters = {};
+    f.bridge.sceneAssets.wardrobe = { 红裙: { prompt: 'another saved design' } };
+    assert.equal((await f.service.processMessage(1, { manual: true })).ok, true);
+    const ui = settingsFixture(f, true);
+    const persist = ui.ctx.persistSettingsDraft;
+    ui.ctx.persistSettingsDraft = () => {
+        const bridge = ui.state.activeSettings.draft.bridge;
+        bridge.sceneAssets = migrateSpriteSystem(bridge.sceneAssets).sceneAssets;
+        return persist();
+    };
+    for (const name of ['Alice', 'Bob']) {
+        const record = await f.service.readRecord(`chat-A|char|${name}`);
+        assert.equal(record.outfitName, '红裙');
+        ui.ctx.dialogs.prompt = async () => name;
+        const adopted = await handleSettingsAction(`gen-temp-accept:${encodeURIComponent(record.key)}`, ui.ctx);
+        assert.equal(adopted.ok, true, JSON.stringify({ adopted, alerts: ui.alerts }));
+        const assets = f.bridge.sceneAssets;
+        assert.deepEqual(Object.keys(assets.characterOutfits[name]), ['红裙']);
+        assert.equal(assets.characterDefaultOutfits[name].outfitName, '红裙');
+        assert.equal(assets.characterOutfits[name].红裙.moods.平和, `igs-gen:${record.imageId}`);
+        assert.equal(assets.characterOutfits[name].红裙.base, undefined);
+        assert.equal(assets.characterOutfits[name].红裙.wardrobe, `${name}·红裙`);
+        assert.equal(assets.wardrobe[`${name}·红裙`].prompt, '');
+        assert.equal(assets.characters[name].默认, undefined);
+        assert.equal(resolveSpriteAsset(name, '', { sceneAssets: assets }).url, `igs-gen:${record.imageId}`);
+    }
+    assert.notEqual(f.bridge.sceneAssets.characterOutfits.Alice.红裙.moods.平和,
+        f.bridge.sceneAssets.characterOutfits.Bob.红裙.moods.平和);
+    assert.equal(f.bridge.sceneAssets.wardrobe.红裙.prompt, 'another saved design');
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.paints.length, 2);
+    assert.equal(f.h.writes.length, enabled ? 1 : 0);
+    assert.equal((await f.service.processMessage(2, { manual: true })).reason, 'nothing-missing');
+});
+
+test('手动生成基础立绘写入平和，旧基础图保留原槽', async t => {
+    const f = fixture(t, { enabled: false });
+    f.bridge.sceneAssets.characterOutfits = { Alice: { 红裙: { words: [], moods: {}, base: 'old-base.png' } } };
+    f.bridge.sceneAssets.characterDefaultOutfits = { Alice: { version: 1, outfitName: '红裙' } };
+    const ui = settingsFixture(f, true);
+    const result = await handleSettingsAction('char-generate-sprite:Alice', ui.ctx);
+    assert.equal(result.ok, true, JSON.stringify({ result, alerts: ui.alerts }));
+    const assets = f.bridge.sceneAssets, outfit = assets.characterOutfits.Alice.红裙;
+    assert.equal(outfit.base, 'old-base.png');
+    assert.ok(outfit.moods.平和.startsWith('igs-gen:'));
+    assert.equal(assets.characters.Alice.默认, undefined);
+    const image = await f.service.readStoredImage(outfit.moods.平和.slice('igs-gen:'.length));
+    assert.ok(image.dataUrl);
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.paints.length, 1);
+    assert.equal(f.h.writes.length, 0);
+});
+
 test('迁移后丢图自动补全并采用到原衣装，不留下显示不到的新原装槽', async t => {
     const f = fixture(t);
+    const outfit = 'Alice·初始衣装';
     f.bridge.sceneAssets = migrateSpriteSystem({ enabled: true, characters: { Alice: { 默认: 'igs-gen:lost' } } }).sceneAssets;
     assert.equal(resolveSpriteAsset('Alice', '', { sceneAssets: f.bridge.sceneAssets,
         isMissingImage: url => url === 'igs-gen:lost' }).needsGeneration, true);
     const result = await f.service.processMessage(1, { manual: true });
     assert.equal(result.ok, true, JSON.stringify(result));
     const record = await f.service.readRecord('chat-A|char|Alice');
-    assert.equal(record.outfitName, '初始衣装');
+    assert.equal(record.outfitName, outfit);
     const ui = settingsFixture(f, true);
     ui.ctx.dialogs.prompt = async () => 'Alice';
     const adopted = await handleSettingsAction(`gen-temp-accept:${encodeURIComponent(record.key)}`, ui.ctx);
     assert.equal(adopted.ok, true, JSON.stringify({ adopted, alerts: ui.alerts }));
-    assert.equal(f.bridge.sceneAssets.characterOutfits.Alice.初始衣装.base, `igs-gen:${record.imageId}`);
+    assert.equal(f.bridge.sceneAssets.characterOutfits.Alice[outfit].moods.平和, `igs-gen:${record.imageId}`);
+    assert.equal(f.bridge.sceneAssets.characterOutfits.Alice[outfit].base, 'igs-gen:lost');
     assert.equal(f.bridge.sceneAssets.characters.Alice.默认, undefined);
-    assert.equal(resolveSpriteAsset('Alice', '', { sceneAssets: f.bridge.sceneAssets }).url, `igs-gen:${record.imageId}`);
+    assert.equal(resolveSpriteAsset('Alice', '平和', { sceneAssets: f.bridge.sceneAssets }).url, `igs-gen:${record.imageId}`);
     assert.equal((await f.service.processMessage(2, { manual: true })).reason, 'nothing-missing');
     assert.equal(f.paints.length, 1);
 });

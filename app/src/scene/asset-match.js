@@ -90,7 +90,7 @@ export function setGeneratedExpressionNote(library, name, mood, note = {}) {
     return { ok: true, library: next };
 }
 
-// 把一张生成立绘绑到角色立绘的「默认」。角色库没有这个名字就新建。已有的非生成默认图不覆盖。
+// 新生成的基础立绘写入「平和」。角色库没有这个名字就新建，旧默认图独立保留。
 export function bindGeneratedSprite(sceneAssets, assetName, imageUrl, { replace = false } = {}) {
     const requested = String(assetName || '').trim();
     const url = String(imageUrl || '').trim();
@@ -104,8 +104,8 @@ export function bindGeneratedSprite(sceneAssets, assetName, imageUrl, { replace 
     const created = !key;
     if (!key) key = requested;
     const current = { ...plainObject(characters[key]) };
-    const existing = String(current['默认'] || '').trim();
-    if (replace || !existing || isGeneratedAssetUrl(existing)) current['默认'] = url;
+    const existing = String(current['平和'] || '').trim();
+    if (replace || !existing || isGeneratedAssetUrl(existing)) current['平和'] = url;
     characters[key] = current;
     if (!Array.isArray(aliases[key])) aliases[key] = [];
     if (requested !== key && !aliases[key].includes(requested)) aliases[key].push(requested);
@@ -152,7 +152,7 @@ export function addGeneratedAssetToLibrary(library, record, name) {
         if (record.time) times[record.time] = { ...plainObject(times[record.time]), url, weathers: plainObject(plainObject(times[record.time]).weathers) };
         next.scenes[finalName] = { ...entry, url: entry.url || url, words, times };
     } else {
-        next.characters[finalName] = { ...plainObject(next.characters[finalName]), 默认: url };
+        next.characters[finalName] = { ...plainObject(next.characters[finalName]), 平和: url };
         const aliases = Array.isArray(next.characterAliases[finalName]) ? next.characterAliases[finalName] : [];
         if (original && original !== finalName && !aliases.includes(original)) aliases.push(original);
         next.characterAliases[finalName] = aliases;

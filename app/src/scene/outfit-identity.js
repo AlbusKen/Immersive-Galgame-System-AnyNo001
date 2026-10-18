@@ -36,8 +36,39 @@ export function prepareOutfitAdoption(assets, name, imageId, record = {},
             error: `衣装入库核验未通过：${message}；已生成图片保留，原衣装保持不变。（${issue}${code ? `/${code}` : ''}）`,
             diagnostic: { stage: 'outfit-adoption', issue, ...(code && { causeReason: code }) } };
     };
-    if (record.promptRecipe?.outfitMode !== 'template' || record.promptEdited === true || record.edited === true)
-        return { ok: true, patch: {} };
+    if (record.promptEdited === true || record.edited === true) return { ok: true, patch: {} };
+    const adoptDefault = (candidate, allowEmptyDescription = false) => {
+        if (typeof spriteSlot !== 'string' || !spriteSlot.trim() || ['__proto__', 'constructor', 'prototype'].includes(spriteSlot))
+            return fail('sprite-slot-invalid', '立绘图槽无效');
+        if (!isValidOutfitName(candidate.name) || isBuiltinNudeOutfit(candidate.name))
+            return fail('candidate-name', '默认立绘需要可保存的命名衣装');
+        const selected = readDefaultOutfit(assets, name);
+        // 外部来源可以只交完整绘图词。正文已给衣装名时直接登记图片，衣装 DNA 留空。
+        const saved = allowEmptyDescription && !candidate.description?.trim()
+            ? prepareOutfitDnaPatch(assets, name, candidate.name, '', readWardrobe)
+            : prepareOutfitDnaSave(assets, name, candidate.name, candidate.description, { readWardrobe });
+        if (!saved.ok) return saved;
+        const all = saved.patch.characterOutfits || assets.characterOutfits || {};
+        const entry = all[name]?.[candidate.name];
+        return { ok: true, outfitName: candidate.name, patch: {
+            ...saved.patch,
+            characterOutfits: { ...all, [name]: { ...all[name],
+                [candidate.name]: setOutfitSprite(entry, spriteSlot, `igs-gen:${imageId}`) } },
+            ...((!selected.ok && (selected.reason !== 'default-outfit-unset' || ![assets.characters?.[name], assets.generated?.characters?.[name]]
+                .some(slots => Object.values(slots || {}).some(url => typeof url === 'string' && url.trim())))) && {
+                characterDefaultOutfits: { ...assets.characterDefaultOutfits,
+                    [name]: { version: 1, outfitName: candidate.name } } }),
+        } };
+    };
+    if (record.promptRecipe?.outfitMode !== 'template') {
+        if (!defaultOutfit || !imageId || record.promptRecipe) return { ok: true, patch: {} };
+        const matches = record.characterMeta?.characters?.filter(c => c.characterKey === sourceName) || [];
+        const outfit = matches.length === 1 ? matches[0].outfit : undefined;
+        const outfitName = isValidOutfitName(record.outfitName) ? record.outfitName : outfit?.name;
+        if (!isValidOutfitName(outfitName) || isBuiltinNudeOutfit(outfitName)) return { ok: true, patch: {} };
+        return adoptDefault({ name: outfitName,
+            description: outfit?.name === outfitName && typeof outfit.description === 'string' ? outfit.description : '' }, true);
+    }
     const context = record.outfitContext || record.identityContext;
     if (!imageId || !Array.isArray(context) || !record.sentPrompt || !record.outfitSnapshot)
         return fail('evidence-missing', '图片缺少生成时的衣装或发送快照');
@@ -73,26 +104,8 @@ export function prepareOutfitAdoption(assets, name, imageId, record = {},
     }
     // 默认采用与身份是否初始化无关；图、服装说明和选择在同一设置补丁提交。
     if (defaultOutfit) {
-        if (typeof spriteSlot !== 'string' || !spriteSlot.trim() || ['__proto__', 'constructor', 'prototype'].includes(spriteSlot))
-            return fail('sprite-slot-invalid', '立绘图槽无效');
         if (clothes.length !== 1) return fail('candidate-binding', '默认服装无法唯一绑定目标角色');
-        const candidate = clothes[0];
-        if (!isValidOutfitName(candidate.name) || isBuiltinNudeOutfit(candidate.name))
-            return fail('candidate-name', '默认立绘需要可保存的命名衣装');
-        const selected = readDefaultOutfit(assets, name);
-        const saved = prepareOutfitDnaSave(assets, name, candidate.name, candidate.description, { readWardrobe });
-        if (!saved.ok) return saved;
-        const all = saved.patch.characterOutfits || assets.characterOutfits || {};
-        const entry = all[name]?.[candidate.name];
-        return { ok: true, outfitName: candidate.name, patch: {
-            ...saved.patch,
-            characterOutfits: { ...all, [name]: { ...all[name],
-                [candidate.name]: setOutfitSprite(entry, spriteSlot, `igs-gen:${imageId}`) } },
-            ...((!selected.ok && (selected.reason !== 'default-outfit-unset' || ![assets.characters?.[name], assets.generated?.characters?.[name]]
-                .some(slots => Object.values(slots || {}).some(url => typeof url === 'string' && url.trim())))) && {
-                characterDefaultOutfits: { ...assets.characterDefaultOutfits,
-                    [name]: { version: 1, outfitName: candidate.name } } }),
-        } };
+        return adoptDefault(clothes[0]);
     }
 
     const candidates = prepared.outfitSnapshot.characters.filter(c => c.characterKey === sourceName && c.source === 'candidate');
@@ -112,10 +125,15 @@ export function prepareOutfitDnaSave(assets, name, outfitName, description, { re
         || !isValidOutfitName(outfitName) || isBuiltinNudeOutfit(outfitName)
         || typeof description !== 'string' || !description.trim() || description.length > 4096
         || /<<\s*(?:dna|outfit)/i.test(description)) return fail();
+    return prepareOutfitDnaPatch(assets, name, outfitName, description, readWardrobe);
+}
+
+function prepareOutfitDnaPatch(assets, name, outfitName, description, readWardrobe) {
     const characterOutfits = { ...(assets.characterOutfits || {}) };
     const outfits = { ...(characterOutfits[name] || {}) };
     const existing = outfits[outfitName];
-    const saved = resolveWardrobePrompt(readWardrobe, existing, outfitName);
+    if (existing && !description) return { ok: true, patch: {} };
+    const saved = (existing || description) ? resolveWardrobePrompt(readWardrobe, existing, outfitName) : null;
     if (saved?.prompt) {
         if (existing) return { ok: true, patch: {} };
         outfits[outfitName] = { words: [], moods: {}, wardrobe: saved.name };

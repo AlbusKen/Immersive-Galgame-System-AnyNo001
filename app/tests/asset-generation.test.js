@@ -87,7 +87,8 @@ test('gate:assets:unnamed-character-detection', () => {
 
 test('gate:assets:generated-library-is-separate-and-renamable', () => {
     const added = addGeneratedAssetToLibrary({}, { type: 'sprite', name: '神秘少女', imageId: 'img1' }, '莉莉');
-    assert.equal(added.library.characters.莉莉.默认, 'igs-gen:img1');
+    assert.equal(added.library.characters.莉莉.平和, 'igs-gen:img1');
+    assert.equal(added.library.characters.莉莉.默认, undefined);
     assert.deepEqual(added.library.characterAliases.莉莉, ['神秘少女']);
     const ctx = { sceneAssets: USER_ASSETS, generatedAssets: added.library };
     assert.deepEqual([resolveSpriteAsset('神秘少女', '', ctx).url, resolveSpriteAsset('神秘少女', '', ctx).source], ['igs-gen:img1', 'library']);
@@ -1236,9 +1237,9 @@ test('gate:assets:service-matte-edit-read-save-and-refresh-revision', async () =
     assert.equal((await noUpdate.saveMatteEdit('v2', 1, { dataUrl: 'x' })).reason, 'update-unsupported');
 });
 
-test('gate:assets:bind-generated-sprite-to-character-default', () => {
+test('gate:assets:bind-generated-sprite-to-character-calm', () => {
     const kept = bindGeneratedSprite(
-        { characters: { 冬月星見: { 默认: 'https://user.example/keep.png' } }, characterAliases: { 冬月星見: ['星見'] }, characterDna: { 冬月星見: { identity: '银发' } } },
+        { characters: { 冬月星見: { 默认: 'https://user.example/keep.png', 平和: 'https://user.example/calm.png' } }, characterAliases: { 冬月星見: ['星見'] }, characterDna: { 冬月星見: { identity: '银发' } } },
         '星見',
         'igs-gen:def',
     );
@@ -1246,13 +1247,15 @@ test('gate:assets:bind-generated-sprite-to-character-default', () => {
     assert.equal(kept.created, false);
     assert.equal(kept.name, '冬月星見');
     assert.equal(kept.characters.冬月星見.默认, 'https://user.example/keep.png');
+    assert.equal(kept.characters.冬月星見.平和, 'https://user.example/calm.png');
     const replaced = bindGeneratedSprite(
         { characters: { 冬月星見: { 默认: 'https://user.example/keep.png' } }, characterAliases: { 冬月星見: ['星見'] } },
         '星見',
         'igs-gen:def',
         { replace: true },
     );
-    assert.equal(replaced.characters.冬月星見.默认, 'igs-gen:def');
+    assert.equal(replaced.characters.冬月星見.默认, 'https://user.example/keep.png');
+    assert.equal(replaced.characters.冬月星見.平和, 'igs-gen:def');
 
     const created = bindGeneratedSprite(
         { characters: {}, characterAliases: {}, characterDna: { 冬月星見: { identity: '银发' } } },
@@ -1260,7 +1263,7 @@ test('gate:assets:bind-generated-sprite-to-character-default', () => {
         'igs-gen:def',
     );
     assert.equal(created.created, true);
-    assert.deepEqual(created.characters.冬月星見, { 默认: 'igs-gen:def' });
+    assert.deepEqual(created.characters.冬月星見, { 平和: 'igs-gen:def' });
     assert.deepEqual(created.characterAliases.冬月星見, []);
 
     const hit = resolveSpriteAsset('冬月', '开心', {

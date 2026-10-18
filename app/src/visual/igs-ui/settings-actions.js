@@ -1300,7 +1300,7 @@ export async function handleSettingsAction(action, ctx) {
             if (recoveredOutfit) {
                 const all = sceneAssets.characterOutfits;
                 sceneAssets.characterOutfits = { ...all, [bound.name]: { ...all[bound.name],
-                    [record.outfitName]: setOutfitSprite(recoveredOutfit, '默认', `igs-gen:${record.imageId}`) } };
+                    [record.outfitName]: setOutfitSprite(recoveredOutfit, '平和', `igs-gen:${record.imageId}`) } };
             }
             Object.assign(sceneAssets, adoptCharacterSeed(sceneAssets, bound.name, record.seed));
             const persisted = persistGeneratedLibrary(persistSettingsDraft, { spriteAssetChanged: record.type === 'sprite' });
@@ -1765,8 +1765,9 @@ export async function handleSettingsAction(action, ctx) {
         const previousAdoption = captureAdoptionFields(liveAssets, ['characters', 'characterAliases',
             'characterDna', 'characterOutfits', 'wardrobe', 'characterDefaultOutfits', 'characterSpriteNotes', 'characterSeeds']);
         const adoption = legacyRedraw ? { ok: true, patch: {} }
-            : prepareSpriteIdentityAdoption(liveAssets, name, result.imageId, result,
-                { hadDefault: Boolean(current), ...(picked?.ok && { spriteSlot: picked.slot }),
+            : prepareSpriteIdentityAdoption(liveAssets, name, result.imageId,
+                { ...result, ...(paintingOutfit && !result.outfitName && { outfitName: paintingOutfit }) },
+                { hadDefault: Boolean(current),
                     ...outfitAdoptionReadOptions(settingsState, target) });
         if (!adoption.ok) {
             progress.end();
@@ -1774,7 +1775,7 @@ export async function handleSettingsAction(action, ctx) {
         }
         const characters = { ...(liveAssets.characters || {}) };
         characters[name] = { ...(characters[name] || {}),
-            ...(!namedRedraw && !adoption.outfitName && { '默认': `igs-gen:${result.imageId}` }) };
+            ...(!namedRedraw && !adoption.outfitName && { [legacyRedraw ? '默认' : '平和']: `igs-gen:${result.imageId}` }) };
         liveAssets.characters = characters;
         Object.assign(liveAssets, adoption.patch);
         Object.assign(liveAssets, adoptCharacterSeed(liveAssets, name, result.seed));
@@ -1782,7 +1783,7 @@ export async function handleSettingsAction(action, ctx) {
             const all = liveAssets.characterOutfits;
             const entry = all[name][selected.outfitName];
             liveAssets.characterOutfits = { ...all, [name]: { ...all[name],
-                [selected.outfitName]: setOutfitSprite(entry, picked.slot, `igs-gen:${result.imageId}`) } };
+                [selected.outfitName]: setOutfitSprite(entry, '平和', `igs-gen:${result.imageId}`) } };
         }
         const spriteNotes = liveAssets.characterSpriteNotes = { ...liveAssets.characterSpriteNotes };
         if (String(spriteNote || '').trim()) spriteNotes[name] = String(spriteNote).trim();

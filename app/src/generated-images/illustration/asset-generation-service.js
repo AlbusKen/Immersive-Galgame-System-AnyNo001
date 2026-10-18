@@ -1866,7 +1866,7 @@ export function createAssetGenerationService(deps) {
                 const task = characterPromptTask(context, nude ? 'derived' : 'sprite', 'half_body', [[who]]);
                 const checked = preflightCharacterTask(context, task.promptTask.purpose, 'half_body');
                 if (!checked.ok) return checked;
-                reportExpressionProgress(onProgress, { phase: 'write', done: 0, total: 1, mood: '默认' });
+                reportExpressionProgress(onProgress, { phase: 'write', done: 0, total: 1, mood: '平和' });
                 let written;
                 try {
                     written = await writePrompt({ signal, ...task,
@@ -1906,8 +1906,8 @@ export function createAssetGenerationService(deps) {
                     if (!rebound.ok) return rebound;
                 }
             }
-            reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '默认' });
-            const painted = await paintExpressionCaption(who, '默认', input.caption, dna,
+            reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '平和' });
+            const painted = await paintExpressionCaption(who, '平和', input.caption, dna,
                 { templateInput: input, paintMeta: meta, exact, history, characterMeta, seed: randomSeed(), signal, shouldStart });
             return painted;
         }
@@ -1915,8 +1915,8 @@ export function createAssetGenerationService(deps) {
         const needsWriting = !externalSource(signal) && spritePromptNeedsWriting(paintDna, nude ? { nude: true } : undefined);
         if (caption && (exact || !needsWriting)) {
             if (!nai || typeof generateCaption !== 'function') return { ok: false, error: '当前图像来源不能画立绘' };
-            reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '默认' });
-            const repainted = await paintExpressionCaption(who, '默认', caption, paintDna, { ...(nude && { look: 'nude' }), seed: randomSeed(), exact: exact === true, characterMeta, signal, shouldStart });
+            reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '平和' });
+            const repainted = await paintExpressionCaption(who, '平和', caption, paintDna, { ...(nude && { look: 'nude' }), seed: randomSeed(), exact: exact === true, characterMeta, signal, shouldStart });
             if (!repainted.ok) return { ok: false, error: repainted.error || '出图失败', prompt: repainted.prompt };
             return { ok: true, imageId: repainted.imageId, prompt: repainted.prompt, characterMeta: repainted.characterMeta,
                 ...(isImageSeed(repainted.seed) && { seed: repainted.seed }) };
@@ -1924,7 +1924,7 @@ export function createAssetGenerationService(deps) {
         if (!nai || typeof writePrompt !== 'function' || typeof generateCaption !== 'function') {
             return { ok: false, error: '当前图像来源不能写立绘' };
         }
-        reportExpressionProgress(onProgress, { phase: 'write', done: 0, total: 1, mood: '默认' });
+        reportExpressionProgress(onProgress, { phase: 'write', done: 0, total: 1, mood: '平和' });
         let written;
         try {
             written = await writePrompt({ signal, imagePromptTask: 'sprite', description: buildCharacterSpriteDescription(who, paintDna, { nude: nude === true, note, transparent: spriteTransparent(readSettings(signal)), includeDna: !externalSource(signal) }),
@@ -1937,8 +1937,8 @@ export function createAssetGenerationService(deps) {
         if (!written || !written.ok || !written.caption) {
             return { ...written, ok: false, error: (written && written.error) || '写提示词失败' };
         }
-        reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '默认' });
-        const painted = await paintExpressionCaption(who, '默认', written.caption, paintDna,
+        reportExpressionProgress(onProgress, { phase: 'paint', done: 1, total: 1, mood: '平和' });
+        const painted = await paintExpressionCaption(who, '平和', written.caption, paintDna,
             { ...(nude && { look: 'nude' }), writtenFromDna: needsWriting, characterMeta: written.characterMeta, signal, shouldStart });
         if (!painted.ok) return { ok: false, error: painted.error || '出图失败', prompt: painted.prompt };
         return { ok: true, imageId: painted.imageId, prompt: painted.prompt, characterMeta: painted.characterMeta,
