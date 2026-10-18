@@ -77,6 +77,73 @@ function batchDnaReply(input) {
     ].join('\n')).join('\n---\n');
 }
 
+test('DNA 空回复：自动重取后完成原立绘，并显示原因和次数', { timeout: 4000 }, async t => {
+    let attempts = 0;
+    const f = fixture(t, { reply: input => ++attempts === 1 ? ''
+        : attempts === 2 ? '<think>still thinking</think>  ' : batchDnaReply(input) });
+    const progress = [];
+    const result = await f.service.generateCharacterSprite({ name: 'Alice', onProgress: event => progress.push(event) });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(f.h.writes.length, 3);
+    assert.equal(f.paints.length, 1);
+    assert.equal(f.bridge.sceneAssets.characterDna.Alice.version, 2);
+    assert.ok(progress.some(event => /空正文.*2\/3/.test(event.message || '')));
+    assert.ok(progress.some(event => /空正文.*3\/3/.test(event.message || '')));
+    assert.ok(progress.every(event => event.status !== 'waiting-condition'));
+    for (const request of f.h.writes) assert.deepEqual(request.input.outputs.rows.map(row => row.characterKey), ['Alice']);
+});
+
+test('DNA 空回复：连续为空结束整楼任务，释放锁后能正常再次生成', { timeout: 5000 }, async t => {
+    let empty = true;
+    const f = fixture(t, { reply: input => empty ? ' \n ' : batchDnaReply(input), spriteCount: 2,
+        text: '[igs-char:Alice|平和|Alice 正在说话。]\n[igs-char:Bob|平和|Bob 正在说话。]' });
+    f.bridge.sceneAssets.characters = {};
+    const failed = await f.service.processMessage(1, { manual: true });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.reason, 'recovery-exhausted');
+    assert.match(failed.error, /3 次.*正文为空/);
+    assert.equal(f.h.writes.length, 3, '外层恢复不得重新发起一轮补 DNA');
+    assert.equal(f.bridge.sceneAssets.characterDna, undefined);
+    assert.equal(f.writes.length + f.paints.length, 0);
+    const floor = await f.store.getFloor(floorKeyOf(f.messageHost.readFloor(1)));
+    assert.equal(floor.status, 'failed');
+    assert.match(floor.error, /正文为空/);
+    for (const request of f.h.writes) assert.deepEqual(request.input.outputs.rows.map(row => row.characterKey), ['Alice', 'Bob']);
+    empty = false;
+    assert.equal((await f.service.processMessage(1, { manual: true })).ok, true);
+    assert.equal(f.h.writes.length, 4);
+    assert.equal(f.paints.length, 2);
+});
+
+test('DNA 空回复：实际设置控制器返回明确错误，原按钮操作不会留在恢复等待', { timeout: 5000 }, async t => {
+    let empty = true;
+    const f = fixture(t, { reply: input => empty ? '' : batchDnaReply(input) });
+    const alerts = [];
+    const context = { extensionPrompts: {}, getWorldInfoPrompt: async () => ({ worldInfoString: '' }) };
+    const global = { localStorage: createMemoryStorage(), btoa, NaiDbGen: f.api,
+        alert: message => alerts.push(message), confirm: () => true, prompt: () => '',
+        Image: class { set src(value) { if (value) { this.naturalWidth = 32; this.naturalHeight = 48; queueMicrotask(() => this.onload?.()); } } },
+        SillyTavern: { getContext: () => context } };
+    const app = bootstrapIGS({ global, config: f.bridge, secondaryLlm: f.h.llm, autoAttachMagicWand: false,
+        generatedAssetStore: createMemoryGeneratedAssetStore(), illustrationStore: createMemoryIllustrationStore(), alphaMatte: async url => url,
+        illustrationMessageHost: { ...f.messageHost, onImageFloorReady: () => () => {}, destroy() {},
+            attachPromptStrip() {}, ensureMarkerRegexes: async () => ({ ok: true }) },
+        hostAdapter: { getCurrentMessage: async () => null, typeAndSend: async () => ({ ok: true }) },
+        fetch() { assert.fail('不应请求真实网络'); } });
+    t.after(() => app.shutdown());
+    const opened = app.openSettings({ page: 'source' });
+    const failed = await opened.controller.invoke('char-generate-sprite:Alice');
+    assert.equal(failed.ok, false);
+    assert.equal(failed.reason, 'recovery-exhausted');
+    assert.equal(f.h.writes.length, 3);
+    assert.equal(alerts.length, 1);
+    assert.match(alerts[0], /3 次.*正文为空/);
+    empty = false;
+    assert.equal((await opened.controller.invoke('char-generate-sprite:Alice')).ok, true);
+    assert.equal(f.h.writes.length, 4, '失败动作已经释放，同一入口可以开始新操作');
+    assert.equal(f.paints.length, 1);
+});
+
 test('开关关闭：缺 DNA 也保持外部原路径，零副 API 请求', async t => {
     const f = fixture(t, { enabled: false });
     const result = await f.service.generateCharacterSprite({ name: 'Alice' });

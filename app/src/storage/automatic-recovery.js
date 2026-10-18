@@ -114,7 +114,7 @@ export async function recoverOperation(execute, { signal, isActive = () => true,
         } catch (error) { cause = error; result = error?.result || { ok: false, reason: error?.code || error?.message || 'operation-pending' }; }
         if (signal?.aborted || !isActive()) break;
         if (result !== false && result?.ok !== false) return result;
-        if (recoveryCancelled(result)) return result;
+        if (recoveryCancelled(result) || result?.reason === 'recovery-exhausted') return result;
         if (!shouldRecover(result, cause)) { if (cause) throw cause; return result; }
         attempt++;
         let repaired;

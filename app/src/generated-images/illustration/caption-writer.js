@@ -161,7 +161,7 @@ async function writeCaptions(llm, llmSettings, description, meta) {
     return { ok: true, caption: result.captions[0].caption, captions: result.captions };
 }
 
-// 新协议仅一次请求，不使用会丢失模板职责的温和重试或本地后补。
+// 输出纠正沿用原协议与整批资料，不改为温和模板或本地补造字段。
 export async function writeTemplateCaptionsWithLlm(llm, llmSettings, meta = {}) {
     const context = imageWritingContext(meta);
     if (!context.ok) return context;

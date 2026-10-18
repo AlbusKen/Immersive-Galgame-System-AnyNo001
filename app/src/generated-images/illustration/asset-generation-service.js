@@ -972,6 +972,7 @@ export function createAssetGenerationService(deps) {
         if (externalSource(s.taskSignal) && s.externalSpriteDna && spriteNeeds.length) {
             report('info', `检查本楼 ${spriteNeeds.length} 个角色的 DNA，缺资料角色将一次合并生成…`);
             const prepared = await prepareExternalSpriteDna.batch({ characters: spriteNeeds.map(({ name, dna }) => ({ name, dna })),
+                onProgress: event => { if (event.message) report('info', event.message); },
                 shouldStart: floorCurrent, numberedText: toReadableText(floor.text),
                 previousText: typeof messageHost.readPreviousAiTexts === 'function'
                     ? messageHost.readPreviousAiTexts(messageId, s.auto.llm.contextFloors).map(toReadableText).join('\n') : '' });

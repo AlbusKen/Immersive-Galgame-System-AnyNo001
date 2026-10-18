@@ -337,7 +337,7 @@ function settingsProgressHost(globalObj) {
 
 // 进度条写明在画谁：写词和出图分开说，一批多张带上第几张。
 function expressionProgressText(who, event) {
-    if (event && event.phase === 'dna') return `副 API 补齐 DNA：${who}`;
+    if (event && event.phase === 'dna') return `副 API 补齐 DNA：${who}${event.message ? ` · ${event.message}` : ''}`;
     if (event && event.phase === 'write') return `写提示词：${who}`;
     const total = Number(event && event.total) || 0;
     if (total > 1) return `生图中：${who}·${event.mood || ''} ${Number(event.done) || 0}/${total}`;

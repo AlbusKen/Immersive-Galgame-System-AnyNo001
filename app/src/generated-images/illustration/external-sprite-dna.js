@@ -124,7 +124,11 @@ export function createExternalSpriteDnaPreparation({ llm, readSettings, isExtern
                 description: '一次补齐本轮全部角色的三景别外貌 DNA 与独立性格，供外部写词采用为角色设定。按各槽 slotid 与规范角色键逐份交付，不遗漏或混用角色；保留已有景别及明确设定，首次缺设定时协调设计普通外貌。衣装资料与身份分开，本次只保存身份与性格。角色补充要求：'
                     + JSON.stringify(rows.map(row => ({ characterKey: row.name, note: row.note }))),
                 ...(numberedText !== undefined && { numberedText }), ...(previousText !== undefined && { previousText }),
-                ...(lore !== undefined && { lore }), ...(signal && { signal }), shouldStart: current });
+                ...(lore !== undefined && { lore }), ...(signal && { signal }), shouldStart: current,
+                onRecovery: event => onProgress?.({ phase: 'dna', done: 0, total: rows.length,
+                    message: event.message || (event.phase === 'slow' ? '副 API 仍在处理同一次请求'
+                        : event.result?.error || '副 API 请求未完成'),
+                    status: event.phase, attempt: event.outputAttempt, maxAttempts: event.maxOutputAttempts }) });
             if (!current()) return stale();
             if (!written?.ok) return written || { ok: false, reason: 'dna-write-failed', error: '副 API 补 DNA 失败，未发起立绘生成' };
             const candidates = (written.captions || [written]).flatMap(entry => entry.dnaCandidates?.characters || []);

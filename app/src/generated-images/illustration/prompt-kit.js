@@ -2,7 +2,7 @@
 // 只服务 NovelAI 结构化 caption，按契约放在 generated-images 而不是通用 prompts。
 import { BUILTIN_PROMPTS, SCENE_DICTIONARY } from '../prompt-registry.js';
 import { prepareImageWritingRequest } from '../image-prompt-runtime.js';
-import { SecondaryLlmError, secondaryLlmFailure } from '../../host/secondary-llm-result.js';
+import { SecondaryLlmError, secondaryLlmFailure, secondaryLlmText } from '../../host/secondary-llm-result.js';
 import { recoverOperation } from '../../storage/automatic-recovery.js';
 import { imageTaskState } from '../image-task-runtime.js';
 
@@ -48,10 +48,12 @@ export const NSFW_NEGATIVE_GUARD = '';
 // 失败时 error 带上真实原因（HTTP 状态、网络/CORS、超时、拒答原文片段），方便用户排查。
 const describeError = (error) => (error && error.message) || String(error || '未知错误');
 const snippet = (text) => String(text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+const MAX_OUTPUT_ATTEMPTS = 3;
 
 export async function requestWithSoftRetry(llm, options, llmSettings) {
     const execute = (guarded, lease) => {
         let recoveryFeedback = '', invalidOutput = null, preparedRequest = guarded.preparedRequest, dispatched = false;
+        let invalidAttempts = 0;
         let presetEpoch = lease?.state?.presetEpoch ?? llm.readImageTaskState?.()?.presetEpoch;
         const settings = { ...(lease?.state?.config?.autoIllustration?.llm || llmSettings || {}) };
         const refreshRejectedSettings = async result => {
@@ -68,7 +70,6 @@ export async function requestWithSoftRetry(llm, options, llmSettings) {
                 preparedRequest = next?.request;
                 presetEpoch = latestState?.presetEpoch;
                 recoveryFeedback = '';
-                correctedFailures.clear();
                 return true;
             }
             const unconfigured = result?.reason === 'llm-config-unset';
@@ -88,36 +89,42 @@ export async function requestWithSoftRetry(llm, options, llmSettings) {
             }
             return changed;
         };
-        const correctedFailures = new Set();
-        return recoverOperation(() => {
+        return recoverOperation(async () => {
             invalidOutput = null;
             dispatched = false;
-            return requestSoft(llm, { ...guarded, recoveryFeedback, preparedRequest,
+            const result = await requestSoft(llm, { ...guarded, recoveryFeedback, preparedRequest,
                 onDispatch: () => { dispatched = true; },
                 onPrepared: request => { preparedRequest = structuredClone(request); },
                 onInvalidOutput: (text, parsed) => { invalidOutput = { text, parsed }; } },
                 settings);
+            if (!result.ok && invalidOutput && ++invalidAttempts >= MAX_OUTPUT_ATTEMPTS) return {
+                ...result, reason: 'recovery-exhausted',
+                error: `副 API 已请求 ${invalidAttempts} 次，仍未返回可用结果：${result.error || '输出无效'}`,
+                diagnostic: { ...result.diagnostic, attempts: invalidAttempts, failureReason: result.reason },
+            };
+            return result;
         }, {
             signal: guarded.signal,
             global: llm.recoveryGlobal || globalThis,
             retryUnchanged: false,
             shouldRecover: result => result?.reason !== 'llm-config-unset'
                 || typeof llm.readImageTaskState === 'function',
-            onRecover: event => guarded.onRecovery?.(event),
+            onRecover: event => guarded.onRecovery?.({ ...event,
+                ...(invalidOutput && { outputAttempt: invalidAttempts + 1, maxOutputAttempts: MAX_OUTPUT_ATTEMPTS,
+                    message: invalidOutput.parsed?.reason === 'secondary-llm-empty-response'
+                        ? `副 API 返回空正文，正在重新获取（${invalidAttempts + 1}/${MAX_OUTPUT_ATTEMPTS}）`
+                        : `副 API 输出不完整，正在修正（${invalidAttempts + 1}/${MAX_OUTPUT_ATTEMPTS}）` }) }),
             canResume: result => refreshRejectedSettings(result),
             isActive: () => !guarded.shouldStart || guarded.shouldStart(),
             repair: async result => {
                 if (!invalidOutput) return { changed: await refreshRejectedSettings(result) };
                 const diagnosis = invalidOutput.parsed?.diagnostic || invalidOutput.parsed?.diagnostics || {};
-                const failure = JSON.stringify([invalidOutput.parsed?.reason || 'invalid-output',
-                    diagnosis.field, diagnosis.issue, diagnosis.slotId, diagnosis.captionIndex]);
-                if (correctedFailures.has(failure)) return { changed: await refreshRejectedSettings(result) };
-                correctedFailures.add(failure);
                 const field = diagnosis.field;
                 recoveryFeedback = '请重新交付本次任务的完整结果，逐项采用原请求中的角色、槽号与输出格式。'
                     + (typeof field === 'string' && /^[A-Za-z0-9_.[\]-]{1,100}$/.test(field)
                         ? `本次补齐并核对字段 ${field}。` : '')
-                    + `\n上一份需要修正的输出：\n${invalidOutput.text}`;
+                    + (invalidOutput.text.trim() ? `\n上一份需要修正的输出：\n${invalidOutput.text}`
+                        : '\n请直接输出本次任务要求的全部字段及内容。');
                 return { changed: true };
             },
         });
@@ -152,9 +159,10 @@ async function requestSoft(llm, { system, user, softSystem, softUser, parse, ima
     let parseFailure;
     try {
         onDispatch?.();
-        first = await llm.request(prepared.request, settings);
+        first = secondaryLlmText(await llm.request(prepared.request, settings));
         if (stale()) return cancelled();
-        const parsed = parse(first);
+        const parsed = first.trim() ? parse(first) : { ok: false, reason: 'secondary-llm-empty-response',
+            error: '副 API 已返回，但正文为空', diagnostic: { stage: 'secondary-llm', issue: 'empty-response' } };
         if (parsed.ok) return { ...parsed, soft: false };
         parseFailure = parsed;
         onInvalidOutput?.(first, parsed);
