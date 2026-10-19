@@ -2,7 +2,7 @@
 
 ## 阅读中新衣装自动处理
 
-- `bridge.autoIllustration.assets.outfitAutoGenerate` 默认关闭；开启后，场景素材模式的非流式阅读器渲染经 `story-outfit-service.observe()` 登记当前楼层新衣装，再由 `autoGenerate()` 复用 `adopt(id, 'sprite')`，保存并回读服装 DNA 后生成平和立绘。
+- `bridge.autoIllustration.assets.outfitAutoGenerate` 默认关闭；开启后，场景素材模式由 core 常驻衣装运行时订阅宿主消息完成事件，经 `story-outfit-service.observe()` 登记当前楼层新衣装，再由 `autoGenerate()` 复用 `adopt(id, 'sprite')`，保存并回读服装 DNA 后生成平和立绘。阅读器未打开时同样执行；阅读器观察、审核与自动处理复用同一实例，以显式楼层上下文筛选候选，关闭阅读器不销毁常驻任务。
 - 在途、延期、失败和已处理候选不因重绘重复领取；失败候选重开后仍保留失败状态，用户手动采用和重试继续使用既有入口。结果通知异常不改变已完成的保存与生成结果。
 - 未入库衣装进入整楼换装索引，显示回退同人物默认服装；显示匹配保留冷加载图片引用，由中央缓存继续读取。此显示适配不改变一致性参考的可用性校验，也不替换用户已选默认衣装。
 

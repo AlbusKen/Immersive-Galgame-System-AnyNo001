@@ -66,7 +66,7 @@ export function createStoryOutfitService(deps) {
         return persist(row);
     }
 
-    function observe(directives) {
+    function observe(directives, ctx = deps.getContext()) {
         if (disposed) return fail('disposed');
         const fresh = loadStoryOutfitCandidates(deps.storage);
         if (!fresh.ok) return fresh;
@@ -75,7 +75,6 @@ export function createStoryOutfitService(deps) {
             if (!candidates.has(row.id)) candidates.set(row.id, { ...row,
                 saved: row.status === 'saved', status: row.status === 'saved' || row.status === 'failed' ? row.status : row.prompt ? 'ready' : 'pending' });
         }
-        const ctx = deps.getContext();
         if (!ctx || !Number.isSafeInteger(ctx.messageId) || !ctx.floorKey || !ctx.sourceHash) return fail('stale-target');
         const assets = effectiveSceneAssets(ctx.root, ctx.scopeKey);
         if (assets.wardrobeAutoFlow === false && ctx.autoGenerate !== true) return { ok: true };
@@ -98,8 +97,10 @@ export function createStoryOutfitService(deps) {
         return { ok: true };
     }
 
-    function list({ includeDeferred = false } = {}) {
-        return [...candidates.values()].filter(row => current(row) && (!deps.isVisible || deps.isVisible(row))
+    function list({ includeDeferred = false, context = deps.getContext() } = {}) {
+        return [...candidates.values()].filter(row => context && row.floorKey === context.floorKey
+            && row.scopeKey === context.scopeKey
+            && current(row) && (!deps.isVisible || deps.isVisible(row))
             && (includeDeferred || (!deferred.has(row.id) && !adoptions.has(row.id) && row.status !== 'saved'))
             && row.status !== 'done' && (row.saved || !handled(row)))
             .map(row => ({ ...row, choices: [
@@ -275,10 +276,10 @@ export function createStoryOutfitService(deps) {
 
     return { observe, list,
         // 只自动领取尚未处理的候选；在途、失败与已保存结果不因重绘重复付费。
-        autoGenerate() {
-            const ctx = deps.getContext();
+        autoGenerate(ctx = deps.getContext()) {
             if (disposed || ctx?.autoGenerate !== true) return Promise.resolve([]);
-            const rows = [...candidates.values()].filter(row => current(row)
+            const rows = [...candidates.values()].filter(row => row.floorKey === ctx.floorKey
+                && row.scopeKey === ctx.scopeKey && current(row)
                 && row.status === 'pending' && !row.reason && !row.mode
                 && !deferred.has(row.id) && !adoptions.has(row.id) && !handled(row));
             return Promise.all(rows.map(async row => {

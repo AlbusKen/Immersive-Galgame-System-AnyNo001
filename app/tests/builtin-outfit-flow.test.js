@@ -341,6 +341,91 @@ test('新衣装自动开关：关闭零请求，开启后先入库双 DNA 再生
     assert.deepEqual([f.writes.length, f.wires.length], [1, 1]);
 });
 
+test('常驻衣装运行时：未开阅读器也生成，同实例重复通知不双发，切分支拒收', { timeout: 6000 }, async t => {
+    const { createStoryOutfitRuntime } = await import('../src/core/story-outfit-runtime.js');
+    const { effectiveSceneAssets } = await import('../src/scene/asset-scope.js');
+    let root = { enabled: true, cards: { 'card:Current': { ...outfitAssets(), characterOutfits: {} } } };
+    let autoGenerate = false, ready;
+    const storage = createMemoryStorage();
+    const floor = { chatId: 'builtin-fixture', messageId: 0, swipeId: 0, isAi: true, isLatest: true,
+        text: '[igs-char:Alice|平和|礼服|我换好衣服了。]' };
+    const f = outfitBuiltinFixture({ readAssets: () => effectiveSceneAssets(root, 'card:Current'), outfitHalfBody: 'white dress' });
+    const runtime = createStoryOutfitRuntime({ storage, assets: f.service,
+        readContext: () => ({ name2: 'Current', chat: [{ mes: floor.text }] }),
+        readBridge: () => ({ sceneAssets: root, autoIllustration: { assets: { outfitAutoGenerate: autoGenerate } } }),
+        saveAssets(next) { root = next; return { ok: true }; },
+        messageHost: { getChatId: () => floor.chatId, readFloor: () => ({ ...floor }),
+            onImageFloorReady(fn) { ready = fn; return () => { ready = null; }; } } });
+    t.after(() => { runtime.dispose(); f.service.stop(); f.dispose(); });
+    runtime.start();
+    assert.deepEqual(await ready(0), []);
+    assert.deepEqual([f.writes.length, f.wires.length], [0, 0]);
+    autoGenerate = true; f.waitWriting();
+    const pending = ready(0);
+    await waitFor(() => f.gates.length === 1);
+    assert.deepEqual(await ready(0), []);
+    f.waitWriting(false); f.release();
+    const [result] = await pending;
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.ok(root.cards['card:Current'].characterOutfits.Alice.礼服.moods.平和);
+    assert.deepEqual([f.writes.length, f.wires.length], [1, 1]);
+    assert.deepEqual(await ready(0), []);
+    floor.text = '[igs-char:Alice|平和|晚装|我换上另一套衣服。]';
+    f.waitWriting();
+    const stale = ready(0);
+    await waitFor(() => f.gates.length === 1);
+    floor.swipeId = 1;
+    f.waitWriting(false); f.release();
+    const [rejected] = await stale;
+    assert.equal(rejected.ok, false);
+    assert.equal(f.wires.length, 1, '切分支后不继续出图');
+    assert.equal(root.cards['card:Current'].characterOutfits.Alice.晚装, undefined);
+    runtime.dispose();
+    assert.equal(ready, null);
+});
+
+
+test('后台衣装入库同步设置草稿，关闭设置保留新图和未保存编辑', { timeout: 6000 }, async t => {
+    const { bootstrapIGS } = await import('../src/index.js');
+    const { EventEmitter } = await import('node:events');
+    const { createMemoryIllustrationStore } = await import('../src/media/illustration-store.js');
+    const { createMemoryGeneratedAssetStore } = await import('../src/media/generated-asset-store.js');
+    const { effectiveSceneAssets } = await import('../src/scene/asset-scope.js');
+    const root = { enabled: true, cards: { 'card:Current': { ...outfitAssets(), characterOutfits: {} } } };
+    let vn;
+    const f = outfitBuiltinFixture({ outfitHalfBody: 'white dress', readAssets: () => effectiveSceneAssets(
+        vn?.getUnifiedSettings().bridge.sceneAssets || root, 'card:Current') });
+    t.after(async () => { f.dispose(); if (vn) await vn.shutdown(); else f.service.stop(); });
+    const eventSource = new EventEmitter();
+    const names = ['GENERATION_STARTED', 'GENERATION_ENDED', 'CHARACTER_MESSAGE_RENDERED'];
+    const context = { name2: 'Current', chatId: 'builtin-fixture', extensionPrompts: {},
+        chat: [{ is_user: false, mes: '[igs-char:Alice|平和|礼服|衣服换好了。]' }], eventSource,
+        eventTypes: Object.fromEntries(names.map(name => [name, name])),
+        getWorldInfoPrompt: async () => ({ worldInfoString: '' }) };
+    vn = bootstrapIGS({ global: { localStorage: createMemoryStorage(), btoa,
+        SillyTavern: { getContext: () => context } },
+        config: { ...f.bridge, sceneAssets: root, autoIllustration: { ...f.bridge.autoIllustration,
+            assets: { ...f.bridge.autoIllustration.assets, outfitAutoGenerate: true } } },
+        assetGenerationService: { ...f.service, start() {} }, generatedAssetStore: createMemoryGeneratedAssetStore(),
+        illustrationStore: createMemoryIllustrationStore(), autoAttachMagicWand: false });
+    const opened = vn.openSettings({ page: 'logs' });
+    opened.controller.setValue('bridge.showToasts', false);
+    f.waitWriting();
+    eventSource.emit('GENERATION_STARTED', 'normal', {}, false);
+    eventSource.emit('GENERATION_ENDED', 0);
+    await waitFor(() => f.gates.length === 1);
+    f.waitWriting(false); f.release();
+    await waitFor(() => Boolean(vn.getUnifiedSettings().bridge.sceneAssets.cards['card:Current']
+        .characterOutfits?.Alice?.礼服?.moods?.平和));
+    const image = vn.getUnifiedSettings().bridge.sceneAssets.cards['card:Current'].characterOutfits.Alice.礼服.moods.平和;
+    assert.equal(opened.controller.close().ok, true);
+    const saved = vn.getUnifiedSettings().bridge;
+    assert.equal(saved.sceneAssets.cards['card:Current'].characterOutfits.Alice.礼服.moods.平和, image);
+    assert.equal(saved.showToasts, false);
+    assert.deepEqual([f.writes.length, f.wires.length], [1, 1]);
+});
+
+
 for (const mode of ['paint-failed', 'write-failed']) test(`新衣装自动失败-${mode}：重绘及重开不重复请求`, async t => {
     const s = await storyBuiltinFixture(mode), { f } = s; t.after(() => s.dispose());
     s.setAutoGenerate(true);
