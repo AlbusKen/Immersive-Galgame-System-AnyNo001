@@ -488,6 +488,14 @@ export function createIgsReaderHost(options = {}) {
             assets: options.generatedAssets,
             getContext: storyOutfitContext,
             commit: commitStoryOutfit,
+            onAutoResult(row, result) {
+                if (result?.saved) {
+                    for (let i = pendingOutfitAsks.length - 1; i >= 0; i--)
+                        if (pendingOutfitAsks[i].character === row.character && pendingOutfitAsks[i].word === row.word)
+                            pendingOutfitAsks.splice(i, 1);
+                    if (state.activeReader) rerenderActiveReader();
+                }
+            },
             onChanged() {
                 const current = state.activeReader;
                 if (current) syncAssetReviewAfterRender(current, current.snapshot);
@@ -4569,12 +4577,14 @@ export function createIgsReaderHost(options = {}) {
     function syncAssetReviewAfterRender(current, snapshot) {
         const overlay = current && current.dom && current.dom.overlay;
         const service = options.generatedAssets;
-        if (!overlay || !overlay.querySelector || !service) return;
+        if (!service) return;
         const context = storyOutfitContext();
-        if (storyOutfits && context && snapshot.readerSettings?._sceneAssets) {
+        if (current.streamPhase !== 'streaming' && storyOutfits && context && snapshot.readerSettings?._sceneAssets?.enabled) {
             const assets = effectiveSceneAssets(context.root, context.scopeKey);
-            storyOutfits.observe(extractSceneDirectives(context.text, { outfitResolver: createOutfitResolver(assets) }).directives);
+            const observed = storyOutfits.observe(extractSceneDirectives(context.text, { outfitResolver: createOutfitResolver(assets) }).directives);
+            if (observed.ok) void storyOutfits.autoGenerate();
         }
+        if (!overlay || !overlay.querySelector) return;
         let container = overlay.querySelector('#igs-asset-review');
         const floorKey = currentFloorKey(current);
         // 没读完就重 roll：流式期间不弹，记下旧楼，等新回复载入完在最后一页一并补问。
@@ -4625,10 +4635,12 @@ export function createIgsReaderHost(options = {}) {
         const { floor } = readManualFloor(current);
         if (!floor) return null;
         const scope = resolveAssetScope(getSillyTavernContext(options.global || globalThis));
-        const root = cloneData(resolveBridgeConfigSnapshot({ mode: current.mode }).bridge.sceneAssets || {});
+        const { bridge } = resolveBridgeConfigSnapshot({ mode: current.mode });
+        const root = cloneData(bridge.sceneAssets || {});
         relocateLegacyCard(root, scope.key, scope.legacyKey);
         return { root, scopeKey: scope.key, floorKey: floorKeyOf(floor), messageId: Number(floor.messageId),
-            sourceHash: storyOutfitSourceHash(floor.text), text: floor.text };
+            sourceHash: storyOutfitSourceHash(floor.text), text: floor.text,
+            autoGenerate: bridge.autoIllustration?.assets?.outfitAutoGenerate === true };
     }
 
     function commitStoryOutfit(next, expected, guard) {

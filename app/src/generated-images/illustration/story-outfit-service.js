@@ -1,6 +1,6 @@
 import { recoverOperation } from '../../storage/automatic-recovery.js';
 import { adoptCharacterSeed } from '../../scene/generation-seeds.js';
-// 剧情衣装候选：发现时仅登记，用户选择后才写词、入库及按需生成立绘。
+// 剧情衣装候选：手动选择或显式开启自动流程后，沿同一入口写词、入库及生成立绘。
 import { resolveCharacterKey } from '../../scene/scene-directives.js';
 import { createOutfitResolver, isValidOutfitName, isBuiltinNudeOutfit, resolveWardrobePrompt } from '../../scene/character-outfits.js';
 import { assetOwnerKey, effectiveSceneAssets, ensureCardLibrary } from '../../scene/asset-scope.js';
@@ -21,12 +21,11 @@ export function createStoryOutfitService(deps) {
     const recoveryController = new AbortController();
     const loaded = loadStoryOutfitCandidates(deps.storage);
     if (loaded.ok) for (const row of loaded.items) candidates.set(row.id, { ...row,
-        saved: row.status === 'saved', status: row.status === 'saved' ? 'saved' : row.prompt ? 'ready' : 'pending' });
+        saved: row.status === 'saved', status: row.status === 'saved' || row.status === 'failed' ? row.status : row.prompt ? 'ready' : 'pending' });
     const current = (row) => {
         const ctx = deps.getContext(row);
         return !disposed && ctx && ctx.scopeKey === row.scopeKey && ctx.floorKey === row.floorKey
-            && ctx.messageId === row.messageId
-;
+            && ctx.messageId === row.messageId;
     };
     const persist = (row) => {
         const result = saveStoryOutfitCandidate(deps.storage, row);
@@ -74,12 +73,12 @@ export function createStoryOutfitService(deps) {
         // CG 完成可在服务创建后暂存新候选；同步时不覆盖在途任务和同图恢复状态。
         for (const row of fresh.items) {
             if (!candidates.has(row.id)) candidates.set(row.id, { ...row,
-                saved: row.status === 'saved', status: row.status === 'saved' ? 'saved' : row.prompt ? 'ready' : 'pending' });
+                saved: row.status === 'saved', status: row.status === 'saved' || row.status === 'failed' ? row.status : row.prompt ? 'ready' : 'pending' });
         }
         const ctx = deps.getContext();
         if (!ctx || !Number.isSafeInteger(ctx.messageId) || !ctx.floorKey || !ctx.sourceHash) return fail('stale-target');
         const assets = effectiveSceneAssets(ctx.root, ctx.scopeKey);
-        if (assets.wardrobeAutoFlow === false) return { ok: true };
+        if (assets.wardrobeAutoFlow === false && ctx.autoGenerate !== true) return { ok: true };
         const resolver = createOutfitResolver(assets);
         const known = { ...assets.characterDna, ...assets.characters, ...assets.characterOutfits };
         for (const directive of directives || []) {
@@ -275,6 +274,23 @@ export function createStoryOutfitService(deps) {
     }
 
     return { observe, list,
+        // 只自动领取尚未处理的候选；在途、失败与已保存结果不因重绘重复付费。
+        autoGenerate() {
+            const ctx = deps.getContext();
+            if (disposed || ctx?.autoGenerate !== true) return Promise.resolve([]);
+            const rows = [...candidates.values()].filter(row => current(row)
+                && row.status === 'pending' && !row.reason && !row.mode
+                && !deferred.has(row.id) && !adoptions.has(row.id) && !handled(row));
+            return Promise.all(rows.map(async row => {
+                let result;
+                try { result = await this.adopt(row.id, 'sprite'); }
+                catch (error) { result = { ok: false, reason: 'story-outfit-failed',
+                    error: error?.message || '衣装自动处理失败' }; }
+                try { await deps.onAutoResult?.({ ...row }, result); }
+                catch { /* 展示异常不改变已完成的保存和生成结果。 */ }
+                return result;
+            }));
+        },
         retry(id) {
             const row = candidates.get(id);
             if (!row) return Promise.resolve(fail('not-found'));

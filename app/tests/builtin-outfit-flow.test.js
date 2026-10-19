@@ -45,7 +45,7 @@ function settingsContext(f, assets, persist, extra = {}) {
         persistSettingsDraft: persist, rerenderSettings: () => ({ ok: true }) } };
 }
 
-for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch', 'wrong-outfit']) {
+for (const mode of ['success', 'save-recovered', 'paint-failed', 'readback-mismatch', 'wrong-outfit']) {
     test(`gate:builtin-outfit:设置页先保存服装再绘图-${mode}`, async t => {
         const { handleSettingsAction } = await import('../src/visual/igs-ui/settings-actions.js');
         const assets = outfitAssets(), storage = createMemoryStorage();
@@ -81,14 +81,15 @@ for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch
         t.after(() => f.dispose());
         const { ctx } = settingsContext(f, assets, () => {
             saves.push(structuredClone(assets)); f.events.push('save');
-            if (mode === 'save-failed' && saves.length === 1) return { ok: false, reason: 'fixture-save' };
+            if (mode === 'save-recovered' && saves.length === 1) return { ok: false, reason: 'fixture-save' };
             if (mode === 'readback-mismatch' && saves.length === 1)
                 assets.wardrobe['Alice·礼服'].prompt = 'mismatched saved clothing';
             storage.setItem('fixture-assets', JSON.stringify(assets));
             return { ok: true };
         });
         const result = await handleSettingsAction(outfitAction('outfit-expression-set'), ctx);
-        assert.equal(f.writes.length, 1, '仅提取一次服装资料，平和构图由程序组装');
+        assert.equal(f.writes.length, mode === 'wrong-outfit' ? 3 : 1,
+            '合法资料只提取一次；错名回复按既有上限结束，不保存或出图');
         assert.equal(f.writes[0].input.outputs.format, 'sprite-data');
 
         if (mode === 'wrong-outfit') {
@@ -99,12 +100,12 @@ for (const mode of ['success', 'save-failed', 'paint-failed', 'readback-mismatch
             return;
         }
         assert.deepEqual(saves[0].characterOutfits.Alice.礼服.moods, {});
-        if (['save-failed', 'readback-mismatch'].includes(mode)) {
+        if (mode === 'readback-mismatch') {
             assert.equal(result.ok, false); assert.equal(f.wires.length, 0);
             assert.equal(f.imageIds.length, 0);
-            if (mode === 'save-failed') assert.deepEqual(assets, before);
             return;
         }
+        if (mode === 'save-recovered') assert.ok(saves.length >= 2, '保存恢复复用已提取的服装资料');
         assert.equal(f.wires.length, 1);
         assert.ok(f.events.indexOf('save') < f.events.indexOf('paint'));
         assert.deepEqual(assets.characterDna, before.characterDna);
@@ -280,7 +281,7 @@ async function storyBuiltinFixture(mode = 'success') {
     const original = { cards: { 'card:Current': source } };
     storage.setItem('fixture-root', JSON.stringify(original));
     const root = () => JSON.parse(storage.getItem('fixture-root'));
-    let floorKey = 'chat|39|0', saveFailed = true;
+    let floorKey = 'chat|39|0', saveFailed = true, autoGenerate = false;
     let paintFailed = ['paint-failed', 'recovery-save-failed'].includes(mode);
     const f = outfitBuiltinFixture({ readAssets: () => effectiveSceneAssets(root(), 'card:Current'),
         outfitHalfBody: 'white dress',
@@ -296,7 +297,7 @@ async function storyBuiltinFixture(mode = 'success') {
         } });
     const deps = { storage, assets: f.service,
         getContext: () => ({ root: root(), scopeKey: 'card:Current', floorKey,
-            messageId: 39, sourceHash: 'source-1', text: 'Alice 换上白色礼服。' }),
+            messageId: 39, sourceHash: 'source-1', text: 'Alice 换上白色礼服。', autoGenerate }),
         commit(next, expected, guard) {
             assert.equal(guard(), true); assert.deepEqual(root(), expected); f.events.push('save');
             const library = next.cards['card:Current'];
@@ -310,10 +311,51 @@ async function storyBuiltinFixture(mode = 'success') {
     let service = createStoryOutfitService(deps);
     return { f, storage, root, original, get service() { return service; },
         reopen() { service.dispose(); service = createStoryOutfitService(deps); },
+        setAutoGenerate(value) { autoGenerate = value; },
         recoverPaint() { paintFailed = false; }, recoverSave() { saveFailed = false; },
         changeTarget() { floorKey = 'other-chat|39|0'; },
         dispose() { service.dispose(); f.dispose(); } };
 }
+
+test('新衣装自动开关：关闭零请求，开启后先入库双 DNA 再生成，重绘不双发', async t => {
+    const s = await storyBuiltinFixture(), { f } = s; t.after(() => s.dispose());
+    const directives = [{ character: 'Alice', unknownOutfit: '礼服' }];
+    assert.equal(s.service.observe(directives).ok, true);
+    assert.deepEqual(await s.service.autoGenerate(), []);
+    assert.deepEqual([f.writes.length, f.wires.length], [0, 0]);
+    s.setAutoGenerate(true); f.waitWriting();
+    const pending = s.service.autoGenerate();
+    await waitFor(() => f.gates.length === 1);
+    s.service.observe(directives);
+    assert.deepEqual(await s.service.autoGenerate(), []);
+    assert.equal(f.writes.length, 1);
+    f.waitWriting(false); f.release();
+    const [result] = await pending;
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const library = s.root().cards['card:Current'];
+    assert.equal(library.wardrobe['Alice·礼服'].promptHalfBody, 'white dress');
+    assert.ok(library.characterOutfits.Alice.礼服.moods.平和);
+    assert.equal(library.characterDefaultOutfits, undefined, '不替换用户旧默认立绘');
+    s.service.observe(directives);
+    assert.deepEqual(await s.service.autoGenerate(), []);
+    assert.deepEqual([f.writes.length, f.wires.length], [1, 1]);
+});
+
+for (const mode of ['paint-failed', 'write-failed']) test(`新衣装自动失败-${mode}：重绘及重开不重复请求`, async t => {
+    const s = await storyBuiltinFixture(mode), { f } = s; t.after(() => s.dispose());
+    s.setAutoGenerate(true);
+    s.service.observe([{ character: 'Alice', unknownOutfit: '礼服' }]);
+    const [result] = await s.service.autoGenerate();
+    assert.equal(result.ok, false);
+    assert.equal(result.saved, mode === 'paint-failed');
+    if (result.saved) assert.equal(s.root().cards['card:Current'].wardrobe['Alice·礼服'].promptHalfBody, 'white dress');
+    else assert.deepEqual(s.root(), s.original);
+    const sends = [f.writes.length, f.wires.length];
+    assert.deepEqual(await s.service.autoGenerate(), []);
+    s.reopen();
+    assert.deepEqual(await s.service.autoGenerate(), []);
+    assert.deepEqual([f.writes.length, f.wires.length], sends);
+});
 
 test('剧情衣装生成期间其它角色保存资料，完成后合并当前库', async t => {
     const s = await storyBuiltinFixture(), { f } = s; t.after(() => s.dispose());
@@ -499,7 +541,7 @@ test('gate:builtin-outfit:资料回复重复衣装字段零保存零绘图', asy
     assert.deepEqual(f.assets, before);
 });
 
-test('gate:builtin-outfit:服装保存不失效租约，绘图配置变化仍拒绝本批发送', async t => {
+test('gate:builtin-outfit:服装保存与配置更新不取消本批，出图沿用任务快照', async t => {
     const { prepareOutfitDnaSave } = await import('../src/scene/outfit-identity.js');
     const f = outfitBuiltinFixture(); t.after(() => f.dispose());
     const result = await f.service.generateExpressionSet({ name: 'Alice', dna: f.assets.characterDna.Alice,
@@ -511,9 +553,10 @@ test('gate:builtin-outfit:服装保存不失效租约，绘图配置变化仍拒
             f.bridge.autoIllustration.nai.artistPrefix = 'artist:changed'; f.runtime.refresh();
             return { ok: true };
         } });
-    assert.equal(result.items[0].ok, false, JSON.stringify(result));
-    assert.equal(result.items[0].reason, 'stale-config');
-    assert.equal(f.writes.length, 1); assert.equal(f.wires.length, 0); assert.equal(f.imageIds.length, 0);
+    assert.equal(result.items[0].ok, true, JSON.stringify(result));
+    assert.equal(f.writes.length, 1); assert.equal(f.wires.length, 1); assert.equal(f.imageIds.length, 1);
+    assert.match(f.wires[0].parameters.v4_prompt.caption.base_caption, /^artist:fixture,/);
+    assert.equal(f.bridge.autoIllustration.nai.artistPrefix, 'artist:changed');
     assert.equal(f.assets.wardrobe['Alice·礼服'].prompt, 'wears a white dress');
 });
 
